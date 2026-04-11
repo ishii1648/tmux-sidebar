@@ -28,6 +28,7 @@ func main() {
 
 Subcommands:
   (none)          Start the TUI sidebar
+  close           Close sidebar if open
   toggle          Open sidebar if closed, close if open
   focus-or-open   Focus sidebar if open, open if closed
   focus-sidebar   Move focus to the sidebar pane
@@ -45,6 +46,12 @@ Subcommands:
 		case "focus-or-open":
 			if err := runFocusOrOpen(); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar focus-or-open: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "close":
+			if err := runCloseSidebar(); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar close: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -205,4 +212,19 @@ func runToggleSidebar() error {
 		return nil
 	}
 	return exec.Command("tmux", "set-option", "-p", "-t", paneID, "@pane_role", "sidebar").Run()
+}
+
+// runCloseSidebar closes the sidebar pane in the current window, if one exists.
+func runCloseSidebar() error {
+	out, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{@pane_role}").Output()
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 && parts[1] == "sidebar" {
+			return exec.Command("tmux", "kill-pane", "-t", parts[0]).Run()
+		}
+	}
+	return nil
 }

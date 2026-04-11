@@ -96,6 +96,11 @@ var requiredTmuxHooks = []struct {
 		needle: "focus-sidebar",
 		hint:   `bind-key -n <key> run-shell 'tmux-sidebar focus-sidebar'`,
 	},
+	{
+		label:  "toggle binding",
+		needle: "toggle",
+		hint:   `bind-key -n C-s run-shell 'tmux-sidebar toggle'`,
+	},
 }
 
 // ── settings.json helpers ────────────────────────────────────────────────────

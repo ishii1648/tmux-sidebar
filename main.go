@@ -29,6 +29,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "toggle":
+			if err := runToggleSidebar(); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar toggle: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "doctor":
 			autoApply := len(os.Args) > 2 && os.Args[2] == "--yes"
 			if err := doctor.Run(autoApply); err != nil {
@@ -143,4 +149,39 @@ func runFocusSidebar() error {
 		return fmt.Errorf("set flag: %w", err)
 	}
 	return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
+}
+
+// runToggleSidebar opens the sidebar if it does not exist, or closes it if it does.
+//
+// Usage in tmux.conf (bind to any key without requiring the tmux prefix):
+//
+//	bind-key -n C-s run-shell 'tmux-sidebar toggle'
+func runToggleSidebar() error {
+	out, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{@pane_role}").Output()
+	if err != nil {
+		// Not inside a tmux session — nothing to do.
+		return nil
+	}
+	var sidebarPaneID string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 && parts[1] == "sidebar" {
+			sidebarPaneID = parts[0]
+			break
+		}
+	}
+	if sidebarPaneID != "" {
+		// Sidebar is open → close it.
+		return exec.Command("tmux", "kill-pane", "-t", sidebarPaneID).Run()
+	}
+	// Sidebar is closed → open it.
+	newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "35", "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
+	if err != nil {
+		return fmt.Errorf("split-window: %w", err)
+	}
+	paneID := strings.TrimSpace(string(newOut))
+	if paneID == "" {
+		return nil
+	}
+	return exec.Command("tmux", "set-option", "-p", "-t", paneID, "@pane_role", "sidebar").Run()
 }

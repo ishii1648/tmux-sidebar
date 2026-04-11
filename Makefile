@@ -1,5 +1,4 @@
 BINARY  := tmux-sidebar
-DESTDIR := $(shell go env GOPATH)/bin
 VERSION ?= dev
 
 .PHONY: build install
@@ -7,6 +6,6 @@ VERSION ?= dev
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BINARY) .
 
-install: build
-	cp $(BINARY) $(DESTDIR)/$(BINARY)
-	@echo "Installed $(DESTDIR)/$(BINARY)"
+install:
+	go install -ldflags "-X main.version=$(VERSION)" ./...
+	@echo "Installed $(shell go env GOPATH)/bin/$(BINARY)"

@@ -56,14 +56,14 @@ go install github.com/ishii1648/tmux-sidebar@latest
 ```tmux
 # 新しいウィンドウを作るたびにサイドバーを自動生成
 set-hook -g after-new-window \
-  'run-shell "tmux split-window -hfb -l 35 -e @pane_role=sidebar tmux-sidebar"'
+  'run-shell "p=$(tmux split-window -hfb -l 35 -P -F \"#{pane_id}\" tmux-sidebar); tmux set-option -p -t \"$p\" @pane_role sidebar"'
 
 # サイドバーへの誤フォーカスを防ぐ（通常の prefix+hjkl でスキップされる）
 set-hook -g after-select-pane \
   'run-shell "tmux-sidebar focus-guard"'
 ```
 
-> `@pane_role=sidebar` を付けることで `focus-guard` がサイドバーペインを識別できます。
+> `split-window -P -F "#{pane_id}"` で生成したペイン ID を取得し、`set-option -p @pane_role sidebar` でペインオプションを設定することで `focus-guard` やトグルキーバインドがサイドバーを識別できます。
 
 ### 2. toggle キーバインド（任意）
 
@@ -73,11 +73,42 @@ bind-key e run-shell '\
   if tmux list-panes -F "#{@pane_role}" | grep -q "^sidebar$"; then \
     tmux kill-pane -t $(tmux list-panes -F "#{pane_id} #{@pane_role}" | awk '"'"'/sidebar/{print $1}'"'"'); \
   else \
-    tmux split-window -hfb -l 35 -e @pane_role=sidebar tmux-sidebar; \
+    p=$(tmux split-window -hfb -l 35 -P -F "#{pane_id}" tmux-sidebar); \
+    tmux set-option -p -t "$p" @pane_role sidebar; \
   fi'
 ```
 
-### 3. Claude Code の状態ファイル（任意）
+### 3. サイドバーへのフォーカスキーバインド（任意）
+
+通常の pane 移動（`prefix+hjkl` 等）ではサイドバーはスキップされます。
+専用キーでのみサイドバーにフォーカスを当てたい場合は以下を設定してください。
+
+```tmux
+# 任意のキーでサイドバーにフォーカス（prefix なし）
+# <key> は端末エミュレータ側で割り当てた escape sequence に合わせて変更する
+bind-key -n <key> run-shell 'tmux-sidebar focus-sidebar'
+```
+
+> `tmux-sidebar focus-sidebar` は現在ウィンドウのサイドバー pane を探して
+> フォーカスします。サイドバーが存在しないウィンドウでは何もしません。
+
+#### iTerm2 で `cmd+s` に割り当てる場合
+
+1. **iTerm2** の `Preferences > Keys > Key Bindings` を開く
+2. `+` で新しいバインドを追加：
+   - **Keyboard Shortcut**: `⌘S`
+   - **Action**: `Send Escape Sequence`
+   - **Esc+**: `[18~`（`F7` に相当するシーケンス）
+3. `~/.tmux.conf` に以下を追加：
+
+```tmux
+bind-key -n F7 run-shell 'tmux-sidebar focus-sidebar'
+```
+
+> 別のシーケンスを使う場合は `tmux list-keys -N` や `cat -v` で
+> 送信されるシーケンスを確認してから対応するキー名を設定してください。
+
+### 4. Claude Code の状態ファイル（任意）
 
 状態バッジを表示するには Claude Code の hook が `/tmp/claude-pane-state/` に状態ファイルを書き出す必要があります。
 
@@ -125,6 +156,9 @@ mkdir -p "$dir"
 echo "$1" > "$dir/pane_${num}"
 if [ "$1" = "running" ]; then
   date +%s > "$dir/pane_${num}_started"
+  # セッション起動ディレクトリを記録（初回のみ）
+  # サイドバーの Git 情報はこのパスを基準に表示される
+  [ -f "$dir/pane_${num}_path" ] || pwd > "$dir/pane_${num}_path"
 fi
 ```
 

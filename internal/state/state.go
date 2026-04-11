@@ -32,6 +32,7 @@ const (
 type PaneState struct {
 	Status  Status
 	Elapsed time.Duration // only valid when Status == StatusRunning
+	WorkDir string        // initial working directory of the Claude session (from pane_N_path)
 }
 
 // Reader is the interface for reading pane state.
@@ -65,9 +66,10 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 		return nil, err
 	}
 
-	// First pass: collect status and started epoch per pane number.
+	// First pass: collect status, started epoch, and workdir per pane number.
 	statuses := map[int]Status{}
 	started := map[int]int64{}
+	workdirs := map[int]string{}
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -98,6 +100,18 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 				continue
 			}
 			started[num] = epoch
+		} else if strings.HasSuffix(rest, "_path") {
+			// pane_N_path
+			numStr := strings.TrimSuffix(rest, "_path")
+			num, err := strconv.Atoi(numStr)
+			if err != nil {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(r.dir, name))
+			if err != nil {
+				continue
+			}
+			workdirs[num] = strings.TrimSpace(string(data))
 		} else {
 			// pane_N
 			num, err := strconv.Atoi(rest)
@@ -126,6 +140,9 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 			if epoch, ok := started[num]; ok {
 				ps.Elapsed = now.Sub(time.Unix(epoch, 0)).Truncate(time.Minute)
 			}
+		}
+		if dir, ok := workdirs[num]; ok {
+			ps.WorkDir = dir
 		}
 		result[num] = ps
 	}

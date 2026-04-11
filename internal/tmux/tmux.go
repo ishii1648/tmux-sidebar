@@ -51,6 +51,9 @@ type Client interface {
 	ListPanes() ([]Pane, error)
 	CurrentPane() (CurrentPane, error)
 	SwitchWindow(sessionName string, windowIndex int) error
+	// PaneCurrentPath returns the current working directory of the active pane
+	// in the given window. windowID should be in tmux window ID format (e.g. "@1").
+	PaneCurrentPath(windowID string) (string, error)
 }
 
 // ExecClient implements Client by running tmux subcommands via exec.Command.
@@ -195,4 +198,9 @@ func (c *ExecClient) SwitchWindow(sessionName string, windowIndex int) error {
 	target := fmt.Sprintf("%s:%d", sessionName, windowIndex)
 	_, err := runTmux("switch-client", "-t", target)
 	return err
+}
+
+// PaneCurrentPath returns the current working directory of the active pane in the given window.
+func (c *ExecClient) PaneCurrentPath(windowID string) (string, error) {
+	return runTmux("display-message", "-t", windowID, "-p", "#{pane_current_path}")
 }

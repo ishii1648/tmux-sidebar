@@ -29,6 +29,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "focus-or-open":
+			if err := runFocusOrOpen(); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar focus-or-open: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "toggle":
 			if err := runToggleSidebar(); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar toggle: %v\n", err)
@@ -145,6 +151,47 @@ func runFocusSidebar() error {
 		// No sidebar in this window — nothing to do.
 		return nil
 	}
+	if err := exec.Command("tmux", "set-option", "-g", "@sidebar_focus_requested", "1").Run(); err != nil {
+		return fmt.Errorf("set flag: %w", err)
+	}
+	return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
+}
+
+// runFocusOrOpen focuses the sidebar pane if it exists, or opens a new one and
+// focuses it if it does not.
+//
+// Usage in tmux.conf (bind to any key without requiring the tmux prefix):
+//
+//	bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
+func runFocusOrOpen() error {
+	out, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{@pane_role}").Output()
+	if err != nil {
+		// Not inside a tmux session — nothing to do.
+		return nil
+	}
+	var sidebarPaneID string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 && parts[1] == "sidebar" {
+			sidebarPaneID = parts[0]
+			break
+		}
+	}
+	if sidebarPaneID == "" {
+		// Sidebar is closed → open it.
+		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "35", "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
+		if err != nil {
+			return fmt.Errorf("split-window: %w", err)
+		}
+		sidebarPaneID = strings.TrimSpace(string(newOut))
+		if sidebarPaneID == "" {
+			return nil
+		}
+		if err := exec.Command("tmux", "set-option", "-p", "-t", sidebarPaneID, "@pane_role", "sidebar").Run(); err != nil {
+			return fmt.Errorf("set pane_role: %w", err)
+		}
+	}
+	// Sidebar is open → focus it.
 	if err := exec.Command("tmux", "set-option", "-g", "@sidebar_focus_requested", "1").Run(); err != nil {
 		return fmt.Errorf("set flag: %w", err)
 	}

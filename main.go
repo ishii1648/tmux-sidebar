@@ -154,7 +154,10 @@ func runFocusSidebar() error {
 	if err := exec.Command("tmux", "set-option", "-g", "@sidebar_focus_requested", "1").Run(); err != nil {
 		return fmt.Errorf("set flag: %w", err)
 	}
-	return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
+	if err := exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run(); err != nil {
+		return fmt.Errorf("select-pane: %w", err)
+	}
+	return exec.Command("tmux", "set-option", "-g", "-u", "@sidebar_focus_requested").Run()
 }
 
 // runFocusOrOpen focuses the sidebar pane if it exists, or opens a new one and
@@ -192,10 +195,15 @@ func runFocusOrOpen() error {
 		}
 	}
 	// Sidebar is open → focus it.
+	// select-pane してフラグを即座にクリア（after-select-window の focus-guard が
+	// フラグを見てサイドバーへのフォーカスを「許可」し続けないようにするため）
 	if err := exec.Command("tmux", "set-option", "-g", "@sidebar_focus_requested", "1").Run(); err != nil {
 		return fmt.Errorf("set flag: %w", err)
 	}
-	return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
+	if err := exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run(); err != nil {
+		return fmt.Errorf("select-pane: %w", err)
+	}
+	return exec.Command("tmux", "set-option", "-g", "-u", "@sidebar_focus_requested").Run()
 }
 
 // runToggleSidebar opens the sidebar if it does not exist, or closes it if it does.

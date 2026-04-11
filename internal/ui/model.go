@@ -553,7 +553,7 @@ func (m *Model) View() string {
 	}
 
 	// Footer: always show key hints
-	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  Enter:switch  ^C:quit") + "\n")
+	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
 	return sb.String()
 }
 

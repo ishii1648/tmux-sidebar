@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ishii1648/tmux-sidebar/internal/doctor"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 	"github.com/ishii1648/tmux-sidebar/internal/ui"
@@ -19,6 +20,13 @@ func main() {
 		case "focus-guard":
 			if err := runFocusGuard(); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar focus-guard: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "doctor":
+			autoApply := len(os.Args) > 2 && os.Args[2] == "--yes"
+			if err := doctor.Run(autoApply); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar doctor: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -40,12 +48,28 @@ func main() {
 
 	model := ui.New(tc, sr, width)
 
+	// Prevent tmux from greying out the sidebar pane when it loses focus.
+	// window-style is set at pane level so only this pane is affected; the
+	// override is removed when the program exits.
+	if paneOut, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output(); err == nil {
+		paneID := strings.TrimSpace(string(paneOut))
+		if paneID != "" {
+			exec.Command("tmux", "set-option", "-p", "-t", paneID, "window-style", "default").Run()
+			defer func() {
+				exec.Command("tmux", "set-option", "-p", "-t", paneID, "-u", "window-style").Run()
+			}()
+		}
+	}
+
 	var opts []tea.ProgramOption
 	// TMUX_SIDEBAR_NO_ALT_SCREEN disables alt-screen mode (used in E2E tests
 	// so that tmux capture-pane can read the sidebar output directly).
 	if os.Getenv("TMUX_SIDEBAR_NO_ALT_SCREEN") == "" {
 		opts = append(opts, tea.WithAltScreen())
 	}
+	// Enable terminal focus events so the sidebar can show active/inactive state.
+	// Requires `set-option -g focus-events on` in tmux.conf.
+	opts = append(opts, tea.WithReportFocus())
 
 	p := tea.NewProgram(model, opts...)
 	if _, err := p.Run(); err != nil {

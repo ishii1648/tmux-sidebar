@@ -16,16 +16,6 @@ import (
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 )
 
-// Mode describes whether the sidebar is actively controlled by the user.
-type Mode int
-
-const (
-	// ModePassive renders the list but ignores keyboard input.
-	ModePassive Mode = iota
-	// ModeInteractive accepts j/k/Enter/q/Tab input.
-	ModeInteractive
-)
-
 // FilterMode describes which windows are shown in the sidebar list.
 type FilterMode int
 
@@ -117,7 +107,6 @@ type Model struct {
 	items        []ListItem
 	cursor       int    // index into visibleItems()
 	currentWinID string // window ID of the pane running this process
-	mode         Mode
 	filter       FilterMode
 	width        int
 	err          error
@@ -131,7 +120,6 @@ func New(tc tmux.Client, sr state.Reader, width int) *Model {
 		tmuxClient:  tc,
 		stateReader: sr,
 		width:       width,
-		mode:        ModeInteractive,
 		gitData:     map[string]gitInfo{},
 		focused:     true, // assume active on startup until a BlurMsg arrives
 	}
@@ -411,18 +399,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "i":
-		if m.mode == ModeInteractive {
-			m.mode = ModePassive
-		} else {
-			m.mode = ModeInteractive
-		}
-		return m, nil
 	case "ctrl+c":
 		return m, tea.Quit
 	}
 
-	if m.mode == ModePassive {
+	if !m.focused {
 		return m, nil
 	}
 
@@ -439,8 +420,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resetCursorToFirstWindow()
 	case "enter":
 		return m, m.switchSelected()
-	case "q", "esc":
-		m.mode = ModePassive
 	}
 	return m, nil
 }
@@ -544,7 +523,7 @@ func (m *Model) View() string {
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
-			if i == m.cursor && m.mode == ModeInteractive {
+			if i == m.cursor && m.focused {
 				cursor = styleCursor.Render("▶ ")
 			}
 			// Highlight current window
@@ -564,12 +543,9 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Mode indicator / footer
-	modeStyle := lipgloss.NewStyle().Faint(true).MaxWidth(m.width)
-	if m.mode == ModePassive {
-		sb.WriteString("\n" + modeStyle.Render("[passive]  i: activate") + "\n")
-	} else {
-		sb.WriteString("\n" + modeStyle.Render("[interactive] i:passive Tab:filter") + "\n")
+	// Footer: show key hints only when focused
+	if m.focused {
+		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  Enter:switch  ^C:quit") + "\n")
 	}
 	return sb.String()
 }

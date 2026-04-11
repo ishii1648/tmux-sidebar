@@ -370,6 +370,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor > maxCursor {
 			m.cursor = maxCursor
 		}
+		// Ensure cursor lands on a window item, not a session header
+		visible := m.visibleItems()
+		if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
+			m.resetCursorToFirstWindow()
+		}
 		return m, nil
 
 	case gitTickMsg:
@@ -523,8 +528,12 @@ func (m *Model) View() string {
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
-			if i == m.cursor && m.focused {
-				cursor = styleCursor.Render("▶ ")
+			if i == m.cursor {
+				if m.focused {
+					cursor = styleCursor.Render("▶ ")
+				} else {
+					cursor = lipgloss.NewStyle().Faint(true).Render("▶ ")
+				}
 			}
 			// Highlight current window
 			label := fmt.Sprintf("%d: %s", item.Window.Index, item.Window.Name)

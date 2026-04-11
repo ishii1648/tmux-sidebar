@@ -31,17 +31,10 @@ Subcommands:
   toggle          Open sidebar if closed, close if open
   focus-or-open   Focus sidebar if open, open if closed
   focus-sidebar   Move focus to the sidebar pane
-  focus-guard     after-select-pane hook: prevent accidental sidebar focus
   doctor [--yes]  Check tmux configuration; --yes to auto-apply fixes
   version         Print version
 
 `)
-			return
-		case "focus-guard":
-			if err := runFocusGuard(); err != nil {
-				fmt.Fprintf(os.Stderr, "tmux-sidebar focus-guard: %v\n", err)
-				os.Exit(1)
-			}
 			return
 		case "focus-sidebar":
 			if err := runFocusSidebar(); err != nil {
@@ -116,40 +109,7 @@ Subcommands:
 	}
 }
 
-// runFocusGuard is the after-select-pane hook handler.
-// If the currently focused pane has the custom option @pane_role set to
-// "sidebar", it immediately switches back to the previously active pane so
-// that normal cursor movement skips the sidebar pane.
-//
-// Intentional focus via "tmux-sidebar focus-sidebar" is allowed: that
-// subcommand sets the session option @sidebar_focus_requested=1 before
-// calling select-pane, and this guard clears the flag and exits without
-// redirecting.
-//
-// Usage in tmux.conf:
-//
-//	set-hook -g after-select-pane 'run-shell "tmux-sidebar focus-guard"'
-func runFocusGuard() error {
-	out, err := exec.Command("tmux", "display-message", "-p", "#{@pane_role}").Output()
-	if err != nil {
-		// Not inside a tmux session — nothing to do.
-		return nil
-	}
-	if strings.TrimSpace(string(out)) == "sidebar" {
-		// Allow intentional focus set by runFocusSidebar.
-		flagOut, _ := exec.Command("tmux", "display-message", "-p", "#{@sidebar_focus_requested}").Output()
-		if strings.TrimSpace(string(flagOut)) == "1" {
-			exec.Command("tmux", "set-option", "-g", "-u", "@sidebar_focus_requested").Run() //nolint:errcheck
-			return nil
-		}
-		return exec.Command("tmux", "select-pane", "-l").Run()
-	}
-	return nil
-}
-
 // runFocusSidebar focuses the sidebar pane in the current window.
-// It sets the session option @sidebar_focus_requested so that focus-guard
-// allows the focus rather than immediately redirecting back.
 //
 // Usage in tmux.conf (bind to any key, e.g. via a terminal-emulator mapping):
 //
@@ -171,13 +131,7 @@ func runFocusSidebar() error {
 		// No sidebar in this window — nothing to do.
 		return nil
 	}
-	if err := exec.Command("tmux", "set-option", "-g", "@sidebar_focus_requested", "1").Run(); err != nil {
-		return fmt.Errorf("set flag: %w", err)
-	}
-	if err := exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run(); err != nil {
-		return fmt.Errorf("select-pane: %w", err)
-	}
-	return exec.Command("tmux", "set-option", "-g", "-u", "@sidebar_focus_requested").Run()
+	return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
 }
 
 // runFocusOrOpen focuses the sidebar pane if it exists, or opens a new one and
@@ -215,15 +169,7 @@ func runFocusOrOpen() error {
 		}
 	}
 	// Sidebar is open → focus it.
-	// select-pane してフラグを即座にクリア（after-select-window の focus-guard が
-	// フラグを見てサイドバーへのフォーカスを「許可」し続けないようにするため）
-	if err := exec.Command("tmux", "set-option", "-g", "@sidebar_focus_requested", "1").Run(); err != nil {
-		return fmt.Errorf("set flag: %w", err)
-	}
-	if err := exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run(); err != nil {
-		return fmt.Errorf("select-pane: %w", err)
-	}
-	return exec.Command("tmux", "set-option", "-g", "-u", "@sidebar_focus_requested").Run()
+	return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
 }
 
 // runToggleSidebar opens the sidebar if it does not exist, or closes it if it does.

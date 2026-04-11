@@ -14,9 +14,29 @@ import (
 	"github.com/ishii1648/tmux-sidebar/internal/ui"
 )
 
+// version is set at build time via -ldflags "-X main.version=x.y.z".
+var version = "dev"
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "version", "--version":
+			fmt.Println("tmux-sidebar", version)
+			return
+		case "--help", "-h":
+			fmt.Print(`Usage: tmux-sidebar [subcommand]
+
+Subcommands:
+  (none)          Start the TUI sidebar
+  toggle          Open sidebar if closed, close if open
+  focus-or-open   Focus sidebar if open, open if closed
+  focus-sidebar   Move focus to the sidebar pane
+  focus-guard     after-select-pane hook: prevent accidental sidebar focus
+  doctor [--yes]  Check tmux configuration; --yes to auto-apply fixes
+  version         Print version
+
+`)
+			return
 		case "focus-guard":
 			if err := runFocusGuard(); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar focus-guard: %v\n", err)

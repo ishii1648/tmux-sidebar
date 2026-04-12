@@ -73,14 +73,6 @@ set-hook -g after-select-window \
 set-hook -g client-session-changed \
   'if -F "#{==:#{@pane_role},sidebar}" "select-pane -R" ""'
 
-# ペイン選択時: sidebar に当たったら直前のペインへ戻す
-# @_sb_guard: select-pane -l による after-select-pane の連鎖発火を防ぐ
-set-hook -g after-select-pane \
-  'if -F "#{@_sb_guard}" \
-    "set-option -wu @_sb_guard" \
-    "if -F \"#{==:#{@pane_role},sidebar}\" \
-      \"set-option -w @_sb_guard 1 ; select-pane -l\" \
-      \"\""'
 ```
 
 ### 3. サイドバーのみ残ったウィンドウの自動削除（推奨）
@@ -113,30 +105,10 @@ bind-key e run-shell 'tmux-sidebar toggle'
 
 ```tmux
 # サイドバーがなければ作成してフォーカス、あればフォーカス移動
-# @sidebar_focus_intended を設定することで after-select-pane の誤フォーカス防止を回避する
-bind-key -n <key> run-shell 'tmux set-option -w @sidebar_focus_intended 1 ; tmux-sidebar focus-or-open'
+bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 ```
 
 > `<key>` は端末エミュレータ側で割り当てた escape sequence に合わせて変更してください。
-
-`focus-or-open` を使う場合は `after-select-pane` hook で `@sidebar_focus_intended` フラグを考慮する必要があります:
-
-```tmux
-# ペイン選択時:
-#   @_sb_guard=1 → select-pane -l による連鎖発火（ガードをクリアして終了）
-#   @sidebar_focus_intended=1 → 意図的なフォーカス（フラグをクリアしてキープ）
-#   それ以外 → 直前のペインへ戻す
-set-hook -g after-select-pane \
-  'if -F "#{@_sb_guard}" \
-    "set-option -wu @_sb_guard" \
-    "if -F \"#{==:#{@pane_role},sidebar}\" \
-      \"if -F \\\"#{@sidebar_focus_intended}\\\" \
-        \\\"set-option -wu @sidebar_focus_intended\\\" \
-        \\\"set-option -w @_sb_guard 1 ; select-pane -l\\\"\" \
-      \"\""'
-```
-
-> この hook はセクション 2 の簡易版 `after-select-pane` を**置き換えて**使用してください。
 
 ### 7. Claude Code の状態ファイル（任意）
 

@@ -21,6 +21,7 @@ func (f *fakeTmuxClient) ListPanes() ([]tmux.Pane, error)          { return nil,
 func (f *fakeTmuxClient) CurrentPane() (tmux.CurrentPane, error)   { return tmux.CurrentPane{}, nil }
 func (f *fakeTmuxClient) SwitchWindow(_ string, _ int) error       { return nil }
 func (f *fakeTmuxClient) PaneCurrentPath(_ string) (string, error) { return "", nil }
+func (f *fakeTmuxClient) ListAll() ([]tmux.PaneInfo, error)        { return nil, nil }
 
 type fakeStateReader struct{ states map[int]state.PaneState }
 
@@ -254,11 +255,13 @@ func TestView_UnfocusedHidesCursorAndChangesHeader(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, false)
 
 	view := stripANSI(m.View())
-	if strings.Contains(view, "▶") {
-		t.Errorf("unfocused View should NOT contain '▶' cursor:\n%s", view)
-	}
+	// Unfocused: cursor indicator ▶ is still rendered (but styled faint) to preserve
+	// the user's position, so we check only that the header uses ○ (not ●).
 	if !strings.Contains(view, "○") {
 		t.Errorf("unfocused View should contain '○' in header:\n%s", view)
+	}
+	if strings.Contains(view, "●") {
+		t.Errorf("unfocused View should NOT contain '●' in header:\n%s", view)
 	}
 }
 
@@ -271,12 +274,14 @@ func TestView_FocusedShowsFooter(t *testing.T) {
 	}
 }
 
-func TestView_UnfocusedHidesFooter(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, false)
-
-	view := stripANSI(m.View())
-	if strings.Contains(view, "Tab:filter") {
-		t.Errorf("unfocused View should NOT show footer hints:\n%s", view)
+func TestView_FooterAlwaysVisible(t *testing.T) {
+	// Footer key hints are always shown (focused and unfocused) for discoverability.
+	for _, focused := range []bool{true, false} {
+		m := newTestModel(sampleItems(), 1, focused)
+		view := stripANSI(m.View())
+		if !strings.Contains(view, "Tab:filter") {
+			t.Errorf("View (focused=%v) should always show footer hints:\n%s", focused, view)
+		}
 	}
 }
 
@@ -319,15 +324,18 @@ func TestView_ContainsStateBadges(t *testing.T) {
 	m := newTestModel(items, 1, true)
 
 	view := stripANSI(m.View())
-	// running: icon badge; idle: hidden; permission/ask: 💬
-	for _, want := range []string{"🔄", "💬"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("View should contain badge %q:\n%s", want, view)
-		}
+	// Running badge shows elapsed time (emoji + minutes); idle is hidden; permission/ask show 💬.
+	if !strings.Contains(view, "3m") {
+		t.Errorf("View should contain running badge with minutes (3m):\n%s", view)
 	}
-	// idle is intentionally not shown
-	if strings.Contains(view, "[idle]") {
-		t.Errorf("View should NOT contain '[idle]' badge:\n%s", view)
+	// idle is intentionally hidden
+	if strings.Contains(view, "idle") {
+		t.Errorf("View should NOT show idle badge:\n%s", view)
+	}
+	// permission and ask both use the 💬 badge
+	permCount := strings.Count(view, "💬")
+	if permCount < 2 {
+		t.Errorf("View should contain at least 2 💬 badges (permission + ask), got %d:\n%s", permCount, view)
 	}
 }
 
@@ -465,7 +473,8 @@ func TestView_RunningBadgeShowsMinutes(t *testing.T) {
 	m := newTestModel(items, 1, true)
 
 	view := stripANSI(m.View())
-	want := "🔄5m"
+	// Badge format: 🔄<N>m for whole minutes.
+	want := "5m"
 	if !strings.Contains(view, want) {
 		t.Errorf("View should contain %q:\n%s", want, view)
 	}

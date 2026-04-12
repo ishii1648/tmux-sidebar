@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/fsnotify/fsnotify"
 	"github.com/ishii1648/tmux-sidebar/internal/doctor"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
@@ -110,7 +113,13 @@ Subcommands:
 	// Useful for testing or non-standard environments.
 	sr := state.NewFSReader(os.Getenv("TMUX_SIDEBAR_STATE_DIR"))
 
-	model := ui.New(tc, sr, width)
+	// Determine our own window ID once at startup; it never changes while running.
+	currentWinID := ""
+	if cur, err := tc.CurrentPane(); err == nil {
+		currentWinID = cur.WindowID
+	}
+
+	model := ui.New(tc, sr, width, currentWinID)
 
 	// Prevent tmux from greying out the sidebar pane when it loses focus.
 	// window-style is set at pane level so only this pane is affected; the
@@ -126,6 +135,14 @@ Subcommands:
 		}()
 	}
 
+	// Write PID file so tmux hooks can send SIGUSR1 to notify of window changes.
+	pidFile := ""
+	if paneID != "" {
+		pidFile = "/tmp/tmux-sidebar-" + strings.TrimPrefix(paneID, "%") + ".pid"
+		_ = os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
+		defer os.Remove(pidFile)
+	}
+
 	var opts []tea.ProgramOption
 	// TMUX_SIDEBAR_NO_ALT_SCREEN disables alt-screen mode (used in E2E tests
 	// so that tmux capture-pane can read the sidebar output directly).
@@ -137,6 +154,47 @@ Subcommands:
 	opts = append(opts, tea.WithReportFocus())
 
 	p := tea.NewProgram(model, opts...)
+
+	// fsnotify: watch the state directory and forward changes to bubbletea.
+	stateDir := os.Getenv("TMUX_SIDEBAR_STATE_DIR")
+	if stateDir == "" {
+		stateDir = state.DefaultStateDir
+	}
+	if watcher, err := fsnotify.NewWatcher(); err == nil {
+		// Ensure the directory exists before watching (hooks may not have run yet).
+		_ = os.MkdirAll(stateDir, 0o755)
+		if watchErr := watcher.Add(stateDir); watchErr == nil {
+			go func() {
+				defer watcher.Close()
+				for {
+					select {
+					case _, ok := <-watcher.Events:
+						if !ok {
+							return
+						}
+						p.Send(ui.StateChangedMsg{})
+					case _, ok := <-watcher.Errors:
+						if !ok {
+							return
+						}
+					}
+				}
+			}()
+		} else {
+			watcher.Close()
+		}
+	}
+
+	// SIGUSR1: sent by tmux hooks when windows are added/removed.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGUSR1)
+	go func() {
+		for range sigCh {
+			p.Send(ui.TmuxChangedMsg{})
+		}
+	}()
+	defer signal.Stop(sigCh)
+
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "tmux-sidebar: %v\n", err)
 		os.Exit(1)

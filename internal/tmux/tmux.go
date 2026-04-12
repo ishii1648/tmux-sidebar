@@ -45,6 +45,18 @@ type CurrentPane struct {
 	PaneID    string
 }
 
+// PaneInfo holds combined session/window/pane data from a single tmux list-panes query.
+type PaneInfo struct {
+	SessionID   string
+	SessionName string
+	WindowID    string
+	WindowIndex int
+	WindowName  string
+	PaneID      string
+	PaneIndex   int
+	PaneNumber  int
+}
+
 // Client is the interface for interacting with tmux.
 type Client interface {
 	ListSessions() ([]Session, error)
@@ -55,6 +67,8 @@ type Client interface {
 	// PaneCurrentPath returns the current working directory of the active pane
 	// in the given window. windowID should be in tmux window ID format (e.g. "@1").
 	PaneCurrentPath(windowID string) (string, error)
+	// ListAll returns all session/window/pane information in a single tmux call.
+	ListAll() ([]PaneInfo, error)
 }
 
 // ExecClient implements Client by running tmux subcommands via exec.Command.
@@ -216,4 +230,53 @@ func (c *ExecClient) SwitchWindow(sessionName string, windowIndex int) error {
 // PaneCurrentPath returns the current working directory of the active pane in the given window.
 func (c *ExecClient) PaneCurrentPath(windowID string) (string, error) {
 	return runTmux("display-message", "-t", windowID, "-p", "#{pane_current_path}")
+}
+
+// parseAllPanes parses the output of `tmux list-panes -a` with 7 fields.
+func parseAllPanes(out string) []PaneInfo {
+	if out == "" {
+		return nil
+	}
+	var panes []PaneInfo
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.Split(line, tmuxDelim)
+		if len(parts) != 7 {
+			continue
+		}
+		winIdx, err := strconv.Atoi(parts[3])
+		if err != nil {
+			continue
+		}
+		paneIdx, err := strconv.Atoi(parts[6])
+		if err != nil {
+			continue
+		}
+		paneID := parts[5]
+		num := 0
+		if len(paneID) > 1 && paneID[0] == '%' {
+			num, _ = strconv.Atoi(paneID[1:])
+		}
+		panes = append(panes, PaneInfo{
+			SessionID:   parts[0],
+			SessionName: parts[1],
+			WindowID:    parts[2],
+			WindowIndex: winIdx,
+			WindowName:  parts[4],
+			PaneID:      paneID,
+			PaneIndex:   paneIdx,
+			PaneNumber:  num,
+		})
+	}
+	return panes
+}
+
+// ListAll returns all session/window/pane information in a single tmux list-panes call.
+func (c *ExecClient) ListAll() ([]PaneInfo, error) {
+	out, err := runTmux("list-panes", "-a", "-F",
+		"#{session_id}"+tmuxDelim+"#{session_name}"+tmuxDelim+"#{window_id}"+tmuxDelim+
+			"#{window_index}"+tmuxDelim+"#{window_name}"+tmuxDelim+"#{pane_id}"+tmuxDelim+"#{pane_index}")
+	if err != nil {
+		return nil, err
+	}
+	return parseAllPanes(out), nil
 }

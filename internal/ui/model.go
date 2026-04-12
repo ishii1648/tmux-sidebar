@@ -4,7 +4,6 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -60,14 +59,25 @@ type gitInfo struct {
 
 // Message types.
 
-// tickMsg is sent by the 1-second polling ticker.
-type tickMsg time.Time
+// StateChangedMsg is sent (from main via p.Send) when a state file changes.
+type StateChangedMsg struct{}
+
+// TmuxChangedMsg is sent (from main via p.Send) when tmux window layout changes.
+type TmuxChangedMsg struct{}
+
+// minuteTickMsg is sent by the 1-minute ticker to refresh running-badge elapsed time.
+type minuteTickMsg time.Time
 
 // dataMsg carries refreshed tmux/state data.
 type dataMsg struct {
-	items        []ListItem
-	currentWinID string
-	err          error
+	items       []ListItem
+	winPaneNums map[string][]int // windowID → pane numbers (for state-only updates)
+	err         error
+}
+
+// stateOnlyMsg carries a refreshed state map without touching tmux.
+type stateOnlyMsg struct {
+	stateMap map[int]state.PaneState
 }
 
 // switchWindowMsg is sent when the user presses Enter on a window row.
@@ -76,16 +86,9 @@ type switchWindowMsg struct {
 	windowIndex int
 }
 
-// cursorTickMsg is sent by the 200ms cursor-sync ticker.
-type cursorTickMsg time.Time
-
-// currentWinMsg carries the refreshed active window ID.
-type currentWinMsg struct {
-	currentWinID string
-}
-
 // gitTickMsg is sent by the 10-second git polling ticker.
 type gitTickMsg time.Time
+
 
 // gitDataMsg carries refreshed git/PR info for all visible windows.
 type gitDataMsg struct {
@@ -114,44 +117,45 @@ type Model struct {
 	tmuxClient   tmux.Client
 	stateReader  state.Reader
 	items        []ListItem
-	cursor       int    // index into visibleItems()
-	currentWinID string // window ID of the pane running this process
+	winPaneNums  map[string][]int  // windowID → pane numbers; updated by loadData
+	cursor       int               // index into visibleItems()
+	currentWinID string            // window ID of the pane running this process
 	filter       FilterMode
 	width        int
 	err          error
 	gitData      map[string]gitInfo // keyed by window ID
 	focused      bool               // true when this pane has terminal focus
-	passive      bool               // true when user pressed q to pause interaction
 }
 
-// New creates a new Model.
-func New(tc tmux.Client, sr state.Reader, width int) *Model {
-	// TMUX_SIDEBAR_FORCE_FOCUS=1 bypasses terminal focus events (used in e2e tests
-	// where isolated tmux servers have no attached client and cannot send focus events).
-	forceFocus := os.Getenv("TMUX_SIDEBAR_FORCE_FOCUS") != ""
+// New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
+// it is determined once at startup and never changes.
+func New(tc tmux.Client, sr state.Reader, width int, currentWinID string) *Model {
 	return &Model{
-		tmuxClient:  tc,
-		stateReader: sr,
-		width:       width,
-		gitData:     map[string]gitInfo{},
-		focused:     forceFocus,
+		tmuxClient:   tc,
+		stateReader:  sr,
+		width:        width,
+		gitData:      map[string]gitInfo{},
+		winPaneNums:  map[string][]int{},
+		focused:      false, // start unfocused; becomes true only when FocusMsg arrives
+		currentWinID: currentWinID,
 	}
 }
 
-// Init starts the first data load, the 1-second ticker, and the 10-second git ticker.
+// Init starts the first data load, the 1-minute badge-refresh ticker, and the 10-second git ticker.
+// Live updates arrive via StateChangedMsg (fsnotify) and TmuxChangedMsg (SIGUSR1)
+// injected by main through tea.Program.Send — no polling needed.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadData(),
-		tickCmd(),
+		minuteTickCmd(),
 		m.loadGitInfo(),
 		gitTickCmd(),
-		cursorTickCmd(),
 	)
 }
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
-		return tickMsg(t)
+func minuteTickCmd() tea.Cmd {
+	return tea.Tick(time.Minute, func(t time.Time) tea.Msg {
+		return minuteTickMsg(t)
 	})
 }
 
@@ -161,30 +165,9 @@ func gitTickCmd() tea.Cmd {
 	})
 }
 
-func cursorTickCmd() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
-		return cursorTickMsg(t)
-	})
-}
-
-func (m *Model) loadCurrentWin() tea.Cmd {
-	return func() tea.Msg {
-		cur, _ := m.tmuxClient.CurrentPane()
-		return currentWinMsg{currentWinID: cur.WindowID}
-	}
-}
-
 func (m *Model) loadData() tea.Cmd {
 	return func() tea.Msg {
-		sessions, err := m.tmuxClient.ListSessions()
-		if err != nil {
-			return dataMsg{err: err}
-		}
-		windows, err := m.tmuxClient.ListWindows()
-		if err != nil {
-			return dataMsg{err: err}
-		}
-		panes, err := m.tmuxClient.ListPanes()
+		allPanes, err := m.tmuxClient.ListAll()
 		if err != nil {
 			return dataMsg{err: err}
 		}
@@ -194,44 +177,60 @@ func (m *Model) loadData() tea.Cmd {
 			stateMap = map[int]state.PaneState{}
 		}
 
-		// Build window→paneNumbers map
-		winPanes := map[string][]int{} // windowID → pane numbers
-		for _, p := range panes {
-			winPanes[p.WindowID] = append(winPanes[p.WindowID], p.Number)
+		// Collect session order and names (first occurrence wins)
+		var sessionOrder []string
+		sessionSeen := map[string]bool{}
+		sessionNames := map[string]string{}
+		for _, p := range allPanes {
+			if !sessionSeen[p.SessionID] {
+				sessionSeen[p.SessionID] = true
+				sessionOrder = append(sessionOrder, p.SessionID)
+				sessionNames[p.SessionID] = p.SessionName
+			}
 		}
 
-		// Build session→windows map preserving order
-		sessionOrder := make([]string, 0, len(sessions))
-		sessionMap := map[string]tmux.Session{}
-		for _, s := range sessions {
-			sessionOrder = append(sessionOrder, s.ID)
-			sessionMap[s.ID] = s
+		// Build window→pane numbers map
+		winPanes := map[string][]int{}
+		for _, p := range allPanes {
+			winPanes[p.WindowID] = append(winPanes[p.WindowID], p.PaneNumber)
 		}
 
-		winBySession := map[string][]tmux.Window{}
-		for _, w := range windows {
-			winBySession[w.SessionID] = append(winBySession[w.SessionID], w)
+		// Collect window info per session, preserving order
+		winOrder := map[string][]string{}
+		winSeen := map[string]bool{}
+		winInfo := map[string]tmux.Window{}
+		for _, p := range allPanes {
+			if !winSeen[p.WindowID] {
+				winSeen[p.WindowID] = true
+				winOrder[p.SessionID] = append(winOrder[p.SessionID], p.WindowID)
+				winInfo[p.WindowID] = tmux.Window{
+					SessionID:   p.SessionID,
+					SessionName: p.SessionName,
+					ID:          p.WindowID,
+					Index:       p.WindowIndex,
+					Name:        p.WindowName,
+				}
+			}
 		}
 
 		var items []ListItem
 		for _, sid := range sessionOrder {
-			s := sessionMap[sid]
-			if s.Name == "main" {
+			sname := sessionNames[sid]
+			if sname == "main" {
 				continue
 			}
 			items = append(items, ListItem{
 				Kind:        ItemSession,
-				SessionName: s.Name,
+				SessionName: sname,
 			})
-			for i := range winBySession[sid] {
-				w := winBySession[sid][i]
+			for _, wid := range winOrder[sid] {
+				w := winInfo[wid]
 				item := ListItem{
 					Kind:        ItemWindow,
-					SessionName: s.Name,
+					SessionName: sname,
 					Window:      &w,
 				}
-				// Check if any pane in this window has state
-				for _, num := range winPanes[w.ID] {
+				for _, num := range winPanes[wid] {
 					if ps, ok := stateMap[num]; ok {
 						psCopy := ps
 						item.PaneState = &psCopy
@@ -242,7 +241,15 @@ func (m *Model) loadData() tea.Cmd {
 			}
 		}
 
-		return dataMsg{items: items}
+		return dataMsg{items: items, winPaneNums: winPanes}
+	}
+}
+
+// loadStateOnly reads state files without spawning any tmux process.
+func (m *Model) loadStateOnly() tea.Cmd {
+	return func() tea.Msg {
+		stateMap, _ := m.stateReader.Read()
+		return stateOnlyMsg{stateMap: stateMap}
 	}
 }
 
@@ -390,8 +397,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case tickMsg:
-		return m, tea.Batch(m.loadData(), tickCmd())
+	case TmuxChangedMsg:
+		// tmux window layout changed (SIGUSR1) — reload tmux + state together.
+		return m, m.loadData()
+
+	case StateChangedMsg:
+		// A state file changed (fsnotify) — reload state only, no tmux process.
+		return m, m.loadStateOnly()
+
+	case minuteTickMsg:
+		// Refresh running-badge elapsed time (changes at most once per minute).
+		return m, tea.Batch(m.loadStateOnly(), minuteTickCmd())
 
 	case dataMsg:
 		if msg.err != nil {
@@ -399,9 +415,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.items = msg.items
+		m.winPaneNums = msg.winPaneNums
 		m.err = nil
-		// currentWinID is managed solely by currentWinMsg (loadCurrentWin 200ms poll).
-		// Just clamp cursor to valid range after items update.
+		// Clamp cursor to the visible list
 		maxCursor := m.maxWindowIndex()
 		if m.cursor > maxCursor {
 			m.cursor = maxCursor
@@ -412,13 +428,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case cursorTickMsg:
-		return m, tea.Batch(m.loadCurrentWin(), cursorTickCmd())
-
-	case currentWinMsg:
-		if msg.currentWinID != "" && msg.currentWinID != m.currentWinID {
-			m.currentWinID = msg.currentWinID
-			m.syncCursorToActiveWindow()
+	case stateOnlyMsg:
+		// Update PaneState on each window item using the cached pane-number map.
+		for i, item := range m.items {
+			if item.Kind != ItemWindow || item.Window == nil {
+				continue
+			}
+			m.items[i].PaneState = nil
+			for _, num := range m.winPaneNums[item.Window.ID] {
+				if ps, ok := msg.stateMap[num]; ok {
+					psCopy := ps
+					m.items[i].PaneState = &psCopy
+					break
+				}
+			}
 		}
 		return m, nil
 
@@ -454,20 +477,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if !m.focused {
-		return m, nil
-	}
-
-	// q/i toggle passive mode regardless of other state.
-	switch msg.String() {
-	case "q":
-		m.passive = true
-		return m, nil
-	case "i":
-		m.passive = false
-		return m, nil
-	}
-
-	if m.passive {
 		return m, nil
 	}
 
@@ -525,24 +534,6 @@ func (m *Model) resetCursorToFirstWindow() {
 		}
 	}
 	m.cursor = 0
-}
-
-// syncCursorToActiveWindow sets the cursor to the currently active tmux window.
-func (m *Model) syncCursorToActiveWindow() {
-	visible := m.visibleItems()
-	for i, item := range visible {
-		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.currentWinID {
-			m.cursor = i
-			return
-		}
-	}
-	// Fallback: clamp cursor to valid range
-	if m.cursor >= len(visible) {
-		m.cursor = len(visible) - 1
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
 }
 
 // switchSelected builds a Cmd that switches to the currently selected window.
@@ -605,8 +596,12 @@ func (m *Model) View() string {
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
-			if i == m.cursor && m.focused && !m.passive {
-				cursor = styleCursor.Render("▶ ")
+			if i == m.cursor {
+				if m.focused {
+					cursor = styleCursor.Render("▶ ")
+				} else {
+					cursor = lipgloss.NewStyle().Faint(true).Render("▶ ")
+				}
 			}
 			// Build suffix: badge + PR (right side, fixed width)
 			suffix := ""
@@ -628,31 +623,23 @@ func (m *Model) View() string {
 				name = name[:available]
 			}
 			label := prefix + name
+			if item.Window.ID == m.currentWinID {
+				label = lipgloss.NewStyle().Underline(true).Render(label)
+			}
 			sb.WriteString(cursor + styleWindow.Render(label+suffix) + "\n")
 		}
 	}
 
-	// Footer: show passive hint or key hints depending on state
-	if m.passive {
-		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("[i] to activate") + "\n")
-	} else if m.focused {
-		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
-	}
+	// Footer: always show key hints
+	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
 	return sb.String()
 }
 
 func renderBadge(ps *state.PaneState) string {
 	switch ps.Status {
 	case state.StatusRunning:
-		var text string
-		if ps.Elapsed < time.Minute {
-			secs := int(ps.Elapsed.Seconds())
-			text = fmt.Sprintf("🔄%ds", secs)
-		} else {
-			mins := int(ps.Elapsed.Minutes())
-			text = fmt.Sprintf("🔄%dm", mins)
-		}
-		return styleBadgeRun.Render(text)
+		mins := int(ps.Elapsed.Minutes())
+		return styleBadgeRun.Render(fmt.Sprintf("🔄%dm", mins))
 	case state.StatusIdle:
 		return "" // idle は非表示
 	case state.StatusPermission:

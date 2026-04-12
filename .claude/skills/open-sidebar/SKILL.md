@@ -2,7 +2,7 @@
 name: open-sidebar
 description: current tmux window にサイドバーを表示する。既存サイドバーがあれば kill してから再表示し、sidebar_id を設定する。
 argument-hint: ""
-version: 0.1.0
+version: 0.1.1
 ---
 
 # open-sidebar

@@ -628,9 +628,6 @@ func (m *Model) View() string {
 				name = name[:available]
 			}
 			label := prefix + name
-			if item.Window.ID == m.currentWinID {
-				label = lipgloss.NewStyle().Underline(true).Render(label)
-			}
 			sb.WriteString(cursor + styleWindow.Render(label+suffix) + "\n")
 		}
 	}

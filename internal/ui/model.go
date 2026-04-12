@@ -193,7 +193,18 @@ func (m *Model) loadData() tea.Cmd {
 			// Non-fatal: show empty state
 			stateMap = map[int]state.PaneState{}
 		}
-		cur, _ := m.tmuxClient.CurrentPane()
+
+		// Determine current window without calling display-message, which hangs on
+		// Linux tmux 3.4 when no client is attached. Instead, look up TMUX_PANE in
+		// the already-fetched panes list — no extra tmux round-trip needed.
+		ownPaneID := os.Getenv("TMUX_PANE")
+		var curWindowID string
+		for _, p := range panes {
+			if p.ID == ownPaneID {
+				curWindowID = p.WindowID
+				break
+			}
+		}
 
 		// Build window→paneNumbers map
 		winPanes := map[string][]int{} // windowID → pane numbers
@@ -243,7 +254,7 @@ func (m *Model) loadData() tea.Cmd {
 			}
 		}
 
-		return dataMsg{items: items, currentWinID: cur.WindowID}
+		return dataMsg{items: items, currentWinID: curWindowID}
 	}
 }
 

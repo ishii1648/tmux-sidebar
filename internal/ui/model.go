@@ -51,10 +51,11 @@ type ListItem struct {
 
 // gitInfo holds cached git/PR information for a window.
 type gitInfo struct {
-	branch   string
-	ahead    int    // number of commits ahead of origin/HEAD
-	prState  string // "open", "draft", "merged", or ""
-	prNumber int    // 0 if no PR
+	branch      string
+	ahead       int       // number of commits ahead of origin/HEAD
+	prState     string    // "open", "draft", "merged", or ""
+	prNumber    int       // 0 if no PR
+	prFetchedAt time.Time // when gh pr view was last called (zero means never)
 }
 
 // Message types.
@@ -324,10 +325,13 @@ func fetchGitInfo(client tmux.Client, item ListItem, old gitInfo) gitInfo {
 
 	info := gitInfo{branch: branch, ahead: ahead}
 
-	// Reuse cached PR data when branch is unchanged to avoid redundant API calls.
-	if branch == old.branch {
+	// Reuse cached PR data when branch is unchanged or fetched recently (< 5 min).
+	// gh pr view is an API call (1-2s) so we avoid calling it on every 10s tick.
+	prCacheTTL := 5 * time.Minute
+	if old.prFetchedAt.IsZero() == false && time.Since(old.prFetchedAt) < prCacheTTL && branch == old.branch {
 		info.prState = old.prState
 		info.prNumber = old.prNumber
+		info.prFetchedAt = old.prFetchedAt
 		return info
 	}
 
@@ -350,6 +354,7 @@ func fetchGitInfo(client tmux.Client, item ListItem, old gitInfo) gitInfo {
 			}
 		}
 	}
+	info.prFetchedAt = time.Now()
 
 	return info
 }

@@ -69,6 +69,10 @@ type Client interface {
 	PaneCurrentPath(windowID string) (string, error)
 	// ListAll returns all session/window/pane information in a single tmux call.
 	ListAll() ([]PaneInfo, error)
+	// KillSession kills the specified tmux session.
+	KillSession(sessionName string) error
+	// KillWindow kills the specified tmux window.
+	KillWindow(sessionName string, windowIndex int) error
 }
 
 // ExecClient implements Client by running tmux subcommands via exec.Command.
@@ -268,6 +272,19 @@ func parseAllPanes(out string) []PaneInfo {
 		})
 	}
 	return panes
+}
+
+// KillSession kills the specified tmux session.
+func (c *ExecClient) KillSession(sessionName string) error {
+	_, err := runTmux("kill-session", "-t", sessionName)
+	return err
+}
+
+// KillWindow kills the specified tmux window.
+func (c *ExecClient) KillWindow(sessionName string, windowIndex int) error {
+	target := fmt.Sprintf("%s:%d", sessionName, windowIndex)
+	_, err := runTmux("kill-window", "-t", target)
+	return err
 }
 
 // ListAll returns all session/window/pane information in a single tmux list-panes call.

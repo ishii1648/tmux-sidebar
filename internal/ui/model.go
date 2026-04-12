@@ -51,10 +51,11 @@ type ListItem struct {
 
 // gitInfo holds cached git/PR information for a window.
 type gitInfo struct {
-	branch   string
-	ahead    int    // number of commits ahead of origin/HEAD
-	prState  string // "open", "draft", "merged", or ""
-	prNumber int    // 0 if no PR
+	branch      string
+	ahead       int       // number of commits ahead of origin/HEAD
+	prState     string    // "open", "draft", "merged", or ""
+	prNumber    int       // 0 if no PR
+	prFetchedAt time.Time // when gh pr view was last called (zero means never)
 }
 
 // Message types.
@@ -89,6 +90,12 @@ type switchWindowMsg struct {
 // gitTickMsg is sent by the 10-second git polling ticker.
 type gitTickMsg time.Time
 
+
+// deleteWindowMsg is sent when the user confirms deletion of the selected window.
+type deleteWindowMsg struct {
+	sessionName string
+	windowIndex int
+}
 
 // gitDataMsg carries refreshed git/PR info for all visible windows.
 type gitDataMsg struct {
@@ -128,6 +135,7 @@ type Model struct {
 	gitData      map[string]gitInfo // keyed by window ID
 	focused      bool               // true when this pane has terminal focus
 	searchQuery  string             // current search query text (always-on incremental filter)
+	confirmDelete *deleteWindowMsg  // non-nil when awaiting delete confirmation
 }
 
 // New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
@@ -317,10 +325,13 @@ func fetchGitInfo(client tmux.Client, item ListItem, old gitInfo) gitInfo {
 
 	info := gitInfo{branch: branch, ahead: ahead}
 
-	// Reuse cached PR data when branch is unchanged to avoid redundant API calls.
-	if branch == old.branch {
+	// Reuse cached PR data when branch is unchanged or fetched recently (< 5 min).
+	// gh pr view is an API call (1-2s) so we avoid calling it on every 10s tick.
+	prCacheTTL := 5 * time.Minute
+	if old.prFetchedAt.IsZero() == false && time.Since(old.prFetchedAt) < prCacheTTL && branch == old.branch {
 		info.prState = old.prState
 		info.prNumber = old.prNumber
+		info.prFetchedAt = old.prFetchedAt
 		return info
 	}
 
@@ -343,6 +354,7 @@ func fetchGitInfo(client tmux.Client, item ListItem, old gitInfo) gitInfo {
 			}
 		}
 	}
+	info.prFetchedAt = time.Now()
 
 	return info
 }
@@ -471,6 +483,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.gitData = msg.data
 		return m, nil
 
+	case deleteWindowMsg:
+		return m, func() tea.Msg {
+			_ = m.tmuxClient.KillWindow(msg.sessionName, msg.windowIndex)
+			return nil
+		}
+
 	case switchWindowMsg:
 		return m, func() tea.Msg {
 			_ = m.tmuxClient.SwitchWindow(msg.sessionName, msg.windowIndex)
@@ -498,6 +516,24 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if !m.focused {
+		return m, nil
+	}
+
+	// Confirmation mode: only y/n/Esc are accepted
+	if m.confirmDelete != nil {
+		switch msg.String() {
+		case "y":
+			del := m.confirmDelete
+			m.confirmDelete = nil
+			return m, func() tea.Msg {
+				return deleteWindowMsg{
+					sessionName: del.sessionName,
+					windowIndex: del.windowIndex,
+				}
+			}
+		case "n", "esc":
+			m.confirmDelete = nil
+		}
 		return m, nil
 	}
 
@@ -534,7 +570,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyRunes:
 		r := msg.Runes
-		// j/k navigation only when search is empty
+		// j/k/d keys only when search is empty
 		if m.searchQuery == "" && len(r) == 1 {
 			switch r[0] {
 			case 'j':
@@ -542,6 +578,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case 'k':
 				m.moveCursor(-1)
+				return m, nil
+			case 'd':
+				m.promptDeleteSelectedWindow()
 				return m, nil
 			}
 		}
@@ -671,6 +710,22 @@ func (m *Model) switchSelected() tea.Cmd {
 	}
 }
 
+// promptDeleteSelectedWindow sets confirmDelete to prompt the user before killing the selected window.
+func (m *Model) promptDeleteSelectedWindow() {
+	visible := m.visibleItems()
+	if m.cursor >= len(visible) {
+		return
+	}
+	item := visible[m.cursor]
+	if item.Kind != ItemWindow || item.Window == nil {
+		return
+	}
+	m.confirmDelete = &deleteWindowMsg{
+		sessionName: item.SessionName,
+		windowIndex: item.Window.Index,
+	}
+}
+
 // View renders the sidebar.
 func (m *Model) View() string {
 	if m.err != nil {
@@ -704,11 +759,9 @@ func (m *Model) View() string {
 		sb.WriteString(faintSep + "\n")
 		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("> ") + m.searchQuery + "▏\n")
 		sb.WriteString(faintSep + "\n")
-	} else if m.focused {
+	} else {
 		sb.WriteString(faintSep + "\n")
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("> type to filter...") + "\n")
-		sb.WriteString(faintSep + "\n")
-	} else {
 		sb.WriteString(faintSep + "\n")
 	}
 
@@ -761,13 +814,19 @@ func (m *Model) View() string {
 		}
 	}
 
+	// Confirmation prompt
+	if m.confirmDelete != nil {
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render(
+			fmt.Sprintf("Delete window %s:%d? (y/n)", m.confirmDelete.sessionName, m.confirmDelete.windowIndex)) + "\n")
+	}
+
 	// Footer: scroll indicator + key hints
 	if vp > 0 && endIdx < len(visible) {
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("  ↓ %d more", len(visible)-endIdx)) + "\n")
 	} else {
 		sb.WriteString("\n")
 	}
-	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter Esc:clear ^C:quit") + "\n")
+	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter d:delete Esc:clear ^C:quit") + "\n")
 	return sb.String()
 }
 

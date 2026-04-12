@@ -35,6 +35,7 @@ Subcommands:
   toggle                    Open sidebar if closed, close if open
   focus-or-open             Focus sidebar if open, open if closed
   cleanup-if-only-sidebar   Kill window if only the sidebar pane remains
+  restart                   Restart sidebar in all tmux windows
   doctor [--yes]            Check tmux configuration; --yes to auto-apply fixes
   version                   Print version
 
@@ -61,6 +62,12 @@ Subcommands:
 		case "cleanup-if-only-sidebar":
 			if err := runCleanupIfOnlySidebar(); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar cleanup-if-only-sidebar: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "restart":
+			if err := runRestart(); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar restart: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -115,6 +122,17 @@ Subcommands:
 		pidFile = "/tmp/tmux-sidebar-" + strings.TrimPrefix(paneID, "%") + ".pid"
 		_ = os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
 		defer os.Remove(pidFile)
+
+		// Clean up PID file on SIGHUP/SIGTERM (kill-pane sends SIGHUP).
+		// defer alone is insufficient because the process exits before defers run.
+		cleanupCh := make(chan os.Signal, 1)
+		signal.Notify(cleanupCh, syscall.SIGHUP, syscall.SIGTERM)
+		go func() {
+			<-cleanupCh
+			os.Remove(pidFile)
+			os.Exit(0)
+		}()
+		defer signal.Stop(cleanupCh)
 	}
 
 	var opts []tea.ProgramOption
@@ -310,5 +328,59 @@ func runCleanupIfOnlySidebar() error {
 			exec.Command("tmux", "kill-window", "-t", wid).Run()
 		}
 	}
+	return nil
+}
+
+// runRestart kills the sidebar pane in every tmux window and re-creates them.
+// This is useful after upgrading the tmux-sidebar binary.
+//
+// Usage:
+//
+//	tmux-sidebar restart
+func runRestart() error {
+	// List all panes across all windows to find sidebar panes.
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{window_id} #{pane_id} #{@pane_role}").Output()
+	if err != nil {
+		return nil
+	}
+
+	// Collect window IDs that have a sidebar, and kill the sidebar panes.
+	windowsWithSidebar := []string{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+		windowID, paneID, role := parts[0], parts[1], parts[2]
+		if role != "sidebar" {
+			continue
+		}
+		exec.Command("tmux", "kill-pane", "-t", paneID).Run()
+		if !seen[windowID] {
+			seen[windowID] = true
+			windowsWithSidebar = append(windowsWithSidebar, windowID)
+		}
+	}
+
+	if len(windowsWithSidebar) == 0 {
+		fmt.Println("no sidebar panes found")
+		return nil
+	}
+
+	// Re-create a sidebar in each window that had one.
+	for _, wid := range windowsWithSidebar {
+		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-t", wid, "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to open sidebar in window %s: %v\n", wid, err)
+			continue
+		}
+		newPaneID := strings.TrimSpace(string(newOut))
+		if newPaneID != "" {
+			exec.Command("tmux", "set-option", "-p", "-t", newPaneID, "@pane_role", "sidebar").Run()
+		}
+	}
+
+	fmt.Printf("restarted %d sidebar(s)\n", len(windowsWithSidebar))
 	return nil
 }

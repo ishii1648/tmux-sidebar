@@ -110,8 +110,9 @@ type Model struct {
 	filter       FilterMode
 	width        int
 	err          error
-	gitData      map[string]gitInfo // keyed by window ID
-	focused      bool               // true when this pane has terminal focus
+	gitData          map[string]gitInfo // keyed by window ID
+	focused          bool               // true when this pane has terminal focus
+	cursorInitialized bool              // true after first data load synced cursor to active window
 }
 
 // New creates a new Model.
@@ -365,7 +366,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = msg.items
 		m.currentWinID = msg.currentWinID
 		m.err = nil
-		m.syncCursorToActiveWindow()
+		if !m.cursorInitialized {
+			m.syncCursorToActiveWindow()
+			m.cursorInitialized = true
+		} else {
+			// Keep cursor where user left it; just clamp to valid range
+			maxCursor := m.maxWindowIndex()
+			if m.cursor > maxCursor {
+				m.cursor = maxCursor
+			}
+			visible := m.visibleItems()
+			if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
+				m.resetCursorToFirstWindow()
+			}
+		}
 		return m, nil
 
 	case gitTickMsg:
@@ -537,8 +551,12 @@ func (m *Model) View() string {
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
-			if i == m.cursor && m.focused {
-				cursor = styleCursor.Render("▶ ")
+			if i == m.cursor {
+				if m.focused {
+					cursor = styleCursor.Render("▶ ")
+				} else {
+					cursor = lipgloss.NewStyle().Faint(true).Render("▶ ")
+				}
 			}
 			label := fmt.Sprintf("%d: %s", item.Window.Index, item.Window.Name)
 			badge := ""
@@ -553,10 +571,8 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Footer: show key hints only when focused
-	if m.focused {
-		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
-	}
+	// Footer: always show key hints (faint when unfocused)
+	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
 	return sb.String()
 }
 

@@ -138,7 +138,12 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 		ps := PaneState{Status: status}
 		if status == StatusRunning {
 			if epoch, ok := started[num]; ok {
-				ps.Elapsed = now.Sub(time.Unix(epoch, 0)).Truncate(time.Minute)
+				elapsed := now.Sub(time.Unix(epoch, 0))
+				if elapsed < time.Minute {
+					ps.Elapsed = elapsed.Truncate(time.Second)
+				} else {
+					ps.Elapsed = elapsed.Truncate(time.Minute)
+				}
 			}
 		}
 		if dir, ok := workdirs[num]; ok {

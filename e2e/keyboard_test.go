@@ -18,8 +18,12 @@ func TestCursorMovement(t *testing.T) {
 	env.newWindow("nav", "beta")
 
 	env.runSidebar("scratch")
-	if err := env.waitForText("scratch", "Sessions", 5*time.Second); err != nil {
-		t.Fatalf("sidebar did not start: %v", err)
+	// Wait for focus and session data before pressing keys.
+	if err := env.waitForText("scratch", "●", 5*time.Second); err != nil {
+		t.Fatalf("sidebar did not become focused: %v", err)
+	}
+	if err := env.waitForText("scratch", "nav", 3*time.Second); err != nil {
+		t.Fatalf("sidebar did not load sessions: %v", err)
 	}
 
 	// Initial cursor is at index 0 (scratch session header), so ▶ is not shown.
@@ -54,8 +58,9 @@ func TestPassiveMode(t *testing.T) {
 	env := newTestEnv(t)
 
 	env.runSidebar("scratch")
-	if err := env.waitForText("scratch", "Sessions", 5*time.Second); err != nil {
-		t.Fatalf("sidebar did not start: %v", err)
+	// Wait for focus before pressing keys.
+	if err := env.waitForText("scratch", "●", 5*time.Second); err != nil {
+		t.Fatalf("sidebar did not become focused: %v", err)
 	}
 
 	// Move cursor onto a window row so ▶ is visible.

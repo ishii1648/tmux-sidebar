@@ -4,6 +4,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -95,7 +96,7 @@ type gitDataMsg struct {
 var (
 	styleCursor       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
 	styleSession      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	styleWindow       = lipgloss.NewStyle().PaddingLeft(2)
+	styleWindow       = lipgloss.NewStyle().PaddingLeft(1)
 	styleBadgeRun     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	styleBadgeIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleBadgePerm    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
@@ -118,18 +119,22 @@ type Model struct {
 	filter       FilterMode
 	width        int
 	err          error
-	gitData  map[string]gitInfo // keyed by window ID
-	focused  bool               // true when this pane has terminal focus
+	gitData      map[string]gitInfo // keyed by window ID
+	focused      bool               // true when this pane has terminal focus
+	passive      bool               // true when user pressed q to pause interaction
 }
 
 // New creates a new Model.
 func New(tc tmux.Client, sr state.Reader, width int) *Model {
+	// TMUX_SIDEBAR_FORCE_FOCUS=1 bypasses terminal focus events (used in e2e tests
+	// where isolated tmux servers have no attached client and cannot send focus events).
+	forceFocus := os.Getenv("TMUX_SIDEBAR_FORCE_FOCUS") != ""
 	return &Model{
 		tmuxClient:  tc,
 		stateReader: sr,
 		width:       width,
 		gitData:     map[string]gitInfo{},
-		focused:     false, // start unfocused; becomes true only when FocusMsg arrives
+		focused:     forceFocus,
 	}
 }
 
@@ -188,7 +193,6 @@ func (m *Model) loadData() tea.Cmd {
 			// Non-fatal: show empty state
 			stateMap = map[int]state.PaneState{}
 		}
-		cur, _ := m.tmuxClient.CurrentPane()
 
 		// Build window→paneNumbers map
 		winPanes := map[string][]int{} // windowID → pane numbers
@@ -238,7 +242,7 @@ func (m *Model) loadData() tea.Cmd {
 			}
 		}
 
-		return dataMsg{items: items, currentWinID: cur.WindowID}
+		return dataMsg{items: items}
 	}
 }
 
@@ -395,22 +399,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.items = msg.items
-		prevWinID := m.currentWinID
-		m.currentWinID = msg.currentWinID
 		m.err = nil
-		if msg.currentWinID != prevWinID {
-			// Active window changed (startup or user switched): sync cursor
-			m.syncCursorToActiveWindow()
-		} else {
-			// Active window unchanged: keep cursor where user left it; just clamp
-			maxCursor := m.maxWindowIndex()
-			if m.cursor > maxCursor {
-				m.cursor = maxCursor
-			}
-			visible := m.visibleItems()
-			if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
-				m.resetCursorToFirstWindow()
-			}
+		// currentWinID is managed solely by currentWinMsg (loadCurrentWin 200ms poll).
+		// Just clamp cursor to valid range after items update.
+		maxCursor := m.maxWindowIndex()
+		if m.cursor > maxCursor {
+			m.cursor = maxCursor
+		}
+		visible := m.visibleItems()
+		if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
+			m.resetCursorToFirstWindow()
 		}
 		return m, nil
 
@@ -456,6 +454,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if !m.focused {
+		return m, nil
+	}
+
+	// q/i toggle passive mode regardless of other state.
+	switch msg.String() {
+	case "q":
+		m.passive = true
+		return m, nil
+	case "i":
+		m.passive = false
+		return m, nil
+	}
+
+	if m.passive {
 		return m, nil
 	}
 
@@ -593,43 +605,60 @@ func (m *Model) View() string {
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
-			if i == m.cursor {
-				if m.focused {
-					cursor = styleCursor.Render("▶ ")
-				} else {
-					cursor = lipgloss.NewStyle().Faint(true).Render("▶ ")
+			if i == m.cursor && m.focused && !m.passive {
+				cursor = styleCursor.Render("▶ ")
+			}
+			// Build suffix: badge + PR (right side, fixed width)
+			suffix := ""
+			if item.PaneState != nil {
+				if b := renderBadge(item.PaneState); b != "" {
+					suffix = " " + b
 				}
 			}
-			label := fmt.Sprintf("%d: %s", item.Window.Index, item.Window.Name)
-			badge := ""
-			if item.PaneState != nil {
-				badge = " " + renderBadge(item.PaneState)
-			}
-			// PR badge inline (#111 colored by state)
 			if git, ok := m.gitData[item.Window.ID]; ok && git.prNumber != 0 {
-				badge += " " + renderPRBadge(git.prState, git.prNumber)
+				suffix += " " + renderPRBadge(git.prState, git.prNumber)
 			}
-			sb.WriteString(cursor + styleWindow.Render(label+badge) + "\n")
+			// Truncate window name to fit: cursor(2) + padding(1) + "N: " + name + suffix <= m.width
+			prefix := fmt.Sprintf("%d: ", item.Window.Index)
+			available := m.width - 2 - 1 - len(prefix) - lipgloss.Width(suffix)
+			name := item.Window.Name
+			if available <= 0 {
+				name = ""
+			} else if len(name) > available {
+				name = name[:available]
+			}
+			label := prefix + name
+			sb.WriteString(cursor + styleWindow.Render(label+suffix) + "\n")
 		}
 	}
 
-	// Footer: always show key hints (faint when unfocused)
-	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
+	// Footer: show passive hint or key hints depending on state
+	if m.passive {
+		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("[i] to activate") + "\n")
+	} else if m.focused {
+		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
+	}
 	return sb.String()
 }
 
 func renderBadge(ps *state.PaneState) string {
 	switch ps.Status {
 	case state.StatusRunning:
-		mins := int(ps.Elapsed.Minutes())
-		text := fmt.Sprintf("[running %dm]", mins)
+		var text string
+		if ps.Elapsed < time.Minute {
+			secs := int(ps.Elapsed.Seconds())
+			text = fmt.Sprintf("🔄%ds", secs)
+		} else {
+			mins := int(ps.Elapsed.Minutes())
+			text = fmt.Sprintf("🔄%dm", mins)
+		}
 		return styleBadgeRun.Render(text)
 	case state.StatusIdle:
-		return styleBadgeIdle.Render("[idle]")
+		return "" // idle は非表示
 	case state.StatusPermission:
-		return styleBadgePerm.Render("[permission]")
+		return styleBadgePerm.Render("💬")
 	case state.StatusAsk:
-		return styleBadgeAsk.Render("[ask]")
+		return styleBadgeAsk.Render("💬")
 	default:
 		return ""
 	}

@@ -3,6 +3,7 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -139,7 +140,13 @@ func parsePanes(out string) []Pane {
 }
 
 func runTmux(args ...string) (string, error) {
-	out, err := exec.Command("tmux", args...).Output()
+	// TMUX_SIDEBAR_SOCKET lets e2e tests inject an explicit socket name so that
+	// all tmux calls go to the isolated test server regardless of the TMUX env var.
+	if socket := os.Getenv("TMUX_SIDEBAR_SOCKET"); socket != "" {
+		args = append([]string{"-L", socket}, args...)
+	}
+	cmd := exec.Command("tmux", args...)
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w", strings.Join(args, " "), err)
 	}
@@ -176,8 +183,14 @@ func (c *ExecClient) ListPanes() ([]Pane, error) {
 }
 
 // CurrentPane returns identity information for the pane running this process.
+// It uses the TMUX_PANE environment variable (set by tmux in every pane) to
+// target the request directly, avoiding a hang when no tmux client is attached.
 func (c *ExecClient) CurrentPane() (CurrentPane, error) {
-	out, err := runTmux("display-message", "-p",
+	paneID := os.Getenv("TMUX_PANE")
+	if paneID == "" {
+		return CurrentPane{}, fmt.Errorf("TMUX_PANE not set")
+	}
+	out, err := runTmux("display-message", "-p", "-t", paneID,
 		"#{session_id}"+tmuxDelim+"#{window_id}"+tmuxDelim+"#{pane_id}")
 	if err != nil {
 		return CurrentPane{}, err

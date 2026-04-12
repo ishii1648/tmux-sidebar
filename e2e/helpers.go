@@ -78,6 +78,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		"new-session", "-d", "-s", "scratch", "-x", "120", "-y", "40").Run(); err != nil {
 		t.Fatalf("start tmux server (socket=%s): %v", socket, err)
 	}
+	// Enable focus-events so the sidebar receives FocusMsg when it enables focus tracking.
+	exec.Command("tmux", "-L", socket, "set-option", "-g", "focus-events", "on").Run()
 
 	env := &testEnv{t: t, socket: socket, binary: binary, stateDir: stateDir}
 	t.Cleanup(func() {
@@ -165,8 +167,8 @@ func (e *testEnv) removeStateFile(paneNum int) {
 func (e *testEnv) runSidebar(target string) {
 	e.t.Helper()
 	// Send the command as literal text, then Enter.
-	cmd := fmt.Sprintf("TMUX_SIDEBAR_STATE_DIR='%s' TMUX_SIDEBAR_NO_ALT_SCREEN=1 '%s'",
-		e.stateDir, e.binary)
+	cmd := fmt.Sprintf("TMUX_SIDEBAR_STATE_DIR='%s' TMUX_SIDEBAR_NO_ALT_SCREEN=1 TMUX_SIDEBAR_FORCE_FOCUS=1 TMUX_SIDEBAR_SOCKET='%s' '%s'",
+		e.stateDir, e.socket, e.binary)
 	if _, err := e.tmuxCmd("send-keys", "-t", target, "-l", cmd); err != nil {
 		e.t.Fatalf("send-keys cmd: %v", err)
 	}

@@ -93,6 +93,7 @@ Subcommands:
 		paneID := strings.TrimSpace(string(paneOut))
 		if paneID != "" {
 			exec.Command("tmux", "set-option", "-p", "-t", paneID, "window-style", "default").Run()
+			exec.Command("tmux", "set-option", "-p", "-t", paneID, "@pane_role", "sidebar").Run()
 			defer func() {
 				exec.Command("tmux", "set-option", "-p", "-t", paneID, "-u", "window-style").Run()
 			}()

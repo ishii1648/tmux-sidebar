@@ -647,21 +647,12 @@ func TestScroll_NoHeightNoRestriction(t *testing.T) {
 	}
 }
 
-// ── search / text filter ────────────────────────────────────────────────────
-
-func TestSearch_SlashEntersSearchMode(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-
-	m.Update(key('/'))
-	if !m.searchMode {
-		t.Error("/ should enter search mode")
-	}
-}
+// ── search / text filter (always-on) ────────────────────────────────────────
 
 func TestSearch_TypingFiltersItems(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 
-	m.Update(key('/'))
+	// Just type — search is always on
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
@@ -685,17 +676,12 @@ func TestSearch_TypingFiltersItems(t *testing.T) {
 func TestSearch_EscClearsSearch(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 
-	m.Update(key('/'))
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
 
-	if m.searchMode {
-		t.Error("Esc should exit search mode")
-	}
 	if m.searchQuery != "" {
 		t.Errorf("Esc should clear search query, got %q", m.searchQuery)
 	}
-	// All items should be visible again
 	if len(m.visibleItems()) != len(sampleItems()) {
 		t.Errorf("after Esc, all items should be visible")
 	}
@@ -704,7 +690,6 @@ func TestSearch_EscClearsSearch(t *testing.T) {
 func TestSearch_BackspaceDeletesChar(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 
-	m.Update(key('/'))
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
@@ -717,7 +702,6 @@ func TestSearch_BackspaceDeletesChar(t *testing.T) {
 func TestSearch_CaseInsensitive(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 
-	m.Update(key('/'))
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'W'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
 
@@ -737,8 +721,6 @@ func TestSearch_CaseInsensitive(t *testing.T) {
 func TestSearch_MatchesSessionName(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 
-	m.Update(key('/'))
-	// Type "session-b" to filter by session name
 	for _, r := range "session-b" {
 		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -758,21 +740,54 @@ func TestSearch_MatchesSessionName(t *testing.T) {
 	}
 }
 
-func TestView_SearchModeShowsPrompt(t *testing.T) {
+func TestSearch_JKNavigateWhenEmpty(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
-	m.searchMode = true
-	m.searchQuery = "test"
 
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "/test") {
-		t.Errorf("search mode should show /query prompt:\n%s", view)
+	// j/k should navigate when search query is empty
+	m.Update(key('j'))
+	if m.cursor != 2 {
+		t.Errorf("j with empty query should navigate: cursor = %d, want 2", m.cursor)
+	}
+	m.Update(key('k'))
+	if m.cursor != 1 {
+		t.Errorf("k with empty query should navigate: cursor = %d, want 1", m.cursor)
 	}
 }
 
-func TestView_FooterShowsSearchHint(t *testing.T) {
+func TestSearch_JKTypeWhenNonEmpty(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	// Type something first, then j should be part of query
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m.Update(key('j'))
+	if m.searchQuery != "aj" {
+		t.Errorf("j with non-empty query should type: query = %q, want 'aj'", m.searchQuery)
+	}
+}
+
+func TestView_SearchPromptAlwaysVisible(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "> ") {
+		t.Errorf("focused View should show search prompt '> ':\n%s", view)
+	}
+}
+
+func TestView_SearchPromptShowsQuery(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.searchQuery = "test"
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "> test") {
+		t.Errorf("View should show search query in prompt:\n%s", view)
+	}
+}
+
+func TestView_FooterShowsEscHint(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "/:search") {
-		t.Errorf("footer should contain /:search hint:\n%s", view)
+	if !strings.Contains(view, "Esc:clear") {
+		t.Errorf("footer should contain Esc:clear hint:\n%s", view)
 	}
 }

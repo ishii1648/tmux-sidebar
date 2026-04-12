@@ -127,8 +127,7 @@ type Model struct {
 	err          error
 	gitData      map[string]gitInfo // keyed by window ID
 	focused      bool               // true when this pane has terminal focus
-	searchMode   bool               // true when "/" search input is active
-	searchQuery  string             // current search query text
+	searchQuery  string             // current search query text (always-on incremental filter)
 }
 
 // New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
@@ -498,61 +497,57 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Search mode: capture typing, Esc/Enter to exit
-	if m.searchMode {
-		switch msg.Type {
-		case tea.KeyEscape:
-			m.searchMode = false
-			m.searchQuery = ""
-			m.resetCursorToFirstWindow()
-			return m, nil
-		case tea.KeyEnter:
-			m.searchMode = false
-			// keep searchQuery active as filter; switch to selected window
-			return m, m.switchSelected()
-		case tea.KeyBackspace:
-			if len(m.searchQuery) > 0 {
-				m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
-				m.resetCursorToFirstWindow()
-			}
-			return m, nil
-		case tea.KeyRunes:
-			m.searchQuery += string(msg.Runes)
-			m.resetCursorToFirstWindow()
-			return m, nil
-		case tea.KeyUp:
-			m.moveCursor(-1)
-			return m, nil
-		case tea.KeyDown:
-			m.moveCursor(1)
-			return m, nil
-		}
-		return m, nil
-	}
-
 	if !m.focused {
 		return m, nil
 	}
 
-	switch msg.String() {
-	case "j", "down":
-		m.moveCursor(1)
-	case "k", "up":
-		m.moveCursor(-1)
-	case "tab":
-		m.filter = (m.filter + 1) % 2
-		m.searchQuery = ""
-		m.resetCursorToCurrentWindow()
-	case "shift+tab":
-		m.filter = (m.filter + 1) % 2
-		m.searchQuery = ""
-		m.resetCursorToCurrentWindow()
-	case "enter":
+	switch msg.Type {
+	case tea.KeyEscape:
+		if m.searchQuery != "" {
+			m.searchQuery = ""
+			m.resetCursorToFirstWindow()
+		}
+		return m, nil
+	case tea.KeyEnter:
 		return m, m.switchSelected()
-	case "/":
-		m.searchMode = true
+	case tea.KeyBackspace:
+		if len(m.searchQuery) > 0 {
+			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+			m.resetCursorToFirstWindow()
+		}
+		return m, nil
+	case tea.KeyTab:
+		m.filter = (m.filter + 1) % 2
 		m.searchQuery = ""
+		m.resetCursorToCurrentWindow()
+		return m, nil
+	case tea.KeyShiftTab:
+		m.filter = (m.filter + 1) % 2
+		m.searchQuery = ""
+		m.resetCursorToCurrentWindow()
+		return m, nil
+	case tea.KeyUp:
+		m.moveCursor(-1)
+		return m, nil
+	case tea.KeyDown:
+		m.moveCursor(1)
+		return m, nil
+	case tea.KeyRunes:
+		r := msg.Runes
+		// j/k navigation only when search is empty
+		if m.searchQuery == "" && len(r) == 1 {
+			switch r[0] {
+			case 'j':
+				m.moveCursor(1)
+				return m, nil
+			case 'k':
+				m.moveCursor(-1)
+				return m, nil
+			}
+		}
+		m.searchQuery += string(r)
 		m.resetCursorToFirstWindow()
+		return m, nil
 	}
 	return m, nil
 }
@@ -691,39 +686,25 @@ func (m *Model) View() string {
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("○ Sessions") + "\n")
 	}
 
-	// Filter tabs or search input
-	if m.searchMode {
-		sb.WriteString("/" + m.searchQuery + "▏\n")
-	} else if m.searchQuery != "" {
-		sb.WriteString(styleFilterFaint.Render("/"+m.searchQuery) + "  ")
-		for _, f := range []FilterMode{FilterAll, FilterWaiting} {
-			label := "[" + f.String() + "]"
-			if f == m.filter {
-				sb.WriteString(styleFilterActive.Render(label))
-			} else {
-				sb.WriteString(styleFilterFaint.Render(label))
-			}
-			sb.WriteString(" ")
+	// Filter tabs
+	for _, f := range []FilterMode{FilterAll, FilterWaiting} {
+		label := "[" + f.String() + "]"
+		if f == m.filter {
+			sb.WriteString(styleFilterActive.Render(label))
+		} else {
+			sb.WriteString(styleFilterFaint.Render(label))
 		}
-		sb.WriteString("\n")
-	} else {
-		for _, f := range []FilterMode{FilterAll, FilterWaiting} {
-			label := "[" + f.String() + "]"
-			if f == m.filter {
-				sb.WriteString(styleFilterActive.Render(label))
-			} else {
-				sb.WriteString(styleFilterFaint.Render(label))
-			}
-			sb.WriteString(" ")
-		}
-		sb.WriteString("\n")
+		sb.WriteString(" ")
 	}
+	sb.WriteString("\n")
 
-	sep := strings.Repeat("─", m.width)
-	if m.focused {
-		sb.WriteString(sep + "\n")
+	// Search prompt (always visible, replaces separator)
+	if m.searchQuery != "" {
+		sb.WriteString("> " + m.searchQuery + "▏\n")
+	} else if m.focused {
+		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("> ") + "\n")
 	} else {
-		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(sep) + "\n")
+		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width)) + "\n")
 	}
 
 	// Session / window list
@@ -781,7 +762,7 @@ func (m *Model) View() string {
 	} else {
 		sb.WriteString("\n")
 	}
-	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter /:search ^C:quit") + "\n")
+	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter Esc:clear ^C:quit") + "\n")
 	return sb.String()
 }
 

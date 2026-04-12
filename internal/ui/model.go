@@ -75,6 +75,14 @@ type switchWindowMsg struct {
 	windowIndex int
 }
 
+// cursorTickMsg is sent by the 200ms cursor-sync ticker.
+type cursorTickMsg time.Time
+
+// currentWinMsg carries the refreshed active window ID.
+type currentWinMsg struct {
+	currentWinID string
+}
+
 // gitTickMsg is sent by the 10-second git polling ticker.
 type gitTickMsg time.Time
 
@@ -132,6 +140,7 @@ func (m *Model) Init() tea.Cmd {
 		tickCmd(),
 		m.loadGitInfo(),
 		gitTickCmd(),
+		cursorTickCmd(),
 	)
 }
 
@@ -145,6 +154,19 @@ func gitTickCmd() tea.Cmd {
 	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
 		return gitTickMsg(t)
 	})
+}
+
+func cursorTickCmd() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+		return cursorTickMsg(t)
+	})
+}
+
+func (m *Model) loadCurrentWin() tea.Cmd {
+	return func() tea.Msg {
+		cur, _ := m.tmuxClient.CurrentPane()
+		return currentWinMsg{currentWinID: cur.WindowID}
+	}
 }
 
 func (m *Model) loadData() tea.Cmd {
@@ -379,6 +401,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
 				m.resetCursorToFirstWindow()
 			}
+		}
+		return m, nil
+
+	case cursorTickMsg:
+		return m, tea.Batch(m.loadCurrentWin(), cursorTickCmd())
+
+	case currentWinMsg:
+		if msg.currentWinID != "" && msg.currentWinID != m.currentWinID {
+			m.currentWinID = msg.currentWinID
+			m.syncCursorToActiveWindow()
 		}
 		return m, nil
 

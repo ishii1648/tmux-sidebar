@@ -23,6 +23,8 @@ func (f *fakeTmuxClient) CurrentPane() (tmux.CurrentPane, error)   { return tmux
 func (f *fakeTmuxClient) SwitchWindow(_ string, _ int) error       { return nil }
 func (f *fakeTmuxClient) PaneCurrentPath(_ string) (string, error) { return "", nil }
 func (f *fakeTmuxClient) ListAll() ([]tmux.PaneInfo, error)        { return nil, nil }
+func (f *fakeTmuxClient) KillSession(_ string) error               { return nil }
+func (f *fakeTmuxClient) KillWindow(_ string, _ int) error         { return nil }
 
 type fakeStateReader struct{ states map[int]state.PaneState }
 
@@ -781,6 +783,92 @@ func TestView_SearchPromptShowsQuery(t *testing.T) {
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "> test") {
 		t.Errorf("View should show search query in prompt:\n%s", view)
+	}
+}
+
+// ── delete window with confirmation ─────────────────────────────────────────
+
+func TestDeleteKey_ShowsConfirmation(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true) // cursor at @1 index=0 "main"
+
+	m.Update(key('d'))
+	if m.confirmDelete == nil {
+		t.Fatal("d key should set confirmDelete")
+	}
+	if m.confirmDelete.sessionName != "session-a" {
+		t.Errorf("confirmDelete.sessionName = %q, want %q", m.confirmDelete.sessionName, "session-a")
+	}
+	if m.confirmDelete.windowIndex != 0 {
+		t.Errorf("confirmDelete.windowIndex = %d, want 0", m.confirmDelete.windowIndex)
+	}
+}
+
+func TestDeleteConfirm_Y_SendsDeleteWindowMsg(t *testing.T) {
+	m := newTestModel(sampleItems(), 2, true) // cursor at @2 index=1 "work"
+
+	m.Update(key('d'))
+	if m.confirmDelete == nil {
+		t.Fatal("d should set confirmDelete")
+	}
+
+	_, cmd := m.Update(key('y'))
+	if m.confirmDelete != nil {
+		t.Error("y should clear confirmDelete")
+	}
+	if cmd == nil {
+		t.Fatal("y should return a Cmd")
+	}
+	msg := cmd()
+	delMsg, ok := msg.(deleteWindowMsg)
+	if !ok {
+		t.Fatalf("Cmd returned %T, want deleteWindowMsg", msg)
+	}
+	if delMsg.sessionName != "session-a" || delMsg.windowIndex != 1 {
+		t.Errorf("deleteWindowMsg = %+v, want session-a:1", delMsg)
+	}
+}
+
+func TestDeleteConfirm_N_Cancels(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('d'))
+	m.Update(key('n'))
+	if m.confirmDelete != nil {
+		t.Error("n should clear confirmDelete")
+	}
+}
+
+func TestDeleteConfirm_Esc_Cancels(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('d'))
+	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if m.confirmDelete != nil {
+		t.Error("Esc should clear confirmDelete")
+	}
+}
+
+func TestDeleteConfirm_BlocksOtherKeys(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('d'))
+	savedCursor := m.cursor
+	m.Update(key('j'))
+	if m.cursor != savedCursor {
+		t.Error("j should be blocked during confirmation")
+	}
+	if m.confirmDelete == nil {
+		t.Error("confirmDelete should still be set after j")
+	}
+}
+
+func TestView_ShowsConfirmPrompt(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.confirmDelete = &deleteWindowMsg{sessionName: "session-a", windowIndex: 0}
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "Delete window session-a:0? (y/n)") {
+		t.Errorf("View should show confirmation prompt:\n%s", view)
 	}
 }
 

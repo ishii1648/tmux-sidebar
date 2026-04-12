@@ -190,7 +190,7 @@ func runFocusOrOpen() error {
 	}
 	if sidebarPaneID == "" {
 		// Sidebar is closed → open it.
-		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "35", "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
+		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
 		if err != nil {
 			return fmt.Errorf("split-window: %w", err)
 		}
@@ -230,7 +230,7 @@ func runToggleSidebar() error {
 		return exec.Command("tmux", "kill-pane", "-t", sidebarPaneID).Run()
 	}
 	// Sidebar is closed → open it.
-	newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "35", "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
+	newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
 	if err != nil {
 		return fmt.Errorf("split-window: %w", err)
 	}

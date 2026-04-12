@@ -81,7 +81,6 @@ set-hook -g client-session-changed \
 
 ```tmux
 set-hook -g pane-exited 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
-set-hook -g after-kill-pane 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
 ```
 
 ### 4. SIGUSR1 による即時更新通知（推奨）

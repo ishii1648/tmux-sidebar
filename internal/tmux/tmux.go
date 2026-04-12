@@ -231,9 +231,28 @@ func (c *ExecClient) SwitchWindow(sessionName string, windowIndex int) error {
 	return err
 }
 
-// PaneCurrentPath returns the current working directory of the active pane in the given window.
+// PaneCurrentPath returns the current working directory of the first non-sidebar pane
+// in the given window. It avoids returning the sidebar pane's own directory, which would
+// cause git/PR info to be fetched for the wrong repository.
 func (c *ExecClient) PaneCurrentPath(windowID string) (string, error) {
-	return runTmux("display-message", "-t", windowID, "-p", "#{pane_current_path}")
+	out, err := runTmux("list-panes", "-t", windowID, "-F",
+		"#{pane_current_path}"+tmuxDelim+"#{@pane_role}")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, tmuxDelim, 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if parts[1] == "sidebar" {
+			continue
+		}
+		if parts[0] != "" {
+			return parts[0], nil
+		}
+	}
+	return "", fmt.Errorf("no non-sidebar pane found in window %s", windowID)
 }
 
 // parseAllPanes parses the output of `tmux list-panes -a` with 7 fields.

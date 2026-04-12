@@ -51,64 +51,115 @@ go install github.com/ishii1648/tmux-sidebar@latest
 
 ## Setup
 
-### 1. tmux.conf
+### 1. サイドバー自動生成（必須）
+
+新しいウィンドウ・セッションの作成時にサイドバーを自動生成する。
 
 ```tmux
 # 新しいウィンドウを作るたびにサイドバーを自動生成
+# -hfb で左端に作成し {left} ターゲットで @pane_role を設定
+# ペイン数が 1 の場合のみ起動（二重作成を防ぐ）
 set-hook -g after-new-window \
-  'run-shell "p=$(tmux split-window -hfb -l 35 -P -F \"#{pane_id}\" tmux-sidebar); tmux set-option -p -t \"$p\" @pane_role sidebar"'
+  'run-shell "[ $(tmux list-panes -t \"#{window_id}\" | wc -l) -eq 1 ] && { tmux split-window -hfb -d -l 40 -t \"#{window_id}\" tmux-sidebar; tmux set-option -p -t \"#{window_id}.{left}\" @pane_role sidebar; } || true"'
 
-# サイドバーへの誤フォーカスを防ぐ（通常の prefix+hjkl でスキップされる）
-set-hook -g after-select-pane \
-  'run-shell "tmux-sidebar focus-guard"'
+# new-session の初期ウィンドウにもサイドバーを自動生成
+# after-new-window は new-session の初期ウィンドウには発火しないため別途必要
+set-hook -g after-new-session \
+  'run-shell "[ $(tmux list-panes -t \"#{window_id}\" | wc -l) -eq 1 ] && { tmux split-window -hfb -d -l 40 -t \"#{window_id}\" tmux-sidebar; tmux set-option -p -t \"#{window_id}.{left}\" @pane_role sidebar; } || true"'
 ```
 
-> `split-window -P -F "#{pane_id}"` で生成したペイン ID を取得し、`set-option -p @pane_role sidebar` でペインオプションを設定することで `focus-guard` やトグルキーバインドがサイドバーを識別できます。
+> **注意**: `split-window -P -F "#{pane_id}"` で新ペインの ID を `$()` でキャプチャする方法は、`run-shell` 内では stdout が返らないため動作しません。`-hfb` で常に左端に作成されることを利用し、`{left}` ターゲットで確実にサイドバーペインを特定してください。
 
-### 2. toggle キーバインド（任意）
+ポイント:
+- `-d`: サイドバー作成時にフォーカスを奪わない
+- `-t "#{window_id}"`: 外部セッションからの `new-window` でも正しいウィンドウに作成される
+- `[ ... -eq 1 ]`: hook の二重実行でサイドバーが2つ作られるのを防ぐ
+
+### 2. sidebar への誤フォーカス防止（必須）
 
 ```tmux
-# prefix+e でサイドバーを表示・非表示切り替え
-bind-key e run-shell '\
-  if tmux list-panes -F "#{@pane_role}" | grep -q "^sidebar$"; then \
-    tmux kill-pane -t $(tmux list-panes -F "#{pane_id} #{@pane_role}" | awk '"'"'/sidebar/{print $1}'"'"'); \
-  else \
-    p=$(tmux split-window -hfb -l 35 -P -F "#{pane_id}" tmux-sidebar); \
-    tmux set-option -p -t "$p" @pane_role sidebar; \
-  fi'
+# ウィンドウ切替後、アクティブペインが sidebar なら右隣へ移動
+set-hook -g after-select-window \
+  'run-shell "[ \"#{@pane_role}\" = sidebar ] && tmux select-pane -t \"#{pane_id}\" -R || true"'
+
+# セッション切替後も同様
+set-hook -g client-session-changed \
+  'run-shell "[ \"#{@pane_role}\" = sidebar ] && tmux select-pane -t \"#{pane_id}\" -R || true"'
+
+# ペイン選択時: sidebar に当たったら直前のペインへ戻す
+set-hook -g after-select-pane \
+  'if -F "#{==:#{@pane_role},sidebar}" \
+    "select-pane -l" \
+    ""'
 ```
 
-### 3. サイドバーへのフォーカスキーバインド（任意）
+### 3. サイドバーのみ残ったウィンドウの自動削除（推奨）
+
+作業ペインを全て閉じた後に空のサイドバーウィンドウが残るのを防ぐ。
+
+```tmux
+set-hook -g pane-exited 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
+set-hook -g after-kill-pane 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
+```
+
+### 4. SIGUSR1 による即時更新通知（推奨）
+
+```tmux
+set-hook -ga window-linked   'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ -f \"$f\" ] && kill -USR1 \$(cat \"$f\") 2>/dev/null; done"'
+set-hook -ga window-unlinked 'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ -f \"$f\" ] && kill -USR1 \$(cat \"$f\") 2>/dev/null; done"'
+set-hook -ga session-created 'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ -f \"$f\" ] && kill -USR1 \$(cat \"$f\") 2>/dev/null; done"'
+set-hook -ga session-closed  'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ -f \"$f\" ] && kill -USR1 \$(cat \"$f\") 2>/dev/null; done"'
+```
+
+> 未設定でも動作しますが、ウィンドウの追加・削除がサイドバーに反映されるまで最大10秒かかります。
+
+### 5. ペイン移動で sidebar をスキップ（推奨）
+
+```tmux
+# h/l は tmux-sidebar 経由で sidebar ペインをスキップする
+bind h run-shell 'tmux-sidebar select-pane L'
+bind l run-shell 'tmux-sidebar select-pane R'
+```
+
+### 6. toggle キーバインド（任意）
+
+```tmux
+bind-key e run-shell 'tmux-sidebar toggle'
+```
+
+### 7. サイドバーへのフォーカスキーバインド（任意）
 
 通常の pane 移動（`prefix+hjkl` 等）ではサイドバーはスキップされます。
 専用キーでのみサイドバーにフォーカスを当てたい場合は以下を設定してください。
 
 ```tmux
-# 任意のキーでサイドバーにフォーカス（prefix なし）
-# <key> は端末エミュレータ側で割り当てた escape sequence に合わせて変更する
-bind-key -n <key> run-shell 'tmux-sidebar focus-sidebar'
+# prefix+f でサイドバーにフォーカス
+bind-key f run-shell 'tmux-sidebar focus-sidebar'
+
+# サイドバーがなければ作成してフォーカス、あればフォーカス移動
+# @sidebar_focus_intended を設定することで after-select-pane の誤フォーカス防止を回避する
+bind-key -n <key> run-shell 'tmux set-option -w @sidebar_focus_intended 1 ; tmux-sidebar focus-or-open'
 ```
 
-> `tmux-sidebar focus-sidebar` は現在ウィンドウのサイドバー pane を探して
-> フォーカスします。サイドバーが存在しないウィンドウでは何もしません。
+> `<key>` は端末エミュレータ側で割り当てた escape sequence に合わせて変更してください。
 
-#### iTerm2 で `cmd+s` に割り当てる場合
-
-1. **iTerm2** の `Preferences > Keys > Key Bindings` を開く
-2. `+` で新しいバインドを追加：
-   - **Keyboard Shortcut**: `⌘S`
-   - **Action**: `Send Escape Sequence`
-   - **Esc+**: `[18~`（`F7` に相当するシーケンス）
-3. `~/.tmux.conf` に以下を追加：
+`focus-or-open` を使う場合は `after-select-pane` hook で `@sidebar_focus_intended` フラグを考慮する必要があります:
 
 ```tmux
-bind-key -n F7 run-shell 'tmux-sidebar focus-sidebar'
+# ペイン選択時:
+#   @sidebar_focus_intended=1 → 意図的なフォーカス（フラグをクリアしてキープ）
+#   それ以外 → 直前のペインへ戻す
+set-hook -g after-select-pane \
+  'if -F "#{==:#{@pane_role},sidebar}" \
+    "if -F \"#{@sidebar_focus_intended}\" \
+      \"set-option -wu @sidebar_focus_intended\" \
+      \"select-pane -l\"" \
+    ""'
 ```
 
-> 別のシーケンスを使う場合は `tmux list-keys -N` や `cat -v` で
-> 送信されるシーケンスを確認してから対応するキー名を設定してください。
+> この hook はセクション 2 の簡易版 `after-select-pane` を**置き換えて**使用してください。
 
-### 4. Claude Code の状態ファイル（任意）
+### 8. Claude Code の状態ファイル（任意）
 
 状態バッジを表示するには Claude Code の hook が `/tmp/claude-pane-state/` に状態ファイルを書き出す必要があります。
 
@@ -161,6 +212,21 @@ if [ "$1" = "running" ]; then
   [ -f "$dir/pane_${num}_path" ] || pwd > "$dir/pane_${num}_path"
 fi
 ```
+
+## Subcommands
+
+| サブコマンド | 説明 |
+|---|---|
+| (なし) | TUI サイドバーを起動 |
+| `close` | サイドバーを閉じる |
+| `toggle` | サイドバーの表示/非表示を切り替え |
+| `focus-or-open` | サイドバーがあればフォーカス、なければ作成 |
+| `focus-sidebar` | サイドバーペインにフォーカスを移動 |
+| `select-pane (L\|R)` | 指定方向のペインを選択（sidebar をスキップ） |
+| `ensure-not-focused` | sidebar にフォーカスがあれば別ペインへ移動 |
+| `cleanup-if-only-sidebar` | sidebar のみ残ったウィンドウを削除 |
+| `doctor [--yes]` | tmux 設定をチェック（`--yes` で自動修正） |
+| `version` | バージョンを表示 |
 
 ## Keyboard shortcuts
 

@@ -103,29 +103,15 @@ set-hook -ga session-closed  'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ 
 
 > 未設定でも動作しますが、ウィンドウの追加・削除がサイドバーに反映されるまで最大10秒かかります。
 
-### 5. ペイン移動で sidebar をスキップ（推奨）
-
-```tmux
-# h/l は tmux-sidebar 経由で sidebar ペインをスキップする
-bind h run-shell 'tmux-sidebar select-pane L'
-bind l run-shell 'tmux-sidebar select-pane R'
-```
-
-### 6. toggle キーバインド（任意）
+### 5. toggle キーバインド（任意）
 
 ```tmux
 bind-key e run-shell 'tmux-sidebar toggle'
 ```
 
-### 7. サイドバーへのフォーカスキーバインド（任意）
-
-通常の pane 移動（`prefix+hjkl` 等）ではサイドバーはスキップされます。
-専用キーでのみサイドバーにフォーカスを当てたい場合は以下を設定してください。
+### 6. サイドバーへのフォーカスキーバインド（任意）
 
 ```tmux
-# prefix+f でサイドバーにフォーカス
-bind-key f run-shell 'tmux-sidebar focus-sidebar'
-
 # サイドバーがなければ作成してフォーカス、あればフォーカス移動
 # @sidebar_focus_intended を設定することで after-select-pane の誤フォーカス防止を回避する
 bind-key -n <key> run-shell 'tmux set-option -w @sidebar_focus_intended 1 ; tmux-sidebar focus-or-open'
@@ -152,7 +138,7 @@ set-hook -g after-select-pane \
 
 > この hook はセクション 2 の簡易版 `after-select-pane` を**置き換えて**使用してください。
 
-### 8. Claude Code の状態ファイル（任意）
+### 7. Claude Code の状態ファイル（任意）
 
 状態バッジを表示するには Claude Code の hook が `/tmp/claude-pane-state/` に状態ファイルを書き出す必要があります。
 
@@ -214,9 +200,6 @@ fi
 | `close` | サイドバーを閉じる |
 | `toggle` | サイドバーの表示/非表示を切り替え |
 | `focus-or-open` | サイドバーがあればフォーカス、なければ作成 |
-| `focus-sidebar` | サイドバーペインにフォーカスを移動 |
-| `select-pane (L\|R)` | 指定方向のペインを選択（sidebar をスキップ） |
-| `ensure-not-focused` | sidebar にフォーカスがあれば別ペインへ移動 |
 | `cleanup-if-only-sidebar` | sidebar のみ残ったウィンドウを削除 |
 | `doctor [--yes]` | tmux 設定をチェック（`--yes` で自動修正） |
 | `version` | バージョンを表示 |

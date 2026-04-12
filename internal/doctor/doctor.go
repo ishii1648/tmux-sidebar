@@ -87,11 +87,6 @@ var requiredTmuxHooks = []struct {
 		hint:   `set-hook -g after-new-window 'run-shell "tmux split-window -hfb -l 35 -e @pane_role=sidebar tmux-sidebar"'`,
 	},
 	{
-		label:  "focus-sidebar binding",
-		needle: "focus-sidebar",
-		hint:   `bind-key -n <key> run-shell 'tmux-sidebar focus-sidebar'`,
-	},
-	{
 		label:  "toggle binding",
 		needle: "toggle",
 		hint:   `bind-key -n C-s run-shell 'tmux-sidebar toggle'`,

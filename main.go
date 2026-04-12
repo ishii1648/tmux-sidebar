@@ -27,13 +27,16 @@ func main() {
 			fmt.Print(`Usage: tmux-sidebar [subcommand]
 
 Subcommands:
-  (none)          Start the TUI sidebar
-  close           Close sidebar if open
-  toggle          Open sidebar if closed, close if open
-  focus-or-open   Focus sidebar if open, open if closed
-  focus-sidebar   Move focus to the sidebar pane
-  doctor [--yes]  Check tmux configuration; --yes to auto-apply fixes
-  version         Print version
+  (none)                    Start the TUI sidebar
+  close                     Close sidebar if open
+  toggle                    Open sidebar if closed, close if open
+  focus-or-open             Focus sidebar if open, open if closed
+  focus-sidebar             Move focus to the sidebar pane
+  select-pane (L|R)         Select pane in direction, skipping the sidebar
+  ensure-not-focused        If sidebar is focused, move focus to another pane
+  cleanup-if-only-sidebar   Kill window if only the sidebar pane remains
+  doctor [--yes]            Check tmux configuration; --yes to auto-apply fixes
+  version                   Print version
 
 `)
 			return
@@ -58,6 +61,28 @@ Subcommands:
 		case "toggle":
 			if err := runToggleSidebar(); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar toggle: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "select-pane":
+			if len(os.Args) < 3 {
+				fmt.Fprintln(os.Stderr, "tmux-sidebar select-pane: requires direction (L or R)")
+				os.Exit(1)
+			}
+			if err := runSelectPane(os.Args[2]); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar select-pane: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "ensure-not-focused":
+			if err := runEnsureNotFocused(); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar ensure-not-focused: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "cleanup-if-only-sidebar":
+			if err := runCleanupIfOnlySidebar(); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar cleanup-if-only-sidebar: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -226,6 +251,109 @@ func runCloseSidebar() error {
 		if len(parts) == 2 && parts[1] == "sidebar" {
 			return exec.Command("tmux", "kill-pane", "-t", parts[0]).Run()
 		}
+	}
+	return nil
+}
+
+// runSelectPane selects a pane in the given direction (L or R), skipping the sidebar.
+//
+// Usage in tmux.conf:
+//
+//	bind h run-shell 'tmux-sidebar select-pane L'
+//	bind l run-shell 'tmux-sidebar select-pane R'
+func runSelectPane(direction string) error {
+	if direction != "L" && direction != "R" {
+		return fmt.Errorf("direction must be L or R")
+	}
+	if err := exec.Command("tmux", "select-pane", "-"+direction).Run(); err != nil {
+		return err
+	}
+	// If the newly focused pane is the sidebar, move away from it.
+	out, err := exec.Command("tmux", "display-message", "-p", "#{@pane_role}").Output()
+	if err != nil {
+		return nil
+	}
+	if strings.TrimSpace(string(out)) != "sidebar" {
+		return nil
+	}
+	// Sidebar is now focused — find any non-sidebar pane and select it.
+	panesOut, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{@pane_role}").Output()
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(panesOut)), "\n") {
+		parts := strings.Fields(line)
+		role := ""
+		if len(parts) >= 2 {
+			role = parts[1]
+		}
+		if role != "sidebar" {
+			return exec.Command("tmux", "select-pane", "-t", parts[0]).Run()
+		}
+	}
+	return nil
+}
+
+// runEnsureNotFocused moves focus away from the sidebar pane if it is currently focused.
+// Intended to be called from the after-select-window hook so that switching windows
+// never leaves the cursor on the sidebar.
+//
+// Usage in tmux.conf:
+//
+//	set-hook -g after-select-window 'run-shell "tmux-sidebar ensure-not-focused"'
+func runEnsureNotFocused() error {
+	// Check whether the active pane is the sidebar.
+	out, err := exec.Command("tmux", "display-message", "-p", "#{@pane_role}").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "sidebar" {
+		return nil
+	}
+	// Active pane is the sidebar — select the first non-sidebar pane.
+	panesOut, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{@pane_role}").Output()
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(panesOut)), "\n") {
+		parts := strings.Fields(line)
+		role := ""
+		if len(parts) >= 2 {
+			role = parts[1]
+		}
+		if role != "sidebar" {
+			return exec.Command("tmux", "select-pane", "-t", parts[0]).Run()
+		}
+	}
+	return nil
+}
+
+// runCleanupIfOnlySidebar kills the current window when only the sidebar pane remains.
+// Intended to be called from the pane-exited hook so that closing the last non-sidebar
+// pane also removes the now-empty window (along with its sidebar).
+//
+// Usage in tmux.conf:
+//
+//	set-hook -g pane-exited 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
+func runCleanupIfOnlySidebar() error {
+	out, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{@pane_role}").Output()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	nonSidebarCount := 0
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		role := ""
+		if len(parts) >= 2 {
+			role = parts[1]
+		}
+		if role != "sidebar" {
+			nonSidebarCount++
+		}
+	}
+	if nonSidebarCount == 0 {
+		return exec.Command("tmux", "kill-window").Run()
 	}
 	return nil
 }

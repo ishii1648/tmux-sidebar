@@ -221,9 +221,11 @@ func (m *Model) loadData() tea.Cmd {
 }
 
 // loadGitInfo fetches git branch/ahead/PR info for all visible windows in parallel.
+// gh pr view is skipped when the branch is unchanged (uses cached PR data instead).
 func (m *Model) loadGitInfo() tea.Cmd {
 	visible := m.visibleItems()
 	client := m.tmuxClient
+	oldData := m.gitData // snapshot for branch comparison
 	return func() tea.Msg {
 		data := make(map[string]gitInfo)
 		var mu sync.Mutex
@@ -236,7 +238,7 @@ func (m *Model) loadGitInfo() tea.Cmd {
 			wg.Add(1)
 			go func(item ListItem) {
 				defer wg.Done()
-				info := fetchGitInfo(client, item)
+				info := fetchGitInfo(client, item, oldData[item.Window.ID])
 				if info.branch != "" || info.prNumber != 0 {
 					mu.Lock()
 					data[item.Window.ID] = info
@@ -250,7 +252,8 @@ func (m *Model) loadGitInfo() tea.Cmd {
 }
 
 // fetchGitInfo runs git/gh commands for a single window item and returns the result.
-func fetchGitInfo(client tmux.Client, item ListItem) gitInfo {
+// old is the previously cached gitInfo; gh pr view is skipped when branch is unchanged.
+func fetchGitInfo(client tmux.Client, item ListItem, old gitInfo) gitInfo {
 	var path string
 	if item.PaneState != nil && item.PaneState.WorkDir != "" {
 		path = item.PaneState.WorkDir
@@ -277,6 +280,13 @@ func fetchGitInfo(client tmux.Client, item ListItem) gitInfo {
 	ahead, _ := strconv.Atoi(strings.TrimSpace(string(aheadOut)))
 
 	info := gitInfo{branch: branch, ahead: ahead}
+
+	// Reuse cached PR data when branch is unchanged to avoid redundant API calls.
+	if branch == old.branch {
+		info.prState = old.prState
+		info.prNumber = old.prNumber
+		return info
+	}
 
 	if _, err := exec.LookPath("gh"); err == nil {
 		cmd := exec.Command("gh", "pr", "view", "--json", "number,state,isDraft")

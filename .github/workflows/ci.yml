@@ -31,5 +31,31 @@ jobs:
           cache: true
       - name: Install tmux
         run: sudo apt-get install -y tmux
+      - name: Diagnose tmux in-pane access
+        run: |
+          echo "=== tmux version ==="
+          tmux -V
+          echo "=== UID/socket path ==="
+          id
+          echo "TMPDIR=${TMPDIR:-/tmp}"
+          SOCKET="diag$(date +%s%N | tail -c 14)"
+          echo "socket=$SOCKET"
+          tmux -L "$SOCKET" new-session -d -s scratch -x 120 -y 40
+          tmux -L "$SOCKET" new-session -d -s work
+          tmux -L "$SOCKET" new-session -d -s infra
+          echo "=== sessions created (from outside pane) ==="
+          tmux -L "$SOCKET" list-sessions
+          echo "=== send tmux list-sessions from inside pane ==="
+          tmux -L "$SOCKET" send-keys -t scratch "tmux -L $SOCKET list-sessions > /tmp/diag-sessions.txt 2>&1; echo EXITCODE:\$? >> /tmp/diag-sessions.txt" Enter
+          sleep 2
+          echo "=== capture pane ==="
+          tmux -L "$SOCKET" capture-pane -p -t scratch
+          echo "=== /tmp/diag-sessions.txt ==="
+          cat /tmp/diag-sessions.txt || echo "(file not created)"
+          echo "=== send without -L from inside pane ==="
+          tmux -L "$SOCKET" send-keys -t scratch "tmux list-sessions > /tmp/diag-sessions2.txt 2>&1; echo EXITCODE:\$? >> /tmp/diag-sessions2.txt" Enter
+          sleep 2
+          cat /tmp/diag-sessions2.txt || echo "(file not created)"
+          tmux -L "$SOCKET" kill-server
       - name: Run E2E tests
         run: go test -v -tags e2e -timeout 60s ./e2e/...

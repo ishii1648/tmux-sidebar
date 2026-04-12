@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -559,5 +560,219 @@ func TestView_NoPRBadgeWhenGitDataAbsent(t *testing.T) {
 	view := stripANSI(m.View())
 	if strings.Contains(view, "#") {
 		t.Errorf("View should NOT contain # badge when gitData is empty:\n%s", view)
+	}
+}
+
+// ── scroll ──────────────────────────────────────────────────────────────────
+
+// manyItems builds a list with N windows under a single session.
+func manyItems(n int) []ListItem {
+	items := []ListItem{{Kind: ItemSession, SessionName: "s"}}
+	for i := 0; i < n; i++ {
+		items = append(items, ListItem{
+			Kind:        ItemWindow,
+			SessionName: "s",
+			Window:      &tmux.Window{ID: fmt.Sprintf("@%d", i+1), Index: i, Name: fmt.Sprintf("win-%d", i)},
+		})
+	}
+	return items
+}
+
+func TestScroll_ViewportLimitsRenderedRows(t *testing.T) {
+	items := manyItems(20) // 1 session header + 20 windows = 21 rows
+	m := newTestModel(items, 1, true)
+	m.height = 10 // header(3) + viewport(5) + footer(2) = 10
+
+	view := stripANSI(m.View())
+	// Only first 5 items (session header + win-0..win-3) should render
+	if !strings.Contains(view, "win-0") {
+		t.Errorf("should contain win-0:\n%s", view)
+	}
+	// win-10 should NOT be visible
+	if strings.Contains(view, "win-10") {
+		t.Errorf("win-10 should be scrolled out:\n%s", view)
+	}
+	// "more" indicator should appear
+	if !strings.Contains(view, "more") {
+		t.Errorf("should show scroll indicator:\n%s", view)
+	}
+}
+
+func TestScroll_CursorDownScrollsView(t *testing.T) {
+	items := manyItems(20)
+	m := newTestModel(items, 1, true)
+	m.height = 10 // viewport = 5
+
+	// Move cursor down many times to trigger scroll
+	for i := 0; i < 10; i++ {
+		m.Update(key('j'))
+	}
+	// Cursor should be past the initial viewport
+	if m.cursor <= 5 {
+		t.Errorf("cursor should have moved past initial viewport, got %d", m.cursor)
+	}
+	// Offset should have advanced
+	if m.offset == 0 {
+		t.Errorf("offset should have advanced from 0")
+	}
+}
+
+func TestScroll_CursorUpScrollsBack(t *testing.T) {
+	items := manyItems(20)
+	m := newTestModel(items, 1, true)
+	m.height = 10
+
+	// Scroll down first
+	for i := 0; i < 10; i++ {
+		m.Update(key('j'))
+	}
+	savedOffset := m.offset
+
+	// Scroll back up
+	for i := 0; i < 10; i++ {
+		m.Update(key('k'))
+	}
+	if m.offset >= savedOffset {
+		t.Errorf("offset should decrease when scrolling up, got %d (was %d)", m.offset, savedOffset)
+	}
+}
+
+func TestScroll_NoHeightNoRestriction(t *testing.T) {
+	items := manyItems(20)
+	m := newTestModel(items, 1, true)
+	// height = 0 (default) — no scroll restriction
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "win-19") {
+		t.Errorf("with no height, all items should render:\n%s", view)
+	}
+}
+
+// ── search / text filter ────────────────────────────────────────────────────
+
+func TestSearch_SlashEntersSearchMode(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('/'))
+	if !m.searchMode {
+		t.Error("/ should enter search mode")
+	}
+}
+
+func TestSearch_TypingFiltersItems(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('/'))
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+
+	visible := m.visibleItems()
+	windowCount := 0
+	for _, item := range visible {
+		if item.Kind == ItemWindow {
+			windowCount++
+			if item.Window.Name != "work" {
+				t.Errorf("expected only 'work' window, got %q", item.Window.Name)
+			}
+		}
+	}
+	if windowCount != 1 {
+		t.Errorf("expected 1 matching window, got %d", windowCount)
+	}
+}
+
+func TestSearch_EscClearsSearch(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('/'))
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+
+	if m.searchMode {
+		t.Error("Esc should exit search mode")
+	}
+	if m.searchQuery != "" {
+		t.Errorf("Esc should clear search query, got %q", m.searchQuery)
+	}
+	// All items should be visible again
+	if len(m.visibleItems()) != len(sampleItems()) {
+		t.Errorf("after Esc, all items should be visible")
+	}
+}
+
+func TestSearch_BackspaceDeletesChar(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('/'))
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+
+	if m.searchQuery != "x" {
+		t.Errorf("after backspace: query = %q, want 'x'", m.searchQuery)
+	}
+}
+
+func TestSearch_CaseInsensitive(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('/'))
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'W'}})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
+
+	visible := m.visibleItems()
+	windowCount := 0
+	for _, item := range visible {
+		if item.Kind == ItemWindow {
+			windowCount++
+		}
+	}
+	// "WO" should match "work" (case-insensitive)
+	if windowCount != 1 {
+		t.Errorf("case-insensitive search: expected 1 window, got %d", windowCount)
+	}
+}
+
+func TestSearch_MatchesSessionName(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	m.Update(key('/'))
+	// Type "session-b" to filter by session name
+	for _, r := range "session-b" {
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	visible := m.visibleItems()
+	windowCount := 0
+	for _, item := range visible {
+		if item.Kind == ItemWindow {
+			windowCount++
+			if item.SessionName != "session-b" {
+				t.Errorf("expected session-b windows, got session %q", item.SessionName)
+			}
+		}
+	}
+	if windowCount != 1 {
+		t.Errorf("expected 1 window in session-b, got %d", windowCount)
+	}
+}
+
+func TestView_SearchModeShowsPrompt(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.searchMode = true
+	m.searchQuery = "test"
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "/test") {
+		t.Errorf("search mode should show /query prompt:\n%s", view)
+	}
+}
+
+func TestView_FooterShowsSearchHint(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "/:search") {
+		t.Errorf("footer should contain /:search hint:\n%s", view)
 	}
 }

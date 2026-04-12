@@ -621,8 +621,14 @@ func (m *Model) View() string {
 func renderBadge(ps *state.PaneState) string {
 	switch ps.Status {
 	case state.StatusRunning:
-		mins := int(ps.Elapsed.Minutes())
-		text := fmt.Sprintf("[running %dm]", mins)
+		var text string
+		if ps.Elapsed < time.Minute {
+			secs := int(ps.Elapsed.Seconds())
+			text = fmt.Sprintf("[running %ds]", secs)
+		} else {
+			mins := int(ps.Elapsed.Minutes())
+			text = fmt.Sprintf("[running %dm]", mins)
+		}
 		return styleBadgeRun.Render(text)
 	case state.StatusIdle:
 		return styleBadgeIdle.Render("[idle]")

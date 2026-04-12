@@ -699,12 +699,17 @@ func (m *Model) View() string {
 	sb.WriteString("\n")
 
 	// Search prompt (always visible, replaces separator)
+	faintSep := lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width))
 	if m.searchQuery != "" {
-		sb.WriteString("> " + m.searchQuery + "▏\n")
+		sb.WriteString(faintSep + "\n")
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("> ") + m.searchQuery + "▏\n")
+		sb.WriteString(faintSep + "\n")
 	} else if m.focused {
-		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("> ") + "\n")
+		sb.WriteString(faintSep + "\n")
+		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("> type to filter...") + "\n")
+		sb.WriteString(faintSep + "\n")
 	} else {
-		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width)) + "\n")
+		sb.WriteString(faintSep + "\n")
 	}
 
 	// Session / window list

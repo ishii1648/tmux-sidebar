@@ -114,9 +114,9 @@ var (
 	styleHeader       = lipgloss.NewStyle().Bold(true).Underline(true)
 	styleFilterActive = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	styleFilterFaint  = lipgloss.NewStyle().Faint(true)
-	stylePRDraft      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))  // gray
-	stylePROpen       = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))  // green
-	stylePRMerged     = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))  // magenta
+	stylePRDraft  = lipgloss.NewStyle().Foreground(lipgloss.Color("248")) // gray (#8b949e)
+	stylePROpen   = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))  // green (#3fb950)
+	stylePRMerged = lipgloss.NewStyle().Foreground(lipgloss.Color("141")) // purple (#a371f7)
 )
 
 // Model is the bubbletea Model for the sidebar.
@@ -126,6 +126,7 @@ type Model struct {
 	items        []ListItem
 	winPaneNums  map[string][]int  // windowID → pane numbers; updated by loadData
 	cursor       int               // index into visibleItems()
+	cursorWinID  string            // window ID the cursor is currently on (tracks user selection across data refreshes)
 	currentWinID string            // window ID of the pane running this process
 	filter       FilterMode
 	width        int
@@ -447,15 +448,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = msg.items
 		m.winPaneNums = msg.winPaneNums
 		m.err = nil
-		// Clamp cursor to the visible list
-		maxCursor := m.maxWindowIndex()
-		if m.cursor > maxCursor {
-			m.cursor = maxCursor
-		}
-		visible := m.visibleItems()
-		if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
-			m.resetCursorToCurrentWindow()
-		}
+		// Re-locate cursor by the window ID it was on before the refresh.
+		// This prevents the cursor from jumping to a different window when
+		// items are added/removed and indices shift.
+		m.relocateCursor()
 		m.adjustScroll()
 		return m, nil
 
@@ -480,7 +476,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.loadGitInfo(), gitTickCmd())
 
 	case gitDataMsg:
-		m.gitData = msg.data
+		// Merge instead of overwrite: loadGitInfo only fetches visible windows,
+		// so a full replace would discard PR data for filtered-out windows.
+		for k, v := range msg.data {
+			m.gitData[k] = v
+		}
 		return m, nil
 
 	case deleteWindowMsg:
@@ -633,6 +633,9 @@ func (m *Model) moveCursor(delta int) {
 		}
 		if visible[next].Kind == ItemWindow {
 			m.cursor = next
+			if visible[next].Window != nil {
+				m.cursorWinID = visible[next].Window.ID
+			}
 			m.adjustScroll()
 			return
 		}
@@ -658,6 +661,9 @@ func (m *Model) resetCursorToFirstWindow() {
 	for i, item := range visible {
 		if item.Kind == ItemWindow {
 			m.cursor = i
+			if item.Window != nil {
+				m.cursorWinID = item.Window.ID
+			}
 			m.offset = 0
 			m.adjustScroll()
 			return
@@ -679,6 +685,7 @@ func (m *Model) resetCursorToCurrentWindow() {
 		}
 		if item.Window.ID == m.currentWinID {
 			m.cursor = i
+			m.cursorWinID = item.Window.ID
 			m.offset = 0
 			m.adjustScroll()
 			return
@@ -686,10 +693,48 @@ func (m *Model) resetCursorToCurrentWindow() {
 	}
 	if firstWindow >= 0 {
 		m.cursor = firstWindow
+		if visible[firstWindow].Window != nil {
+			m.cursorWinID = visible[firstWindow].Window.ID
+		}
 	} else {
 		m.cursor = 0
 	}
 	m.offset = 0
+}
+
+// relocateCursor finds the window that the cursor was previously on (by cursorWinID)
+// and moves the cursor to its new index. Falls back to currentWinID, then the first window.
+func (m *Model) relocateCursor() {
+	visible := m.visibleItems()
+	firstWindow := -1
+	for i, item := range visible {
+		if item.Kind != ItemWindow || item.Window == nil {
+			continue
+		}
+		if firstWindow < 0 {
+			firstWindow = i
+		}
+		if m.cursorWinID != "" && item.Window.ID == m.cursorWinID {
+			m.cursor = i
+			return
+		}
+	}
+	// cursorWinID not found (window was deleted) — fall back to currentWinID
+	for i, item := range visible {
+		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.currentWinID {
+			m.cursor = i
+			m.cursorWinID = item.Window.ID
+			return
+		}
+	}
+	// Last resort: first window
+	if firstWindow >= 0 {
+		m.cursor = firstWindow
+		m.cursorWinID = visible[firstWindow].Window.ID
+	} else {
+		m.cursor = 0
+		m.cursorWinID = ""
+	}
 }
 
 // switchSelected builds a Cmd that switches to the currently selected window.

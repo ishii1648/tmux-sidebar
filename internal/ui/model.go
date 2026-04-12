@@ -122,9 +122,12 @@ type Model struct {
 	currentWinID string            // window ID of the pane running this process
 	filter       FilterMode
 	width        int
+	height       int               // terminal height (from WindowSizeMsg)
+	offset       int               // scroll offset into visibleItems()
 	err          error
 	gitData      map[string]gitInfo // keyed by window ID
 	focused      bool               // true when this pane has terminal focus
+	searchQuery  string             // current search query text (always-on incremental filter)
 }
 
 // New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
@@ -344,10 +347,10 @@ func fetchGitInfo(client tmux.Client, item ListItem, old gitInfo) gitInfo {
 	return info
 }
 
-// visibleItems returns the items list filtered by the current filter mode.
-// For FilterAll it returns m.items directly (no allocation).
+// visibleItems returns the items list filtered by the current filter mode and search query.
+// For FilterAll with no search query it returns m.items directly (no allocation).
 func (m *Model) visibleItems() []ListItem {
-	if m.filter == FilterAll {
+	if m.filter == FilterAll && m.searchQuery == "" {
 		return m.items
 	}
 
@@ -367,7 +370,7 @@ func (m *Model) visibleItems() []ListItem {
 			}
 			cur = &sessionBuf{header: item}
 		case ItemWindow:
-			if cur != nil && m.matchesFilter(item) {
+			if cur != nil && m.matchesFilter(item) && m.matchesSearch(item) {
 				cur.windows = append(cur.windows, item)
 			}
 		}
@@ -378,6 +381,21 @@ func (m *Model) visibleItems() []ListItem {
 		result = append(result, cur.windows...)
 	}
 	return result
+}
+
+// matchesSearch reports whether item matches the current search query (case-insensitive substring).
+func (m *Model) matchesSearch(item ListItem) bool {
+	if m.searchQuery == "" {
+		return true
+	}
+	q := strings.ToLower(m.searchQuery)
+	if strings.Contains(strings.ToLower(item.SessionName), q) {
+		return true
+	}
+	if item.Window != nil && strings.Contains(strings.ToLower(item.Window.Name), q) {
+		return true
+	}
+	return false
 }
 
 // matchesFilter reports whether item should be included under the current filter.
@@ -426,6 +444,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
 			m.resetCursorToCurrentWindow()
 		}
+		m.adjustScroll()
 		return m, nil
 
 	case stateOnlyMsg:
@@ -460,6 +479,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
+		m.adjustScroll()
 
 	case tea.FocusMsg:
 		m.focused = true
@@ -480,21 +501,87 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	switch msg.String() {
-	case "j", "down":
-		m.moveCursor(1)
-	case "k", "up":
-		m.moveCursor(-1)
-	case "tab":
-		m.filter = (m.filter + 1) % 2
-		m.resetCursorToCurrentWindow()
-	case "shift+tab":
-		m.filter = (m.filter + 1) % 2
-		m.resetCursorToCurrentWindow()
-	case "enter":
+	switch msg.Type {
+	case tea.KeyEscape:
+		if m.searchQuery != "" {
+			m.searchQuery = ""
+			m.resetCursorToFirstWindow()
+		}
+		return m, nil
+	case tea.KeyEnter:
 		return m, m.switchSelected()
+	case tea.KeyBackspace:
+		if len(m.searchQuery) > 0 {
+			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+			m.resetCursorToFirstWindow()
+		}
+		return m, nil
+	case tea.KeyTab:
+		m.filter = (m.filter + 1) % 2
+		m.searchQuery = ""
+		m.resetCursorToCurrentWindow()
+		return m, nil
+	case tea.KeyShiftTab:
+		m.filter = (m.filter + 1) % 2
+		m.searchQuery = ""
+		m.resetCursorToCurrentWindow()
+		return m, nil
+	case tea.KeyUp:
+		m.moveCursor(-1)
+		return m, nil
+	case tea.KeyDown:
+		m.moveCursor(1)
+		return m, nil
+	case tea.KeyRunes:
+		r := msg.Runes
+		// j/k navigation only when search is empty
+		if m.searchQuery == "" && len(r) == 1 {
+			switch r[0] {
+			case 'j':
+				m.moveCursor(1)
+				return m, nil
+			case 'k':
+				m.moveCursor(-1)
+				return m, nil
+			}
+		}
+		m.searchQuery += string(r)
+		m.resetCursorToFirstWindow()
+		return m, nil
 	}
 	return m, nil
+}
+
+// headerLines returns the number of fixed lines above the item list
+// (title + filter tabs + separator).
+const headerLines = 3
+
+// footerLines returns the number of fixed lines below the item list
+// (blank + key hints).
+const footerLines = 2
+
+// viewportHeight returns the number of item rows that fit on screen.
+// Returns 0 when the terminal height is unknown or too small.
+func (m *Model) viewportHeight() int {
+	if m.height <= headerLines+footerLines {
+		return 0
+	}
+	return m.height - headerLines - footerLines
+}
+
+// adjustScroll ensures the cursor is within the visible viewport,
+// adjusting offset as needed.
+func (m *Model) adjustScroll() {
+	vp := m.viewportHeight()
+	if vp <= 0 {
+		return
+	}
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+vp {
+		m.offset = m.cursor - vp + 1
+	}
 }
 
 // moveCursor advances the cursor by delta within visibleItems, skipping session-header rows.
@@ -507,6 +594,7 @@ func (m *Model) moveCursor(delta int) {
 		}
 		if visible[next].Kind == ItemWindow {
 			m.cursor = next
+			m.adjustScroll()
 			return
 		}
 		next += delta
@@ -526,6 +614,20 @@ func (m *Model) maxWindowIndex() int {
 
 // resetCursorToCurrentWindow sets the cursor to the current window (by currentWinID) in visibleItems,
 // falling back to the first window item if not found.
+func (m *Model) resetCursorToFirstWindow() {
+	visible := m.visibleItems()
+	for i, item := range visible {
+		if item.Kind == ItemWindow {
+			m.cursor = i
+			m.offset = 0
+			m.adjustScroll()
+			return
+		}
+	}
+	m.cursor = 0
+	m.offset = 0
+}
+
 func (m *Model) resetCursorToCurrentWindow() {
 	visible := m.visibleItems()
 	firstWindow := -1
@@ -538,6 +640,8 @@ func (m *Model) resetCursorToCurrentWindow() {
 		}
 		if item.Window.ID == m.currentWinID {
 			m.cursor = i
+			m.offset = 0
+			m.adjustScroll()
 			return
 		}
 	}
@@ -546,6 +650,7 @@ func (m *Model) resetCursorToCurrentWindow() {
 	} else {
 		m.cursor = 0
 	}
+	m.offset = 0
 }
 
 // switchSelected builds a Cmd that switches to the currently selected window.
@@ -581,7 +686,7 @@ func (m *Model) View() string {
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("○ Sessions") + "\n")
 	}
 
-	// Filter tabs: [All] [Waiting]
+	// Filter tabs
 	for _, f := range []FilterMode{FilterAll, FilterWaiting} {
 		label := "[" + f.String() + "]"
 		if f == m.filter {
@@ -593,16 +698,33 @@ func (m *Model) View() string {
 	}
 	sb.WriteString("\n")
 
-	sep := strings.Repeat("─", m.width)
-	if m.focused {
-		sb.WriteString(sep + "\n")
+	// Search prompt (always visible, replaces separator)
+	faintSep := lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width))
+	if m.searchQuery != "" {
+		sb.WriteString(faintSep + "\n")
+		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("> ") + m.searchQuery + "▏\n")
+		sb.WriteString(faintSep + "\n")
+	} else if m.focused {
+		sb.WriteString(faintSep + "\n")
+		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("> type to filter...") + "\n")
+		sb.WriteString(faintSep + "\n")
 	} else {
-		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(sep) + "\n")
+		sb.WriteString(faintSep + "\n")
 	}
 
 	// Session / window list
 	visible := m.visibleItems()
-	for i, item := range visible {
+	vp := m.viewportHeight()
+	startIdx := m.offset
+	endIdx := len(visible)
+	if vp > 0 && startIdx+vp < endIdx {
+		endIdx = startIdx + vp
+	}
+	if startIdx > endIdx {
+		startIdx = endIdx
+	}
+	for i := startIdx; i < endIdx; i++ {
+		item := visible[i]
 		switch item.Kind {
 		case ItemSession:
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
@@ -639,8 +761,13 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Footer: always show key hints
-	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
+	// Footer: scroll indicator + key hints
+	if vp > 0 && endIdx < len(visible) {
+		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("  ↓ %d more", len(visible)-endIdx)) + "\n")
+	} else {
+		sb.WriteString("\n")
+	}
+	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter Esc:clear ^C:quit") + "\n")
 	return sb.String()
 }
 

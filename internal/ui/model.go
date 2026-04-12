@@ -365,16 +365,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = msg.items
 		m.currentWinID = msg.currentWinID
 		m.err = nil
-		// Clamp cursor to the visible list
-		maxCursor := m.maxWindowIndex()
-		if m.cursor > maxCursor {
-			m.cursor = maxCursor
-		}
-		// Ensure cursor lands on a window item, not a session header
-		visible := m.visibleItems()
-		if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
-			m.resetCursorToFirstWindow()
-		}
+		m.syncCursorToActiveWindow()
 		return m, nil
 
 	case gitTickMsg:
@@ -468,6 +459,24 @@ func (m *Model) resetCursorToFirstWindow() {
 	m.cursor = 0
 }
 
+// syncCursorToActiveWindow sets the cursor to the currently active tmux window.
+func (m *Model) syncCursorToActiveWindow() {
+	visible := m.visibleItems()
+	for i, item := range visible {
+		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.currentWinID {
+			m.cursor = i
+			return
+		}
+	}
+	// Fallback: clamp cursor to valid range
+	if m.cursor >= len(visible) {
+		m.cursor = len(visible) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
 // switchSelected builds a Cmd that switches to the currently selected window.
 func (m *Model) switchSelected() tea.Cmd {
 	visible := m.visibleItems()
@@ -528,18 +537,10 @@ func (m *Model) View() string {
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
-			if i == m.cursor {
-				if m.focused {
-					cursor = styleCursor.Render("▶ ")
-				} else {
-					cursor = lipgloss.NewStyle().Faint(true).Render("▶ ")
-				}
+			if i == m.cursor && m.focused {
+				cursor = styleCursor.Render("▶ ")
 			}
-			// Highlight current window
 			label := fmt.Sprintf("%d: %s", item.Window.Index, item.Window.Name)
-			if item.Window.ID == m.currentWinID {
-				label = lipgloss.NewStyle().Underline(true).Render(label)
-			}
 			badge := ""
 			if item.PaneState != nil {
 				badge = " " + renderBadge(item.PaneState)
@@ -552,8 +553,10 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Footer: always show key hints
-	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
+	// Footer: show key hints only when focused
+	if m.focused {
+		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
+	}
 	return sb.String()
 }
 

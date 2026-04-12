@@ -27,8 +27,9 @@ func TestDisplayShowsSessionsAndBadges(t *testing.T) {
 	env.setupStateFile(askPane, "ask")
 
 	env.runSidebar("scratch")
-	// Wait for actual session data to appear (not just the header).
-	if err := env.waitForText("scratch", "work", 5*time.Second); err != nil {
+	// Wait for actual session data to appear (window name "editor" is unique;
+	// session name "work" risks matching a GitHub Actions working directory path).
+	if err := env.waitForText("scratch", "editor", 5*time.Second); err != nil {
 		t.Fatalf("sidebar did not load sessions: %v", err)
 	}
 

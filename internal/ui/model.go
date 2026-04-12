@@ -4,6 +4,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -125,12 +126,15 @@ type Model struct {
 
 // New creates a new Model.
 func New(tc tmux.Client, sr state.Reader, width int) *Model {
+	// TMUX_SIDEBAR_FORCE_FOCUS=1 bypasses terminal focus events (used in e2e tests
+	// where isolated tmux servers have no attached client and cannot send focus events).
+	forceFocus := os.Getenv("TMUX_SIDEBAR_FORCE_FOCUS") != ""
 	return &Model{
 		tmuxClient:  tc,
 		stateReader: sr,
 		width:       width,
 		gitData:     map[string]gitInfo{},
-		focused:     false, // start unfocused; becomes true only when FocusMsg arrives
+		focused:     forceFocus,
 	}
 }
 

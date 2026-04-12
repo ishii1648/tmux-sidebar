@@ -96,6 +96,11 @@ var requiredTmuxHooks = []struct {
 		needle: "toggle",
 		hint:   `bind-key -n C-s run-shell 'tmux-sidebar toggle'`,
 	},
+	{
+		label:  "SIGUSR1 notify hooks",
+		needle: "tmux-sidebar-",
+		hint:   "see README Setup §1 — add window-linked/unlinked and session-created/closed hooks",
+	},
 }
 
 // ── settings.json helpers ────────────────────────────────────────────────────

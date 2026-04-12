@@ -140,6 +140,11 @@ func parsePanes(out string) []Pane {
 }
 
 func runTmux(args ...string) (string, error) {
+	// TMUX_SIDEBAR_SOCKET lets e2e tests inject an explicit socket name so that
+	// all tmux calls go to the isolated test server regardless of the TMUX env var.
+	if socket := os.Getenv("TMUX_SIDEBAR_SOCKET"); socket != "" {
+		args = append([]string{"-L", socket}, args...)
+	}
 	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w", strings.Join(args, " "), err)

@@ -424,7 +424,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		visible := m.visibleItems()
 		if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
-			m.resetCursorToFirstWindow()
+			m.resetCursorToCurrentWindow()
 		}
 		return m, nil
 
@@ -487,10 +487,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(-1)
 	case "tab":
 		m.filter = (m.filter + 1) % 2
-		m.resetCursorToFirstWindow()
+		m.resetCursorToCurrentWindow()
 	case "shift+tab":
 		m.filter = (m.filter + 1) % 2
-		m.resetCursorToFirstWindow()
+		m.resetCursorToCurrentWindow()
 	case "enter":
 		return m, m.switchSelected()
 	}
@@ -524,16 +524,28 @@ func (m *Model) maxWindowIndex() int {
 	return 0
 }
 
-// resetCursorToFirstWindow sets the cursor to the first window item in visibleItems.
-func (m *Model) resetCursorToFirstWindow() {
+// resetCursorToCurrentWindow sets the cursor to the current window (by currentWinID) in visibleItems,
+// falling back to the first window item if not found.
+func (m *Model) resetCursorToCurrentWindow() {
 	visible := m.visibleItems()
+	firstWindow := -1
 	for i, item := range visible {
-		if item.Kind == ItemWindow {
+		if item.Kind != ItemWindow {
+			continue
+		}
+		if firstWindow < 0 {
+			firstWindow = i
+		}
+		if item.Window.ID == m.currentWinID {
 			m.cursor = i
 			return
 		}
 	}
-	m.cursor = 0
+	if firstWindow >= 0 {
+		m.cursor = firstWindow
+	} else {
+		m.cursor = 0
+	}
 }
 
 // switchSelected builds a Cmd that switches to the currently selected window.
@@ -623,9 +635,6 @@ func (m *Model) View() string {
 				name = name[:available]
 			}
 			label := prefix + name
-			if item.Window.ID == m.currentWinID {
-				label = lipgloss.NewStyle().Underline(true).Render(label)
-			}
 			sb.WriteString(cursor + styleWindow.Render(label+suffix) + "\n")
 		}
 	}

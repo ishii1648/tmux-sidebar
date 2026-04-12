@@ -593,12 +593,8 @@ func (m *Model) View() string {
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
-			if i == m.cursor {
-				if m.focused {
-					cursor = styleCursor.Render("▶ ")
-				} else {
-					cursor = lipgloss.NewStyle().Faint(true).Render("▶ ")
-				}
+			if i == m.cursor && m.focused {
+				cursor = styleCursor.Render("▶ ")
 			}
 			label := fmt.Sprintf("%d: %s", item.Window.Index, item.Window.Name)
 			badge := ""
@@ -613,8 +609,10 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Footer: always show key hints (faint when unfocused)
-	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
+	// Footer: show key hints only when focused
+	if m.focused {
+		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
+	}
 	return sb.String()
 }
 

@@ -21,7 +21,7 @@ current tmux window にサイドバーペインを開く。既存サイドバー
    ```
 3. 新しいサイドバーを開く:
    ```
-   tmux split-window -hfb -l 35 -P -F "#{pane_id}" tmux-sidebar
+   tmux split-window -hfb -l 40 -P -F "#{pane_id}" tmux-sidebar
    ```
 4. ステップ3の出力（新しいペインID）に `@pane_role=sidebar` を設定する:
    ```

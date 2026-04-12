@@ -96,7 +96,7 @@ type gitDataMsg struct {
 var (
 	styleCursor       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
 	styleSession      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	styleWindow       = lipgloss.NewStyle().PaddingLeft(2)
+	styleWindow       = lipgloss.NewStyle().PaddingLeft(1)
 	styleBadgeRun     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	styleBadgeIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styleBadgePerm    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
@@ -626,16 +626,30 @@ func (m *Model) View() string {
 			if i == m.cursor && m.focused && !m.passive {
 				cursor = styleCursor.Render("▶ ")
 			}
-			label := fmt.Sprintf("%d: %s", item.Window.Index, item.Window.Name)
-			badge := ""
+			// Build suffix: badge + PR (right side, fixed width)
+			suffix := ""
 			if item.PaneState != nil {
-				badge = " " + renderBadge(item.PaneState)
+				if b := renderBadge(item.PaneState); b != "" {
+					suffix = " " + b
+				}
 			}
-			// PR badge inline (#111 colored by state)
 			if git, ok := m.gitData[item.Window.ID]; ok && git.prNumber != 0 {
-				badge += " " + renderPRBadge(git.prState, git.prNumber)
+				suffix += " " + renderPRBadge(git.prState, git.prNumber)
 			}
-			sb.WriteString(cursor + styleWindow.Render(label+badge) + "\n")
+			// Truncate window name to fit: cursor(2) + padding(1) + "N: " + name + suffix <= m.width
+			prefix := fmt.Sprintf("%d: ", item.Window.Index)
+			available := m.width - 2 - 1 - len(prefix) - lipgloss.Width(suffix)
+			name := item.Window.Name
+			if available <= 0 {
+				name = ""
+			} else if len(name) > available {
+				name = name[:available]
+			}
+			label := prefix + name
+			if item.Window.ID == m.currentWinID {
+				label = lipgloss.NewStyle().Underline(true).Render(label)
+			}
+			sb.WriteString(cursor + styleWindow.Render(label+suffix) + "\n")
 		}
 	}
 
@@ -654,18 +668,18 @@ func renderBadge(ps *state.PaneState) string {
 		var text string
 		if ps.Elapsed < time.Minute {
 			secs := int(ps.Elapsed.Seconds())
-			text = fmt.Sprintf("[running %ds]", secs)
+			text = fmt.Sprintf("🔄%ds", secs)
 		} else {
 			mins := int(ps.Elapsed.Minutes())
-			text = fmt.Sprintf("[running %dm]", mins)
+			text = fmt.Sprintf("🔄%dm", mins)
 		}
 		return styleBadgeRun.Render(text)
 	case state.StatusIdle:
-		return styleBadgeIdle.Render("[idle]")
+		return "" // idle は非表示
 	case state.StatusPermission:
-		return styleBadgePerm.Render("[permission]")
+		return styleBadgePerm.Render("💬")
 	case state.StatusAsk:
-		return styleBadgeAsk.Render("[ask]")
+		return styleBadgeAsk.Render("💬")
 	default:
 		return ""
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -265,33 +266,73 @@ func runSelectPane(direction string) error {
 	if direction != "L" && direction != "R" {
 		return fmt.Errorf("direction must be L or R")
 	}
-	if err := exec.Command("tmux", "select-pane", "-"+direction).Run(); err != nil {
-		return err
-	}
-	// If the newly focused pane is the sidebar, move away from it.
-	out, err := exec.Command("tmux", "display-message", "-p", "#{@pane_role}").Output()
+	// Collect panes with their x-positions.
+	out, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{pane_left} #{pane_active} #{@pane_role}").Output()
 	if err != nil {
 		return nil
 	}
-	if strings.TrimSpace(string(out)) != "sidebar" {
-		return nil
+	type paneInfo struct {
+		id     string
+		left   int
+		active bool
+		role   string
 	}
-	// Sidebar is now focused — find any non-sidebar pane and select it.
-	panesOut, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{@pane_role}").Output()
-	if err != nil {
-		return nil
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(panesOut)), "\n") {
+	var panes []paneInfo
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
 		parts := strings.Fields(line)
-		role := ""
-		if len(parts) >= 2 {
-			role = parts[1]
+		if len(parts) < 3 {
+			continue
 		}
-		if role != "sidebar" {
-			return exec.Command("tmux", "select-pane", "-t", parts[0]).Run()
+		left, _ := strconv.Atoi(parts[1])
+		role := ""
+		if len(parts) >= 4 {
+			role = parts[3]
+		}
+		panes = append(panes, paneInfo{
+			id:     parts[0],
+			left:   left,
+			active: parts[2] == "1",
+			role:   role,
+		})
+	}
+	// Sort by horizontal position so index-based L/R movement is spatially correct.
+	sort.Slice(panes, func(i, j int) bool { return panes[i].left < panes[j].left })
+
+	// Build a list of non-sidebar panes only.
+	var targets []paneInfo
+	for _, p := range panes {
+		if p.role != "sidebar" {
+			targets = append(targets, p)
 		}
 	}
-	return nil
+
+	// Find the currently active pane among non-sidebar panes.
+	activeIdx := -1
+	for i, p := range targets {
+		if p.active {
+			activeIdx = i
+			break
+		}
+	}
+	if activeIdx == -1 {
+		// Active pane is the sidebar — fall back to normal select-pane.
+		return exec.Command("tmux", "select-pane", "-"+direction).Run()
+	}
+
+	var nextIdx int
+	if direction == "L" {
+		nextIdx = activeIdx - 1
+	} else {
+		nextIdx = activeIdx + 1
+	}
+	if nextIdx < 0 || nextIdx >= len(targets) {
+		// Already at the edge — do nothing.
+		return nil
+	}
+	return exec.Command("tmux", "select-pane", "-t", targets[nextIdx].id).Run()
 }
 
 // runEnsureNotFocused moves focus away from the sidebar pane if it is currently focused.
@@ -325,35 +366,52 @@ func runEnsureNotFocused() error {
 	return nil
 }
 
-// runCleanupIfOnlySidebar kills the current window when only the sidebar pane remains.
-// Intended to be called from the pane-exited hook so that closing the last non-sidebar
-// pane also removes the now-empty window (along with its sidebar).
+// runCleanupIfOnlySidebar scans all windows across all sessions and kills any window
+// whose only remaining pane is the sidebar.
+//
+// Background: after-kill-pane / pane-exited hooks fire in the context of the active
+// client window, not the window where the pane was removed, so #{window_id} cannot
+// be used to identify the affected window reliably. Scanning all windows is the
+// simplest correct approach — window counts are typically small.
 //
 // Usage in tmux.conf:
 //
-//	set-hook -g pane-exited 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
+//	set-hook -g pane-exited      'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
+//	set-hook -g after-kill-pane  'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
 func runCleanupIfOnlySidebar() error {
-	out, err := exec.Command("tmux", "list-panes", "-F", "#{pane_id} #{@pane_role}").Output()
+	// List all windows across all sessions.
+	windowsOut, err := exec.Command("tmux", "list-windows", "-a", "-F", "#{window_id}").Output()
 	if err != nil {
 		return nil
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	nonSidebarCount := 0
-	for _, line := range lines {
-		if line == "" {
+	for _, wid := range strings.Split(strings.TrimSpace(string(windowsOut)), "\n") {
+		if wid == "" {
 			continue
 		}
-		parts := strings.Fields(line)
-		role := ""
-		if len(parts) >= 2 {
-			role = parts[1]
+		// Use pane_id so each non-empty line represents exactly one pane,
+		// regardless of whether @pane_role is set (unset role appears as empty string).
+		panesOut, err := exec.Command("tmux", "list-panes", "-t", wid, "-F", "#{pane_id} #{@pane_role}").Output()
+		if err != nil {
+			continue
 		}
-		if role != "sidebar" {
-			nonSidebarCount++
+		nonSidebarCount := 0
+		for _, line := range strings.Split(string(panesOut), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.Fields(line)
+			role := ""
+			if len(parts) >= 2 {
+				role = parts[1]
+			}
+			if role != "sidebar" {
+				nonSidebarCount++
+			}
 		}
-	}
-	if nonSidebarCount == 0 {
-		return exec.Command("tmux", "kill-window").Run()
+		if nonSidebarCount == 0 {
+			exec.Command("tmux", "kill-window", "-t", wid).Run()
+		}
 	}
 	return nil
 }

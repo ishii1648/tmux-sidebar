@@ -194,18 +194,6 @@ func (m *Model) loadData() tea.Cmd {
 			stateMap = map[int]state.PaneState{}
 		}
 
-		// Determine current window without calling display-message, which hangs on
-		// Linux tmux 3.4 when no client is attached. Instead, look up TMUX_PANE in
-		// the already-fetched panes list — no extra tmux round-trip needed.
-		ownPaneID := os.Getenv("TMUX_PANE")
-		var curWindowID string
-		for _, p := range panes {
-			if p.ID == ownPaneID {
-				curWindowID = p.WindowID
-				break
-			}
-		}
-
 		// Build window→paneNumbers map
 		winPanes := map[string][]int{} // windowID → pane numbers
 		for _, p := range panes {
@@ -254,7 +242,7 @@ func (m *Model) loadData() tea.Cmd {
 			}
 		}
 
-		return dataMsg{items: items, currentWinID: curWindowID}
+		return dataMsg{items: items}
 	}
 }
 
@@ -411,22 +399,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.items = msg.items
-		prevWinID := m.currentWinID
-		m.currentWinID = msg.currentWinID
 		m.err = nil
-		if msg.currentWinID != prevWinID {
-			// Active window changed (startup or user switched): sync cursor
-			m.syncCursorToActiveWindow()
-		} else {
-			// Active window unchanged: keep cursor where user left it; just clamp
-			maxCursor := m.maxWindowIndex()
-			if m.cursor > maxCursor {
-				m.cursor = maxCursor
-			}
-			visible := m.visibleItems()
-			if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
-				m.resetCursorToFirstWindow()
-			}
+		// currentWinID is managed solely by currentWinMsg (loadCurrentWin 200ms poll).
+		// Just clamp cursor to valid range after items update.
+		maxCursor := m.maxWindowIndex()
+		if m.cursor > maxCursor {
+			m.cursor = maxCursor
+		}
+		visible := m.visibleItems()
+		if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
+			m.resetCursorToFirstWindow()
 		}
 		return m, nil
 

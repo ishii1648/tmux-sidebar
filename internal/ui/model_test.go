@@ -250,12 +250,12 @@ func TestView_FocusedShowsCursorAndHeader(t *testing.T) {
 	}
 }
 
-func TestView_UnfocusedShowsFaintCursorAndChangesHeader(t *testing.T) {
+func TestView_UnfocusedHidesCursorAndChangesHeader(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, false)
 
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "▶") {
-		t.Errorf("unfocused View should still contain '▶' cursor (faint):\n%s", view)
+	if strings.Contains(view, "▶") {
+		t.Errorf("unfocused View should NOT contain '▶' cursor:\n%s", view)
 	}
 	if !strings.Contains(view, "○") {
 		t.Errorf("unfocused View should contain '○' in header:\n%s", view)
@@ -271,12 +271,12 @@ func TestView_FocusedShowsFooter(t *testing.T) {
 	}
 }
 
-func TestView_UnfocusedShowsFooter(t *testing.T) {
+func TestView_UnfocusedHidesFooter(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, false)
 
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "Tab:filter") {
-		t.Errorf("unfocused View should still show footer hints (faint):\n%s", view)
+	if strings.Contains(view, "Tab:filter") {
+		t.Errorf("unfocused View should NOT show footer hints:\n%s", view)
 	}
 }
 
@@ -319,10 +319,15 @@ func TestView_ContainsStateBadges(t *testing.T) {
 	m := newTestModel(items, 1, true)
 
 	view := stripANSI(m.View())
-	for _, want := range []string{"[running", "[idle]", "[permission]", "[ask]"} {
+	// running: icon badge; idle: hidden; permission/ask: 💬
+	for _, want := range []string{"🔄", "💬"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View should contain badge %q:\n%s", want, view)
 		}
+	}
+	// idle is intentionally not shown
+	if strings.Contains(view, "[idle]") {
+		t.Errorf("View should NOT contain '[idle]' badge:\n%s", view)
 	}
 }
 
@@ -334,7 +339,7 @@ func TestView_NoBadgeWhenNoPaneState(t *testing.T) {
 	m := newTestModel(items, 1, true)
 
 	view := stripANSI(m.View())
-	for _, badge := range []string{"[running", "[idle]", "[permission]", "[ask]"} {
+	for _, badge := range []string{"🔄", "💬"} {
 		if strings.Contains(view, badge) {
 			t.Errorf("View should NOT contain badge %q when PaneState is nil:\n%s", badge, view)
 		}
@@ -460,7 +465,7 @@ func TestView_RunningBadgeShowsMinutes(t *testing.T) {
 	m := newTestModel(items, 1, true)
 
 	view := stripANSI(m.View())
-	want := "[running 5m]"
+	want := "🔄5m"
 	if !strings.Contains(view, want) {
 		t.Errorf("View should contain %q:\n%s", want, view)
 	}

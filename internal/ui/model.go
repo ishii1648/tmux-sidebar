@@ -110,9 +110,8 @@ type Model struct {
 	filter       FilterMode
 	width        int
 	err          error
-	gitData          map[string]gitInfo // keyed by window ID
-	focused          bool               // true when this pane has terminal focus
-	cursorInitialized bool              // true after first data load synced cursor to active window
+	gitData  map[string]gitInfo // keyed by window ID
+	focused  bool               // true when this pane has terminal focus
 }
 
 // New creates a new Model.
@@ -364,13 +363,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.items = msg.items
+		prevWinID := m.currentWinID
 		m.currentWinID = msg.currentWinID
 		m.err = nil
-		if !m.cursorInitialized {
+		if msg.currentWinID != prevWinID {
+			// Active window changed (startup or user switched): sync cursor
 			m.syncCursorToActiveWindow()
-			m.cursorInitialized = true
 		} else {
-			// Keep cursor where user left it; just clamp to valid range
+			// Active window unchanged: keep cursor where user left it; just clamp
 			maxCursor := m.maxWindowIndex()
 			if m.cursor > maxCursor {
 				m.cursor = maxCursor

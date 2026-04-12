@@ -768,11 +768,12 @@ func TestSearch_JKTypeWhenNonEmpty(t *testing.T) {
 }
 
 func TestView_SearchPromptAlwaysVisible(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "> ") {
-		t.Errorf("focused View should show search prompt '> ':\n%s", view)
+	for _, focused := range []bool{true, false} {
+		m := newTestModel(sampleItems(), 1, focused)
+		view := stripANSI(m.View())
+		if !strings.Contains(view, "> ") {
+			t.Errorf("View (focused=%v) should show search prompt '> ':\n%s", focused, view)
+		}
 	}
 }
 

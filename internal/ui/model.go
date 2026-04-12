@@ -754,11 +754,9 @@ func (m *Model) View() string {
 		sb.WriteString(faintSep + "\n")
 		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("> ") + m.searchQuery + "▏\n")
 		sb.WriteString(faintSep + "\n")
-	} else if m.focused {
+	} else {
 		sb.WriteString(faintSep + "\n")
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("> type to filter...") + "\n")
-		sb.WriteString(faintSep + "\n")
-	} else {
 		sb.WriteString(faintSep + "\n")
 	}
 

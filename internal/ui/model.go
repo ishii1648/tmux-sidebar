@@ -121,7 +121,7 @@ func New(tc tmux.Client, sr state.Reader, width int) *Model {
 		stateReader: sr,
 		width:       width,
 		gitData:     map[string]gitInfo{},
-		focused:     true, // assume active on startup until a BlurMsg arrives
+		focused:     false, // start unfocused; becomes true only when FocusMsg arrives
 	}
 }
 

@@ -75,6 +75,14 @@ type switchWindowMsg struct {
 	windowIndex int
 }
 
+// cursorTickMsg is sent by the 200ms cursor-sync ticker.
+type cursorTickMsg time.Time
+
+// currentWinMsg carries the refreshed active window ID.
+type currentWinMsg struct {
+	currentWinID string
+}
+
 // gitTickMsg is sent by the 10-second git polling ticker.
 type gitTickMsg time.Time
 
@@ -110,8 +118,8 @@ type Model struct {
 	filter       FilterMode
 	width        int
 	err          error
-	gitData      map[string]gitInfo // keyed by window ID
-	focused      bool               // true when this pane has terminal focus
+	gitData  map[string]gitInfo // keyed by window ID
+	focused  bool               // true when this pane has terminal focus
 }
 
 // New creates a new Model.
@@ -132,6 +140,7 @@ func (m *Model) Init() tea.Cmd {
 		tickCmd(),
 		m.loadGitInfo(),
 		gitTickCmd(),
+		cursorTickCmd(),
 	)
 }
 
@@ -145,6 +154,19 @@ func gitTickCmd() tea.Cmd {
 	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
 		return gitTickMsg(t)
 	})
+}
+
+func cursorTickCmd() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+		return cursorTickMsg(t)
+	})
+}
+
+func (m *Model) loadCurrentWin() tea.Cmd {
+	return func() tea.Msg {
+		cur, _ := m.tmuxClient.CurrentPane()
+		return currentWinMsg{currentWinID: cur.WindowID}
+	}
 }
 
 func (m *Model) loadData() tea.Cmd {
@@ -373,17 +395,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.items = msg.items
+		prevWinID := m.currentWinID
 		m.currentWinID = msg.currentWinID
 		m.err = nil
-		// Clamp cursor to the visible list
-		maxCursor := m.maxWindowIndex()
-		if m.cursor > maxCursor {
-			m.cursor = maxCursor
+		if msg.currentWinID != prevWinID {
+			// Active window changed (startup or user switched): sync cursor
+			m.syncCursorToActiveWindow()
+		} else {
+			// Active window unchanged: keep cursor where user left it; just clamp
+			maxCursor := m.maxWindowIndex()
+			if m.cursor > maxCursor {
+				m.cursor = maxCursor
+			}
+			visible := m.visibleItems()
+			if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
+				m.resetCursorToFirstWindow()
+			}
 		}
-		// Ensure cursor lands on a window item, not a session header
-		visible := m.visibleItems()
-		if m.cursor < len(visible) && visible[m.cursor].Kind != ItemWindow {
-			m.resetCursorToFirstWindow()
+		return m, nil
+
+	case cursorTickMsg:
+		return m, tea.Batch(m.loadCurrentWin(), cursorTickCmd())
+
+	case currentWinMsg:
+		if msg.currentWinID != "" && msg.currentWinID != m.currentWinID {
+			m.currentWinID = msg.currentWinID
+			m.syncCursorToActiveWindow()
 		}
 		return m, nil
 
@@ -478,6 +515,24 @@ func (m *Model) resetCursorToFirstWindow() {
 	m.cursor = 0
 }
 
+// syncCursorToActiveWindow sets the cursor to the currently active tmux window.
+func (m *Model) syncCursorToActiveWindow() {
+	visible := m.visibleItems()
+	for i, item := range visible {
+		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.currentWinID {
+			m.cursor = i
+			return
+		}
+	}
+	// Fallback: clamp cursor to valid range
+	if m.cursor >= len(visible) {
+		m.cursor = len(visible) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
 // switchSelected builds a Cmd that switches to the currently selected window.
 func (m *Model) switchSelected() tea.Cmd {
 	visible := m.visibleItems()
@@ -545,11 +600,7 @@ func (m *Model) View() string {
 					cursor = lipgloss.NewStyle().Faint(true).Render("▶ ")
 				}
 			}
-			// Highlight current window
 			label := fmt.Sprintf("%d: %s", item.Window.Index, item.Window.Name)
-			if item.Window.ID == m.currentWinID {
-				label = lipgloss.NewStyle().Underline(true).Render(label)
-			}
 			badge := ""
 			if item.PaneState != nil {
 				badge = " " + renderBadge(item.PaneState)
@@ -562,7 +613,7 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Footer: always show key hints
+	// Footer: always show key hints (faint when unfocused)
 	sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
 	return sb.String()
 }

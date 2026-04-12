@@ -394,10 +394,12 @@ func runSelectPane(direction string) error {
 }
 
 // runEnsureNotFocused moves focus away from the sidebar pane if it is currently focused.
-// Intended to be called from the after-select-window hook so that switching windows
-// never leaves the cursor on the sidebar.
+// This is a fallback subcommand for environments where if-shell -F is unavailable.
+// The recommended approach is to use tmux-native if-shell -F in the hook (no process spawn):
 //
-// Usage in tmux.conf:
+//	set-hook -g after-select-window 'if -F "#{==:#{@pane_role},sidebar}" "select-pane -R" ""'
+//
+// Legacy usage (spawns a shell process on every window switch — slower):
 //
 //	set-hook -g after-select-window 'run-shell "tmux-sidebar ensure-not-focused"'
 func runEnsureNotFocused() error {

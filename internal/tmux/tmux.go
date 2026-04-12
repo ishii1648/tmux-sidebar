@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // tmuxDelim is used as a field separator in tmux format strings.
@@ -147,11 +146,6 @@ func runTmux(args ...string) (string, error) {
 		args = append([]string{"-L", socket}, args...)
 	}
 	cmd := exec.Command("tmux", args...)
-	// Setsid creates a new session for the child process, detaching it from the
-	// controlling terminal. This prevents tmux from attempting to reconfigure the
-	// PTY that BubbleTea controls, which can cause the child to hang on Linux when
-	// BubbleTea has the terminal in raw mode.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w", strings.Join(args, " "), err)

@@ -7,5 +7,6 @@ build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BINARY) .
 
 install:
-	go build -ldflags "-X main.version=$(VERSION)" -o $(HOME)/.local/bin/$(BINARY) .
-	@echo "Installed $(HOME)/.local/bin/$(BINARY)"
+	go install -ldflags "-X main.version=$(VERSION)" ./...
+	cp $(shell go env GOPATH)/bin/$(BINARY) $(HOME)/.local/bin/$(BINARY)
+	@echo "Installed to $(HOME)/.local/bin/$(BINARY) and $(shell go env GOPATH)/bin/$(BINARY)"

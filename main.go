@@ -89,15 +89,15 @@ Subcommands:
 	// Prevent tmux from greying out the sidebar pane when it loses focus.
 	// window-style is set at pane level so only this pane is affected; the
 	// override is removed when the program exits.
-	if paneOut, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output(); err == nil {
-		paneID := strings.TrimSpace(string(paneOut))
-		if paneID != "" {
-			exec.Command("tmux", "set-option", "-p", "-t", paneID, "window-style", "default").Run()
-			exec.Command("tmux", "set-option", "-p", "-t", paneID, "@pane_role", "sidebar").Run()
-			defer func() {
-				exec.Command("tmux", "set-option", "-p", "-t", paneID, "-u", "window-style").Run()
-			}()
-		}
+	// Use TMUX_PANE env var instead of display-message to get the correct pane ID.
+	// display-message without -t returns the current CLIENT's active pane, not this pane.
+	paneID := os.Getenv("TMUX_PANE")
+	if paneID != "" {
+		exec.Command("tmux", "set-option", "-p", "-t", paneID, "window-style", "default").Run()
+		exec.Command("tmux", "set-option", "-p", "-t", paneID, "@pane_role", "sidebar").Run()
+		defer func() {
+			exec.Command("tmux", "set-option", "-p", "-t", paneID, "-u", "window-style").Run()
+		}()
 	}
 
 	var opts []tea.ProgramOption

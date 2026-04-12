@@ -78,6 +78,8 @@ func newTestEnv(t *testing.T) *testEnv {
 		"new-session", "-d", "-s", "scratch", "-x", "120", "-y", "40").Run(); err != nil {
 		t.Fatalf("start tmux server (socket=%s): %v", socket, err)
 	}
+	// Enable focus-events so the sidebar receives FocusMsg when it enables focus tracking.
+	exec.Command("tmux", "-L", socket, "set-option", "-g", "focus-events", "on").Run()
 
 	env := &testEnv{t: t, socket: socket, binary: binary, stateDir: stateDir}
 	t.Cleanup(func() {

@@ -118,8 +118,9 @@ type Model struct {
 	filter       FilterMode
 	width        int
 	err          error
-	gitData  map[string]gitInfo // keyed by window ID
-	focused  bool               // true when this pane has terminal focus
+	gitData      map[string]gitInfo // keyed by window ID
+	focused      bool               // true when this pane has terminal focus
+	passive      bool               // true when user pressed q to pause interaction
 }
 
 // New creates a new Model.
@@ -459,6 +460,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// q/i toggle passive mode regardless of other state.
+	switch msg.String() {
+	case "q":
+		m.passive = true
+		return m, nil
+	case "i":
+		m.passive = false
+		return m, nil
+	}
+
+	if m.passive {
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "j", "down":
 		m.moveCursor(1)
@@ -593,7 +608,7 @@ func (m *Model) View() string {
 			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
-			if i == m.cursor && m.focused {
+			if i == m.cursor && m.focused && !m.passive {
 				cursor = styleCursor.Render("▶ ")
 			}
 			label := fmt.Sprintf("%d: %s", item.Window.Index, item.Window.Name)
@@ -609,8 +624,10 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Footer: show key hints only when focused
-	if m.focused {
+	// Footer: show passive hint or key hints depending on state
+	if m.passive {
+		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("[i] to activate") + "\n")
+	} else if m.focused {
 		sb.WriteString("\n" + lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter  ^C:quit") + "\n")
 	}
 	return sb.String()

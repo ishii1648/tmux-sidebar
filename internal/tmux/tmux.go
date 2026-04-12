@@ -3,6 +3,7 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -176,8 +177,14 @@ func (c *ExecClient) ListPanes() ([]Pane, error) {
 }
 
 // CurrentPane returns identity information for the pane running this process.
+// It uses the TMUX_PANE environment variable (set by tmux in every pane) to
+// target the request directly, avoiding a hang when no tmux client is attached.
 func (c *ExecClient) CurrentPane() (CurrentPane, error) {
-	out, err := runTmux("display-message", "-p",
+	paneID := os.Getenv("TMUX_PANE")
+	if paneID == "" {
+		return CurrentPane{}, fmt.Errorf("TMUX_PANE not set")
+	}
+	out, err := runTmux("display-message", "-p", "-t", paneID,
 		"#{session_id}"+tmuxDelim+"#{window_id}"+tmuxDelim+"#{pane_id}")
 	if err != nil {
 		return CurrentPane{}, err

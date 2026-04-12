@@ -27,8 +27,9 @@ func TestDisplayShowsSessionsAndBadges(t *testing.T) {
 	env.setupStateFile(askPane, "ask")
 
 	env.runSidebar("scratch")
-	if err := env.waitForText("scratch", "Sessions", 5*time.Second); err != nil {
-		t.Fatalf("sidebar did not start: %v", err)
+	// Wait for actual session data to appear (not just the header).
+	if err := env.waitForText("scratch", "work", 5*time.Second); err != nil {
+		t.Fatalf("sidebar did not load sessions: %v", err)
 	}
 
 	output := env.capturePane("scratch")

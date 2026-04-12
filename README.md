@@ -27,27 +27,13 @@
 
 ## Installation
 
-### aqua（推奨）
-
-```yaml
-# aqua.yaml
-packages:
-  - name: ishii1648/tmux-sidebar@v0.1.0
-```
-
 ```sh
-aqua install
+gh release download --repo ishii1648/tmux-sidebar --pattern '*darwin_arm64*' --output - | tar xz
+mv tmux-sidebar ~/.local/bin/
 ```
 
-### go install
-
-```sh
-go install github.com/ishii1648/tmux-sidebar@latest
-```
-
-### バイナリダウンロード
-
-[Releases](https://github.com/ishii1648/tmux-sidebar/releases) から OS/アーキテクチャに合ったアーカイブをダウンロードして `$PATH` の通った場所に置く。
+> OS/アーキテクチャに合わせてパターンを変更してください（例: `*linux_amd64*`）。
+> リリース一覧は `gh release list --repo ishii1648/tmux-sidebar` で確認できます。
 
 ## Setup
 

@@ -35,9 +35,12 @@ func TestFSReader_Running(t *testing.T) {
 	if ps.Status != StatusRunning {
 		t.Errorf("status = %q, want %q", ps.Status, StatusRunning)
 	}
-	// Elapsed is truncated to minutes; must be >= 3m since we set started 3m ago.
-	if ps.Elapsed < 3*time.Minute {
-		t.Errorf("elapsed = %v, want >= 3m", ps.Elapsed)
+	// StartedAt must be approximately 3 minutes ago.
+	if ps.StartedAt.IsZero() {
+		t.Fatal("StartedAt is zero, want non-zero")
+	}
+	if time.Since(ps.StartedAt) < 3*time.Minute {
+		t.Errorf("StartedAt = %v, want ~3m ago", ps.StartedAt)
 	}
 }
 
@@ -58,8 +61,8 @@ func TestFSReader_Idle(t *testing.T) {
 	if ps.Status != StatusIdle {
 		t.Errorf("status = %q, want %q", ps.Status, StatusIdle)
 	}
-	if ps.Elapsed != 0 {
-		t.Errorf("elapsed = %v, want 0 for idle", ps.Elapsed)
+	if !ps.StartedAt.IsZero() {
+		t.Errorf("StartedAt = %v, want zero for idle", ps.StartedAt)
 	}
 }
 
@@ -185,8 +188,8 @@ func TestFSReader_RunningWithoutStarted(t *testing.T) {
 	if ps.Status != StatusRunning {
 		t.Errorf("status = %q, want running", ps.Status)
 	}
-	if ps.Elapsed != 0 {
-		t.Errorf("elapsed = %v, want 0 (no started file)", ps.Elapsed)
+	if !ps.StartedAt.IsZero() {
+		t.Errorf("StartedAt = %v, want zero (no started file)", ps.StartedAt)
 	}
 }
 
@@ -209,8 +212,8 @@ func TestFSReader_InvalidStarted(t *testing.T) {
 	if ps.Status != StatusRunning {
 		t.Errorf("status = %q, want running", ps.Status)
 	}
-	if ps.Elapsed != 0 {
-		t.Errorf("elapsed = %v, want 0 (invalid started)", ps.Elapsed)
+	if !ps.StartedAt.IsZero() {
+		t.Errorf("StartedAt = %v, want zero (invalid started)", ps.StartedAt)
 	}
 }
 

@@ -712,6 +712,39 @@ func TestSearch_EscClearsSearch(t *testing.T) {
 	}
 }
 
+func TestEsc_ClearsFilter(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	// Tab でフィルターを切り替える
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if m.filter == FilterAll {
+		t.Skip("no FilterWaiting windows to test with — skip")
+	}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+
+	if m.filter != FilterAll {
+		t.Errorf("Esc should reset filter to FilterAll, got %v", m.filter)
+	}
+}
+
+func TestEsc_ClearsSearchAndFilter(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+
+	// 検索クエリを設定し、Tab でフィルターも切り替える
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+
+	if m.searchQuery != "" {
+		t.Errorf("Esc should clear searchQuery, got %q", m.searchQuery)
+	}
+	if m.filter != FilterAll {
+		t.Errorf("Esc should reset filter to FilterAll, got %v", m.filter)
+	}
+}
+
 func TestSearch_BackspaceDeletesChar(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 

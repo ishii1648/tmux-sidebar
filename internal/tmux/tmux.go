@@ -47,14 +47,16 @@ type CurrentPane struct {
 
 // PaneInfo holds combined session/window/pane data from a single tmux list-panes query.
 type PaneInfo struct {
-	SessionID   string
-	SessionName string
-	WindowID    string
-	WindowIndex int
-	WindowName  string
-	PaneID      string
-	PaneIndex   int
-	PaneNumber  int
+	SessionID       string
+	SessionName     string
+	WindowID        string
+	WindowIndex     int
+	WindowName      string
+	PaneID          string
+	PaneIndex       int
+	PaneNumber      int
+	WindowActive    bool // true if this is the current window in its session
+	SessionAttached bool // true if the session has a client attached
 }
 
 // Client is the interface for interacting with tmux.
@@ -255,7 +257,7 @@ func (c *ExecClient) PaneCurrentPath(windowID string) (string, error) {
 	return "", fmt.Errorf("no non-sidebar pane found in window %s", windowID)
 }
 
-// parseAllPanes parses the output of `tmux list-panes -a` with 7 fields.
+// parseAllPanes parses the output of `tmux list-panes -a` with 9 fields.
 func parseAllPanes(out string) []PaneInfo {
 	if out == "" {
 		return nil
@@ -263,7 +265,7 @@ func parseAllPanes(out string) []PaneInfo {
 	var panes []PaneInfo
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.Split(line, tmuxDelim)
-		if len(parts) != 7 {
+		if len(parts) != 9 {
 			continue
 		}
 		winIdx, err := strconv.Atoi(parts[3])
@@ -280,14 +282,16 @@ func parseAllPanes(out string) []PaneInfo {
 			num, _ = strconv.Atoi(paneID[1:])
 		}
 		panes = append(panes, PaneInfo{
-			SessionID:   parts[0],
-			SessionName: parts[1],
-			WindowID:    parts[2],
-			WindowIndex: winIdx,
-			WindowName:  parts[4],
-			PaneID:      paneID,
-			PaneIndex:   paneIdx,
-			PaneNumber:  num,
+			SessionID:       parts[0],
+			SessionName:     parts[1],
+			WindowID:        parts[2],
+			WindowIndex:     winIdx,
+			WindowName:      parts[4],
+			PaneID:          paneID,
+			PaneIndex:       paneIdx,
+			PaneNumber:      num,
+			WindowActive:    parts[7] == "1",
+			SessionAttached: parts[8] == "1",
 		})
 	}
 	return panes
@@ -307,10 +311,13 @@ func (c *ExecClient) KillWindow(sessionName string, windowIndex int) error {
 }
 
 // ListAll returns all session/window/pane information in a single tmux list-panes call.
+// The result includes WindowActive and SessionAttached flags to identify the currently
+// focused window without a separate display-message call.
 func (c *ExecClient) ListAll() ([]PaneInfo, error) {
 	out, err := runTmux("list-panes", "-a", "-F",
 		"#{session_id}"+tmuxDelim+"#{session_name}"+tmuxDelim+"#{window_id}"+tmuxDelim+
-			"#{window_index}"+tmuxDelim+"#{window_name}"+tmuxDelim+"#{pane_id}"+tmuxDelim+"#{pane_index}")
+			"#{window_index}"+tmuxDelim+"#{window_name}"+tmuxDelim+"#{pane_id}"+tmuxDelim+
+			"#{pane_index}"+tmuxDelim+"#{window_active}"+tmuxDelim+"#{session_attached}")
 	if err != nil {
 		return nil, err
 	}

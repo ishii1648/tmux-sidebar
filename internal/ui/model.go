@@ -72,9 +72,10 @@ type minuteTickMsg time.Time
 
 // dataMsg carries refreshed tmux/state data.
 type dataMsg struct {
-	items       []ListItem
-	winPaneNums map[string][]int // windowID → pane numbers (for state-only updates)
-	err         error
+	items        []ListItem
+	winPaneNums  map[string][]int // windowID → pane numbers (for state-only updates)
+	activeWinID  string           // currently active tmux window ID (empty on error)
+	err          error
 }
 
 // stateOnlyMsg carries a refreshed state map without touching tmux.
@@ -130,6 +131,7 @@ type Model struct {
 	cursor        int               // index into visibleItems()
 	cursorWinID   string            // window ID the cursor is currently on (tracks user selection across data refreshes)
 	currentWinID  string            // window ID of the pane running this process
+	activeWinID   string            // last known active tmux window ID (updated on each loadData)
 	filter        FilterMode
 	width         int
 	height        int               // terminal height (from WindowSizeMsg)
@@ -256,7 +258,18 @@ func (m *Model) loadData() tea.Cmd {
 			}
 		}
 
-		return dataMsg{items: items, winPaneNums: winPanes}
+		// Determine the currently active window from the pane list.
+		// A window is "active" when its session is attached AND it is the current window
+		// in that session. This avoids a separate display-message call.
+		activeWinID := ""
+		for _, p := range allPanes {
+			if p.SessionAttached && p.WindowActive {
+				activeWinID = p.WindowID
+				break
+			}
+		}
+
+		return dataMsg{items: items, winPaneNums: winPanes, activeWinID: activeWinID}
 	}
 }
 
@@ -451,6 +464,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = msg.items
 		m.winPaneNums = msg.winPaneNums
 		m.err = nil
+		// If the active window changed, move the cursor to follow it.
+		// This implements "window追従": switching tmux windows moves the sidebar cursor.
+		if msg.activeWinID != "" && msg.activeWinID != m.activeWinID {
+			m.activeWinID = msg.activeWinID
+			m.cursorWinID = msg.activeWinID
+		}
 		// Re-locate cursor by the window ID it was on before the refresh.
 		// This prevents the cursor from jumping to a different window when
 		// items are added/removed and indices shift.

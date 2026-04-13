@@ -67,8 +67,8 @@ type StateChangedMsg struct{}
 // TmuxChangedMsg is sent (from main via p.Send) when tmux window layout changes.
 type TmuxChangedMsg struct{}
 
-// minuteTickMsg is sent by the 1-minute ticker to refresh running-badge elapsed time.
-type minuteTickMsg time.Time
+// badgeTickMsg is sent by the badge-refresh ticker to update running-badge elapsed time.
+type badgeTickMsg time.Time
 
 // dataMsg carries refreshed tmux/state data.
 type dataMsg struct {
@@ -152,21 +152,23 @@ func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg co
 	}
 }
 
-// Init starts the first data load, the 1-minute badge-refresh ticker, and the 10-second git ticker.
+// Init starts the first data load, the badge-refresh ticker, and the 10-second git ticker.
 // Live updates arrive via StateChangedMsg (fsnotify) and TmuxChangedMsg (SIGUSR1)
 // injected by main through tea.Program.Send — no polling needed.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadData(),
-		minuteTickCmd(),
+		badgeTickCmd(),
 		m.loadGitInfo(),
 		gitTickCmd(),
 	)
 }
 
-func minuteTickCmd() tea.Cmd {
-	return tea.Tick(time.Minute, func(t time.Time) tea.Msg {
-		return minuteTickMsg(t)
+// badgeTickCmd schedules the next badge refresh. It uses a 10-second interval so that
+// sub-minute elapsed times (displayed as seconds) update promptly.
+func badgeTickCmd() tea.Cmd {
+	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
+		return badgeTickMsg(t)
 	})
 }
 
@@ -446,9 +448,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A state file changed (fsnotify) — reload state only, no tmux process.
 		return m, m.loadStateOnly()
 
-	case minuteTickMsg:
-		// Refresh running-badge elapsed time (changes at most once per minute).
-		return m, tea.Batch(m.loadStateOnly(), minuteTickCmd())
+	case badgeTickMsg:
+		// Refresh running-badge elapsed time.
+		return m, tea.Batch(m.loadStateOnly(), badgeTickCmd())
 
 	case dataMsg:
 		if msg.err != nil {
@@ -841,6 +843,10 @@ func (m *Model) View() string {
 func renderBadge(ps *state.PaneState) string {
 	switch ps.Status {
 	case state.StatusRunning:
+		if ps.Elapsed < time.Minute {
+			secs := int(ps.Elapsed.Seconds())
+			return styleBadgeRun.Render(fmt.Sprintf("🔄%ds", secs))
+		}
 		mins := int(ps.Elapsed.Minutes())
 		return styleBadgeRun.Render(fmt.Sprintf("🔄%dm", mins))
 	case state.StatusIdle:

@@ -341,6 +341,24 @@ func TestView_ContainsStateBadges(t *testing.T) {
 	}
 }
 
+func TestView_RunningBadgeSubMinute(t *testing.T) {
+	// 45秒経過: 秒数表示になること
+	subMinState := state.PaneState{Status: state.StatusRunning, Elapsed: 45 * time.Second}
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "run"}, PaneState: &subMinState},
+	}
+	m := newTestModel(items, 1, true)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "45s") {
+		t.Errorf("View should contain running badge with seconds (45s) for sub-minute elapsed:\n%s", view)
+	}
+	if strings.Contains(view, "0m") {
+		t.Errorf("View should NOT show 0m for sub-minute elapsed:\n%s", view)
+	}
+}
+
 func TestView_NoBadgeWhenNoPaneState(t *testing.T) {
 	items := []ListItem{
 		{Kind: ItemSession, SessionName: "s"},

@@ -30,9 +30,9 @@ const (
 
 // PaneState holds the state for a single tmux pane.
 type PaneState struct {
-	Status  Status
-	Elapsed time.Duration // only valid when Status == StatusRunning
-	WorkDir string        // initial working directory of the Claude session (from pane_N_path)
+	Status    Status
+	StartedAt time.Time // when running started; zero if unknown or not running
+	WorkDir   string    // initial working directory of the Claude session (from pane_N_path)
 }
 
 // Reader is the interface for reading pane state.
@@ -133,17 +133,11 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 	}
 
 	result := make(map[int]PaneState, len(statuses))
-	now := time.Now()
 	for num, status := range statuses {
 		ps := PaneState{Status: status}
 		if status == StatusRunning {
 			if epoch, ok := started[num]; ok {
-				elapsed := now.Sub(time.Unix(epoch, 0))
-				if elapsed < time.Minute {
-					ps.Elapsed = elapsed.Truncate(time.Second)
-				} else {
-					ps.Elapsed = elapsed.Truncate(time.Minute)
-				}
+				ps.StartedAt = time.Unix(epoch, 0)
 			}
 		}
 		if dir, ok := workdirs[num]; ok {

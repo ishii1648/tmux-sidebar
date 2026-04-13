@@ -164,10 +164,11 @@ func (m *Model) Init() tea.Cmd {
 	)
 }
 
-// badgeTickCmd schedules the next badge refresh. It uses a 10-second interval so that
-// sub-minute elapsed times (displayed as seconds) update promptly.
+// badgeTickCmd schedules the next badge refresh at 1-second intervals.
+// Elapsed time is computed dynamically from StartedAt in renderBadge, so
+// this tick only triggers a re-render — no I/O occurs.
 func badgeTickCmd() tea.Cmd {
-	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
 		return badgeTickMsg(t)
 	})
 }
@@ -449,8 +450,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadStateOnly()
 
 	case badgeTickMsg:
-		// Refresh running-badge elapsed time.
-		return m, tea.Batch(m.loadStateOnly(), badgeTickCmd())
+		// Re-render to update elapsed time; elapsed is computed dynamically in
+		// renderBadge from StartedAt, so no I/O is needed here.
+		return m, badgeTickCmd()
 
 	case dataMsg:
 		if msg.err != nil {
@@ -843,11 +845,15 @@ func (m *Model) View() string {
 func renderBadge(ps *state.PaneState) string {
 	switch ps.Status {
 	case state.StatusRunning:
-		if ps.Elapsed < time.Minute {
-			secs := int(ps.Elapsed.Seconds())
+		var elapsed time.Duration
+		if !ps.StartedAt.IsZero() {
+			elapsed = time.Since(ps.StartedAt)
+		}
+		if elapsed < time.Minute {
+			secs := int(elapsed.Seconds())
 			return styleBadgeRun.Render(fmt.Sprintf("🔄%ds", secs))
 		}
-		mins := int(ps.Elapsed.Minutes())
+		mins := int(elapsed.Minutes())
 		return styleBadgeRun.Render(fmt.Sprintf("🔄%dm", mins))
 	case state.StatusIdle:
 		return "" // idle は非表示

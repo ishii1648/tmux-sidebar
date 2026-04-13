@@ -310,8 +310,7 @@ func TestView_ContainsWindowNames(t *testing.T) {
 }
 
 func TestView_ContainsStateBadges(t *testing.T) {
-	elapsed := 3 * time.Minute
-	runState := state.PaneState{Status: state.StatusRunning, Elapsed: elapsed}
+	runState := state.PaneState{Status: state.StatusRunning, StartedAt: time.Now().Add(-3 * time.Minute)}
 	idleState := state.PaneState{Status: state.StatusIdle}
 	permState := state.PaneState{Status: state.StatusPermission}
 	askState := state.PaneState{Status: state.StatusAsk}
@@ -343,7 +342,7 @@ func TestView_ContainsStateBadges(t *testing.T) {
 
 func TestView_RunningBadgeSubMinute(t *testing.T) {
 	// 45秒経過: 秒数表示になること
-	subMinState := state.PaneState{Status: state.StatusRunning, Elapsed: 45 * time.Second}
+	subMinState := state.PaneState{Status: state.StatusRunning, StartedAt: time.Now().Add(-45 * time.Second)}
 	items := []ListItem{
 		{Kind: ItemSession, SessionName: "s"},
 		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "run"}, PaneState: &subMinState},
@@ -351,8 +350,16 @@ func TestView_RunningBadgeSubMinute(t *testing.T) {
 	m := newTestModel(items, 1, true)
 
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "45s") {
-		t.Errorf("View should contain running badge with seconds (45s) for sub-minute elapsed:\n%s", view)
+	// 秒数表示であること（44s〜46s の範囲を許容）
+	matched := false
+	for _, want := range []string{"43s", "44s", "45s", "46s", "47s"} {
+		if strings.Contains(view, want) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Errorf("View should contain running badge with seconds (~45s) for sub-minute elapsed:\n%s", view)
 	}
 	if strings.Contains(view, "0m") {
 		t.Errorf("View should NOT show 0m for sub-minute elapsed:\n%s", view)
@@ -484,8 +491,7 @@ func TestView_ShowsFilterTabs(t *testing.T) {
 }
 
 func TestView_RunningBadgeShowsMinutes(t *testing.T) {
-	elapsed := 5 * time.Minute
-	runState := state.PaneState{Status: state.StatusRunning, Elapsed: elapsed}
+	runState := state.PaneState{Status: state.StatusRunning, StartedAt: time.Now().Add(-5 * time.Minute)}
 	items := []ListItem{
 		{Kind: ItemSession, SessionName: "s"},
 		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "w"}, PaneState: &runState},

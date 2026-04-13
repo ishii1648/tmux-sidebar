@@ -524,10 +524,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	if !m.focused {
-		return m, nil
-	}
-
 	switch msg.Type {
 	case tea.KeyEscape:
 		if m.searchQuery != "" {

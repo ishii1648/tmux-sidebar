@@ -229,33 +229,13 @@ func runFocusOrOpen() error {
 
 	if sidebarPaneID == "" {
 		// Sidebar is closed → open it.
-		// Snapshot existing pane IDs before splitting so we can identify the new one
-		// afterwards. -P -F "#{pane_id}" and display-message both return unreliable
-		// values when invoked via run-shell (the % prefix may be stripped or the
-		// originating pane's ID may be returned instead of the new pane's ID).
-		beforeOut, _ := exec.Command("tmux", "list-panes", "-t", winID, "-F", "#{pane_id}").Output()
-		beforeSet := make(map[string]bool)
-		for _, id := range strings.Fields(strings.TrimSpace(string(beforeOut))) {
-			beforeSet[id] = true
-		}
-
 		if err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-t", winID, "tmux-sidebar").Run(); err != nil {
 			return fmt.Errorf("split-window: %w", err)
 		}
-
-		// Find the newly added pane by diffing against the before-snapshot.
-		afterOut, _ := exec.Command("tmux", "list-panes", "-t", winID, "-F", "#{pane_id}").Output()
-		newPaneID := ""
-		for _, id := range strings.Fields(strings.TrimSpace(string(afterOut))) {
-			if !beforeSet[id] {
-				newPaneID = id
-				break
-			}
-		}
-		if newPaneID == "" {
-			return nil
-		}
-		return exec.Command("tmux", "select-pane", "-t", newPaneID).Run()
+		// -hfb always places the new pane at the leftmost position in the window.
+		// Use {left} to select it reliably without depending on pane ID retrieval,
+		// which is unreliable when invoked via run-shell.
+		return exec.Command("tmux", "select-pane", "-t", winID+".{left}").Run()
 	}
 	// Sidebar is open → focus it.
 	return exec.Command("tmux", "select-pane", "-t", winID+"."+sidebarPaneID).Run()

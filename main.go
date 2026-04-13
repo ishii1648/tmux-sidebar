@@ -330,6 +330,7 @@ func runCleanupIfOnlySidebar() error {
 			continue
 		}
 		nonSidebarCount := 0
+		sidebarPaneID := ""
 		for _, line := range strings.Split(string(panesOut), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -340,12 +341,18 @@ func runCleanupIfOnlySidebar() error {
 			if len(parts) >= 2 {
 				role = parts[1]
 			}
-			if role != "sidebar" {
+			if role == "sidebar" {
+				sidebarPaneID = parts[0]
+			} else {
 				nonSidebarCount++
 			}
 		}
 		if nonSidebarCount == 0 {
 			exec.Command("tmux", "kill-window", "-t", wid).Run()
+		} else if sidebarPaneID != "" {
+			// Other panes still exist but tmux may have expanded the sidebar when a
+			// neighbouring pane was killed; restore it to its fixed 40-column width.
+			exec.Command("tmux", "resize-pane", "-t", sidebarPaneID, "-x", "40").Run()
 		}
 	}
 	return nil

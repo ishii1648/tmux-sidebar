@@ -68,15 +68,11 @@ set-hook -g after-new-session \
 #   - アクティブペインが sidebar なら右隣へ移動（誤フォーカス防止）
 #   - それ以外は SIGUSR1 でサイドバーにウィンドウ切替を通知（カーソル追従）
 set-hook -g after-select-window \
-  'if -F "#{==:#{@pane_role},sidebar}" \
-    "select-pane -R" \
-    "run-shell \"for f in /tmp/tmux-sidebar-*.pid; do [ -f \\\"\\$f\\\" ] && kill -USR1 \\$(cat \\\"\\$f\\\") 2>/dev/null; done\""'
+  'run-shell "if [ \"#{@pane_role}\" = sidebar ]; then tmux select-pane -R; else for f in /tmp/tmux-sidebar-*.pid; do [ -f \"\$f\" ] && kill -USR1 \$(cat \"\$f\") 2>/dev/null; done; fi"'
 
 # セッション切替後も同様
 set-hook -g client-session-changed \
-  'if -F "#{==:#{@pane_role},sidebar}" \
-    "select-pane -R" \
-    "run-shell \"for f in /tmp/tmux-sidebar-*.pid; do [ -f \\\"\\$f\\\" ] && kill -USR1 \\$(cat \\\"\\$f\\\") 2>/dev/null; done\""'
+  'run-shell "if [ \"#{@pane_role}\" = sidebar ]; then tmux select-pane -R; else for f in /tmp/tmux-sidebar-*.pid; do [ -f \"\$f\" ] && kill -USR1 \$(cat \"\$f\") 2>/dev/null; done; fi"'
 
 ```
 

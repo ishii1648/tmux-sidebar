@@ -108,7 +108,17 @@ Subcommands:
 		currentWinID = cur.WindowID
 	}
 
-	model := ui.New(tc, sr, width, currentWinID, cfg)
+	// Determine initial focus state: true if this pane is currently the active pane.
+	// We query tmux directly using TMUX_PANE so the sidebar starts with the correct
+	// visual state without waiting for the first FocusMsg.
+	initialFocused := false
+	if paneID := os.Getenv("TMUX_PANE"); paneID != "" {
+		if out, err := exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{pane_active}").Output(); err == nil {
+			initialFocused = strings.TrimSpace(string(out)) == "1"
+		}
+	}
+
+	model := ui.New(tc, sr, width, currentWinID, cfg, initialFocused)
 
 	// Prevent tmux from greying out the sidebar pane when it loses focus.
 	// window-style is set at pane level so only this pane is affected; the

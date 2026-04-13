@@ -137,8 +137,9 @@ type Model struct {
 }
 
 // New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
-// it is determined once at startup and never changes.
-func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg config.Config) *Model {
+// it is determined once at startup and never changes. initialFocused should reflect
+// whether this pane is the active pane at the moment of creation.
+func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg config.Config, initialFocused bool) *Model {
 	return &Model{
 		tmuxClient:   tc,
 		stateReader:  sr,
@@ -146,7 +147,7 @@ func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg co
 		width:        width,
 		gitData:      map[string]gitInfo{},
 		winPaneNums:  map[string][]int{},
-		focused:      true, // start focused; BlurMsg will set false if another pane has focus
+		focused:      initialFocused,
 		currentWinID: currentWinID,
 	}
 }

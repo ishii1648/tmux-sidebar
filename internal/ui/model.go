@@ -532,9 +532,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.Type {
 	case tea.KeyEscape:
+		changed := false
 		if m.searchQuery != "" {
 			m.searchQuery = ""
-			m.resetCursorToFirstWindow()
+			changed = true
+		}
+		if m.filter != FilterAll {
+			m.filter = FilterAll
+			changed = true
+		}
+		if changed {
+			m.resetCursorToCurrentWindow()
 		}
 		return m, nil
 	case tea.KeyEnter:

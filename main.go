@@ -229,21 +229,33 @@ func runFocusOrOpen() error {
 
 	if sidebarPaneID == "" {
 		// Sidebar is closed → open it.
-		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-t", winID, "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
-		if err != nil {
+		// Snapshot existing pane IDs before splitting so we can identify the new one
+		// afterwards. -P -F "#{pane_id}" and display-message both return unreliable
+		// values when invoked via run-shell (the % prefix may be stripped or the
+		// originating pane's ID may be returned instead of the new pane's ID).
+		beforeOut, _ := exec.Command("tmux", "list-panes", "-t", winID, "-F", "#{pane_id}").Output()
+		beforeSet := make(map[string]bool)
+		for _, id := range strings.Fields(strings.TrimSpace(string(beforeOut))) {
+			beforeSet[id] = true
+		}
+
+		if err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-t", winID, "tmux-sidebar").Run(); err != nil {
 			return fmt.Errorf("split-window: %w", err)
 		}
-		sidebarPaneID = strings.TrimSpace(string(newOut))
-		if sidebarPaneID == "" {
+
+		// Find the newly added pane by diffing against the before-snapshot.
+		afterOut, _ := exec.Command("tmux", "list-panes", "-t", winID, "-F", "#{pane_id}").Output()
+		newPaneID := ""
+		for _, id := range strings.Fields(strings.TrimSpace(string(afterOut))) {
+			if !beforeSet[id] {
+				newPaneID = id
+				break
+			}
+		}
+		if newPaneID == "" {
 			return nil
 		}
-		if err := exec.Command("tmux", "set-option", "-p", "-t", sidebarPaneID, "@pane_role", "sidebar").Run(); err != nil {
-			return fmt.Errorf("set pane_role: %w", err)
-		}
-		// Use pane_id directly when the sidebar was just created; the
-		// winID+"."+paneID form can mis-resolve the %N token as a pane
-		// index and redirect focus back to the originating pane.
-		return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
+		return exec.Command("tmux", "select-pane", "-t", newPaneID).Run()
 	}
 	// Sidebar is open → focus it.
 	return exec.Command("tmux", "select-pane", "-t", winID+"."+sidebarPaneID).Run()

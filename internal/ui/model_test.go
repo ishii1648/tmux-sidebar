@@ -151,28 +151,27 @@ func TestCursorMove_UpKey(t *testing.T) {
 }
 
 // ── unfocused (blur) ─────────────────────────────────────────────────────────
+// Input is always processed regardless of focus state; tmux only routes keys to
+// the active pane, so if input arrives the pane IS active.
 
-func TestBlur_jIgnored(t *testing.T) {
+func TestBlur_jMovesCursor(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, false)
 
 	_, cmd := m.Update(key('j'))
-	if m.cursor != 1 {
-		t.Errorf("cursor moved when unfocused: got %d, want 1", m.cursor)
+	if m.cursor != 2 {
+		t.Errorf("cursor should move on j even when unfocused: got %d, want 2", m.cursor)
 	}
 	if cmd != nil {
-		t.Errorf("expected nil Cmd when unfocused, got non-nil")
+		t.Errorf("expected nil Cmd on j, got non-nil")
 	}
 }
 
-func TestBlur_EnterIgnored(t *testing.T) {
+func TestBlur_EnterSwitches(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, false)
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if m.cursor != 1 {
-		t.Errorf("cursor moved on Enter when unfocused: got %d, want 1", m.cursor)
-	}
-	if cmd != nil {
-		t.Errorf("expected nil Cmd on Enter when unfocused, got non-nil")
+	if cmd == nil {
+		t.Errorf("expected non-nil Cmd on Enter even when unfocused")
 	}
 }
 
@@ -445,11 +444,11 @@ func TestFilterChange_ResetsCursorToFirstWindow(t *testing.T) {
 	}
 }
 
-func TestFilterChange_UnfocusedIgnoresTab(t *testing.T) {
+func TestFilterChange_UnfocusedTabChangesFilter(t *testing.T) {
 	m := newTestModel(sampleItemsWithStates(), 1, false)
 	m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if m.filter != FilterAll {
-		t.Errorf("Tab when unfocused changed filter: got %v", m.filter)
+	if m.filter != FilterWaiting {
+		t.Errorf("Tab when unfocused should change filter: got %v, want %v", m.filter, FilterWaiting)
 	}
 }
 

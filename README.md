@@ -204,6 +204,21 @@ fi
 | `TMUX_SIDEBAR_STATE_DIR` | 状態ファイルのディレクトリ（デフォルト: `/tmp/claude-pane-state`） |
 | `TMUX_SIDEBAR_NO_ALT_SCREEN` | 設定するとオルタネートスクリーンを無効化（E2E テスト用） |
 
+## Configuration files
+
+### hidden_sessions
+
+サイドバーに表示しないセッション名を指定するファイルです。1行1エントリで記述し、`#` 以降はコメントとして無視されます。
+
+**ファイルパス**: `~/.config/tmux-sidebar/hidden_sessions`
+
+```
+# 表示対象外にするセッション名（1行1エントリ、# はコメント）
+main
+```
+
+上記の例では `main` セッションがサイドバーのセッション一覧から非表示になります。ファイルが存在しない場合は全セッションが表示されます。
+
 ## License
 
 MIT

@@ -13,6 +13,10 @@ builds:
       - arm64
     ldflags:
       - -s -w -X main.version={{ .Version }}
+    hooks:
+      post:
+        # Ad-hoc codesign for macOS binaries to pass Gatekeeper (no Apple Developer account needed).
+        - cmd: sh -c 'if [ "{{ .Os }}" = "darwin" ]; then codesign --sign - "{{ .Path }}"; fi'
 
 archives:
   - id: tmux-sidebar

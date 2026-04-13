@@ -35,12 +35,9 @@ func TestFSReader_Running(t *testing.T) {
 	if ps.Status != StatusRunning {
 		t.Errorf("status = %q, want %q", ps.Status, StatusRunning)
 	}
-	// StartedAt must be approximately 3 minutes ago.
-	if ps.StartedAt.IsZero() {
-		t.Fatal("StartedAt is zero, want non-zero")
-	}
-	if time.Since(ps.StartedAt) < 3*time.Minute {
-		t.Errorf("StartedAt = %v, want ~3m ago", ps.StartedAt)
+	// Elapsed is truncated to minutes; must be >= 3m since we set started 3m ago.
+	if ps.Elapsed < 3*time.Minute {
+		t.Errorf("elapsed = %v, want >= 3m", ps.Elapsed)
 	}
 }
 
@@ -61,8 +58,8 @@ func TestFSReader_Idle(t *testing.T) {
 	if ps.Status != StatusIdle {
 		t.Errorf("status = %q, want %q", ps.Status, StatusIdle)
 	}
-	if !ps.StartedAt.IsZero() {
-		t.Errorf("StartedAt = %v, want zero for idle", ps.StartedAt)
+	if ps.Elapsed != 0 {
+		t.Errorf("elapsed = %v, want 0 for idle", ps.Elapsed)
 	}
 }
 
@@ -173,7 +170,6 @@ func TestFSReader_EmptyStatus(t *testing.T) {
 func TestFSReader_RunningWithoutStarted(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "pane_7", "running")
-	// pane_7_started は書かない
 
 	r := NewFSReader(dir)
 	states, err := r.Read()
@@ -188,8 +184,8 @@ func TestFSReader_RunningWithoutStarted(t *testing.T) {
 	if ps.Status != StatusRunning {
 		t.Errorf("status = %q, want running", ps.Status)
 	}
-	if !ps.StartedAt.IsZero() {
-		t.Errorf("StartedAt = %v, want zero (no started file)", ps.StartedAt)
+	if ps.Elapsed != 0 {
+		t.Errorf("elapsed = %v, want 0 (no started file)", ps.Elapsed)
 	}
 }
 
@@ -212,8 +208,8 @@ func TestFSReader_InvalidStarted(t *testing.T) {
 	if ps.Status != StatusRunning {
 		t.Errorf("status = %q, want running", ps.Status)
 	}
-	if !ps.StartedAt.IsZero() {
-		t.Errorf("StartedAt = %v, want zero (invalid started)", ps.StartedAt)
+	if ps.Elapsed != 0 {
+		t.Errorf("elapsed = %v, want 0 (invalid started)", ps.Elapsed)
 	}
 }
 
@@ -232,7 +228,6 @@ func TestFSReader_NonPaneFileIgnored(t *testing.T) {
 	if _, ok := states[9]; !ok {
 		t.Error("pane 9 should be in result")
 	}
-	// other_file should not create any entry
 	if len(states) != 1 {
 		t.Errorf("expected 1 entry, got %d: %v", len(states), states)
 	}
@@ -241,9 +236,7 @@ func TestFSReader_NonPaneFileIgnored(t *testing.T) {
 // TestFSReader_SymlinkIgnored: シムリンクは無視される（シムリンク攻撃DoS対策）
 func TestFSReader_SymlinkIgnored(t *testing.T) {
 	dir := t.TempDir()
-	// Create a real pane file
 	writeFile(t, dir, "pane_10", "idle")
-	// Create a symlink pane_11 → pane_10 (simulates a malicious symlink)
 	if err := os.Symlink(filepath.Join(dir, "pane_10"), filepath.Join(dir, "pane_11")); err != nil {
 		t.Skipf("symlink creation failed (unsupported on this platform): %v", err)
 	}
@@ -254,7 +247,6 @@ func TestFSReader_SymlinkIgnored(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 
-	// Only the regular file pane_10 should be present; pane_11 (symlink) must be ignored.
 	if _, ok := states[10]; !ok {
 		t.Error("pane 10 (regular file) should be in result")
 	}

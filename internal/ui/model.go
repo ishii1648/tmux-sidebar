@@ -67,8 +67,8 @@ type StateChangedMsg struct{}
 // TmuxChangedMsg is sent (from main via p.Send) when tmux window layout changes.
 type TmuxChangedMsg struct{}
 
-// minuteTickMsg is sent by the 1-minute ticker to refresh running-badge elapsed time.
-type minuteTickMsg time.Time
+// badgeTickMsg is sent by the badge-refresh ticker to update running-badge elapsed time.
+type badgeTickMsg time.Time
 
 // dataMsg carries refreshed tmux/state data.
 type dataMsg struct {
@@ -92,12 +92,6 @@ type switchWindowMsg struct {
 // gitTickMsg is sent by the 10-second git polling ticker.
 type gitTickMsg time.Time
 
-
-// deleteWindowMsg is sent when the user confirms deletion of the selected window.
-type deleteWindowMsg struct {
-	sessionName string
-	windowIndex int
-}
 
 // gitDataMsg carries refreshed git/PR info for all visible windows.
 type gitDataMsg struct {
@@ -140,12 +134,12 @@ type Model struct {
 	gitData       map[string]gitInfo // keyed by window ID
 	focused       bool               // true when this pane has terminal focus
 	searchQuery   string             // current search query text (always-on incremental filter)
-	confirmDelete *deleteWindowMsg   // non-nil when awaiting delete confirmation
 }
 
 // New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
-// it is determined once at startup and never changes.
-func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg config.Config) *Model {
+// it is determined once at startup and never changes. initialFocused should reflect
+// whether this pane is the active pane at the moment of creation.
+func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg config.Config, initialFocused bool) *Model {
 	return &Model{
 		tmuxClient:   tc,
 		stateReader:  sr,
@@ -153,26 +147,28 @@ func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg co
 		width:        width,
 		gitData:      map[string]gitInfo{},
 		winPaneNums:  map[string][]int{},
-		focused:      false, // start unfocused; becomes true only when FocusMsg arrives
+		focused:      initialFocused,
 		currentWinID: currentWinID,
 	}
 }
 
-// Init starts the first data load, the 1-minute badge-refresh ticker, and the 10-second git ticker.
+// Init starts the first data load, the badge-refresh ticker, and the 10-second git ticker.
 // Live updates arrive via StateChangedMsg (fsnotify) and TmuxChangedMsg (SIGUSR1)
 // injected by main through tea.Program.Send — no polling needed.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadData(),
-		minuteTickCmd(),
+		badgeTickCmd(),
 		m.loadGitInfo(),
 		gitTickCmd(),
 	)
 }
 
-func minuteTickCmd() tea.Cmd {
-	return tea.Tick(time.Minute, func(t time.Time) tea.Msg {
-		return minuteTickMsg(t)
+// badgeTickCmd schedules the next badge refresh. It uses a 10-second interval so that
+// sub-minute elapsed times (displayed as seconds) update promptly.
+func badgeTickCmd() tea.Cmd {
+	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
+		return badgeTickMsg(t)
 	})
 }
 
@@ -452,9 +448,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A state file changed (fsnotify) — reload state only, no tmux process.
 		return m, m.loadStateOnly()
 
-	case minuteTickMsg:
-		// Refresh running-badge elapsed time (changes at most once per minute).
-		return m, tea.Batch(m.loadStateOnly(), minuteTickCmd())
+	case badgeTickMsg:
+		// Refresh running-badge elapsed time.
+		return m, tea.Batch(m.loadStateOnly(), badgeTickCmd())
 
 	case dataMsg:
 		if msg.err != nil {
@@ -505,12 +501,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case deleteWindowMsg:
-		return m, func() tea.Msg {
-			_ = m.tmuxClient.KillWindow(msg.sessionName, msg.windowIndex)
-			return nil
-		}
-
 	case switchWindowMsg:
 		return m, func() tea.Msg {
 			_ = m.tmuxClient.SwitchWindow(msg.sessionName, msg.windowIndex)
@@ -535,28 +525,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	}
-
-	if !m.focused {
-		return m, nil
-	}
-
-	// Confirmation mode: only y/n/Esc are accepted
-	if m.confirmDelete != nil {
-		switch msg.String() {
-		case "y":
-			del := m.confirmDelete
-			m.confirmDelete = nil
-			return m, func() tea.Msg {
-				return deleteWindowMsg{
-					sessionName: del.sessionName,
-					windowIndex: del.windowIndex,
-				}
-			}
-		case "n", "esc":
-			m.confirmDelete = nil
-		}
-		return m, nil
 	}
 
 	switch msg.Type {
@@ -592,7 +560,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyRunes:
 		r := msg.Runes
-		// j/k/d keys only when search is empty
+		// j/k keys only when search is empty
 		if m.searchQuery == "" && len(r) == 1 {
 			switch r[0] {
 			case 'j':
@@ -600,9 +568,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case 'k':
 				m.moveCursor(-1)
-				return m, nil
-			case 'd':
-				m.promptDeleteSelectedWindow()
 				return m, nil
 			}
 		}
@@ -777,22 +742,6 @@ func (m *Model) switchSelected() tea.Cmd {
 	}
 }
 
-// promptDeleteSelectedWindow sets confirmDelete to prompt the user before killing the selected window.
-func (m *Model) promptDeleteSelectedWindow() {
-	visible := m.visibleItems()
-	if m.cursor >= len(visible) {
-		return
-	}
-	item := visible[m.cursor]
-	if item.Kind != ItemWindow || item.Window == nil {
-		return
-	}
-	m.confirmDelete = &deleteWindowMsg{
-		sessionName: item.SessionName,
-		windowIndex: item.Window.Index,
-	}
-}
-
 // View renders the sidebar.
 func (m *Model) View() string {
 	if m.err != nil {
@@ -881,25 +830,23 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Confirmation prompt
-	if m.confirmDelete != nil {
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render(
-			fmt.Sprintf("Delete window %s:%d? (y/n)", m.confirmDelete.sessionName, m.confirmDelete.windowIndex)) + "\n")
-	}
-
 	// Footer: scroll indicator + key hints
 	if vp > 0 && endIdx < len(visible) {
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("  ↓ %d more", len(visible)-endIdx)) + "\n")
 	} else {
 		sb.WriteString("\n")
 	}
-	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter d:delete Esc:clear ^C:quit") + "\n")
+	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter Esc:clear ^C:quit") + "\n")
 	return sb.String()
 }
 
 func renderBadge(ps *state.PaneState) string {
 	switch ps.Status {
 	case state.StatusRunning:
+		if ps.Elapsed < time.Minute {
+			secs := int(ps.Elapsed.Seconds())
+			return styleBadgeRun.Render(fmt.Sprintf("🔄%ds", secs))
+		}
 		mins := int(ps.Elapsed.Minutes())
 		return styleBadgeRun.Render(fmt.Sprintf("🔄%dm", mins))
 	case state.StatusIdle:

@@ -61,17 +61,18 @@ set-hook -g after-new-session \
 - `-t "#{window_id}"`: 外部セッションからの `new-window` でも正しいウィンドウに作成される
 - `[ ... -eq 1 ]`: hook の二重実行でサイドバーが2つ作られるのを防ぐ
 
-### 2. sidebar への誤フォーカス防止（必須）
+### 2. sidebar への誤フォーカス防止 + カーソル追従通知（必須）
 
 ```tmux
-# ウィンドウ切替後、アクティブペインが sidebar なら右隣へ移動
-# if-shell -F はプロセスを起動せず tmux 内部で評価するため高速
+# ウィンドウ切替後:
+#   - 常に SIGUSR1 でサイドバーにウィンドウ切替を通知（カーソル追従）
+#   - アクティブペインが sidebar なら右隣へ移動（誤フォーカス防止）
 set-hook -g after-select-window \
-  'if -F "#{==:#{@pane_role},sidebar}" "select-pane -R" ""'
+  'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ -f \"\$f\" ] && kill -USR1 \$(cat \"\$f\") 2>/dev/null; done; if [ \"#{@pane_role}\" = sidebar ]; then tmux select-pane -R; fi"'
 
 # セッション切替後も同様
 set-hook -g client-session-changed \
-  'if -F "#{==:#{@pane_role},sidebar}" "select-pane -R" ""'
+  'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ -f \"\$f\" ] && kill -USR1 \$(cat \"\$f\") 2>/dev/null; done; if [ \"#{@pane_role}\" = sidebar ]; then tmux select-pane -R; fi"'
 
 ```
 

@@ -151,28 +151,27 @@ func TestCursorMove_UpKey(t *testing.T) {
 }
 
 // ── unfocused (blur) ─────────────────────────────────────────────────────────
+// Input is always processed regardless of focus state; tmux only routes keys to
+// the active pane, so if input arrives the pane IS active.
 
-func TestBlur_jIgnored(t *testing.T) {
+func TestBlur_jMovesCursor(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, false)
 
 	_, cmd := m.Update(key('j'))
-	if m.cursor != 1 {
-		t.Errorf("cursor moved when unfocused: got %d, want 1", m.cursor)
+	if m.cursor != 2 {
+		t.Errorf("cursor should move on j even when unfocused: got %d, want 2", m.cursor)
 	}
 	if cmd != nil {
-		t.Errorf("expected nil Cmd when unfocused, got non-nil")
+		t.Errorf("expected nil Cmd on j, got non-nil")
 	}
 }
 
-func TestBlur_EnterIgnored(t *testing.T) {
+func TestBlur_EnterSwitches(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, false)
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if m.cursor != 1 {
-		t.Errorf("cursor moved on Enter when unfocused: got %d, want 1", m.cursor)
-	}
-	if cmd != nil {
-		t.Errorf("expected nil Cmd on Enter when unfocused, got non-nil")
+	if cmd == nil {
+		t.Errorf("expected non-nil Cmd on Enter even when unfocused")
 	}
 }
 
@@ -342,6 +341,24 @@ func TestView_ContainsStateBadges(t *testing.T) {
 	}
 }
 
+func TestView_RunningBadgeSubMinute(t *testing.T) {
+	// 45秒経過: 秒数表示になること
+	subMinState := state.PaneState{Status: state.StatusRunning, Elapsed: 45 * time.Second}
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "run"}, PaneState: &subMinState},
+	}
+	m := newTestModel(items, 1, true)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "45s") {
+		t.Errorf("View should contain running badge with seconds (45s) for sub-minute elapsed:\n%s", view)
+	}
+	if strings.Contains(view, "0m") {
+		t.Errorf("View should NOT show 0m for sub-minute elapsed:\n%s", view)
+	}
+}
+
 func TestView_NoBadgeWhenNoPaneState(t *testing.T) {
 	items := []ListItem{
 		{Kind: ItemSession, SessionName: "s"},
@@ -445,11 +462,11 @@ func TestFilterChange_ResetsCursorToFirstWindow(t *testing.T) {
 	}
 }
 
-func TestFilterChange_UnfocusedIgnoresTab(t *testing.T) {
+func TestFilterChange_UnfocusedTabChangesFilter(t *testing.T) {
 	m := newTestModel(sampleItemsWithStates(), 1, false)
 	m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if m.filter != FilterAll {
-		t.Errorf("Tab when unfocused changed filter: got %v", m.filter)
+	if m.filter != FilterWaiting {
+		t.Errorf("Tab when unfocused should change filter: got %v, want %v", m.filter, FilterWaiting)
 	}
 }
 
@@ -784,92 +801,6 @@ func TestView_SearchPromptShowsQuery(t *testing.T) {
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "> test") {
 		t.Errorf("View should show search query in prompt:\n%s", view)
-	}
-}
-
-// ── delete window with confirmation ─────────────────────────────────────────
-
-func TestDeleteKey_ShowsConfirmation(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true) // cursor at @1 index=0 "main"
-
-	m.Update(key('d'))
-	if m.confirmDelete == nil {
-		t.Fatal("d key should set confirmDelete")
-	}
-	if m.confirmDelete.sessionName != "session-a" {
-		t.Errorf("confirmDelete.sessionName = %q, want %q", m.confirmDelete.sessionName, "session-a")
-	}
-	if m.confirmDelete.windowIndex != 0 {
-		t.Errorf("confirmDelete.windowIndex = %d, want 0", m.confirmDelete.windowIndex)
-	}
-}
-
-func TestDeleteConfirm_Y_SendsDeleteWindowMsg(t *testing.T) {
-	m := newTestModel(sampleItems(), 2, true) // cursor at @2 index=1 "work"
-
-	m.Update(key('d'))
-	if m.confirmDelete == nil {
-		t.Fatal("d should set confirmDelete")
-	}
-
-	_, cmd := m.Update(key('y'))
-	if m.confirmDelete != nil {
-		t.Error("y should clear confirmDelete")
-	}
-	if cmd == nil {
-		t.Fatal("y should return a Cmd")
-	}
-	msg := cmd()
-	delMsg, ok := msg.(deleteWindowMsg)
-	if !ok {
-		t.Fatalf("Cmd returned %T, want deleteWindowMsg", msg)
-	}
-	if delMsg.sessionName != "session-a" || delMsg.windowIndex != 1 {
-		t.Errorf("deleteWindowMsg = %+v, want session-a:1", delMsg)
-	}
-}
-
-func TestDeleteConfirm_N_Cancels(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-
-	m.Update(key('d'))
-	m.Update(key('n'))
-	if m.confirmDelete != nil {
-		t.Error("n should clear confirmDelete")
-	}
-}
-
-func TestDeleteConfirm_Esc_Cancels(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-
-	m.Update(key('d'))
-	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
-	if m.confirmDelete != nil {
-		t.Error("Esc should clear confirmDelete")
-	}
-}
-
-func TestDeleteConfirm_BlocksOtherKeys(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-
-	m.Update(key('d'))
-	savedCursor := m.cursor
-	m.Update(key('j'))
-	if m.cursor != savedCursor {
-		t.Error("j should be blocked during confirmation")
-	}
-	if m.confirmDelete == nil {
-		t.Error("confirmDelete should still be set after j")
-	}
-}
-
-func TestView_ShowsConfirmPrompt(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-	m.confirmDelete = &deleteWindowMsg{sessionName: "session-a", windowIndex: 0}
-
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "Delete window session-a:0? (y/n)") {
-		t.Errorf("View should show confirmation prompt:\n%s", view)
 	}
 }
 

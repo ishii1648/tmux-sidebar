@@ -113,6 +113,7 @@ var (
 	stylePRDraft  = lipgloss.NewStyle().Foreground(lipgloss.Color("248")) // gray (#8b949e)
 	stylePROpen   = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))  // green (#3fb950)
 	stylePRMerged = lipgloss.NewStyle().Foreground(lipgloss.Color("141")) // purple (#a371f7)
+	stylePRClosed = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))   // red
 )
 
 // Model is the bubbletea Model for the sidebar.
@@ -884,6 +885,8 @@ func renderPRBadge(prState string, number int) string {
 		return stylePROpen.Render(text)
 	case "merged":
 		return stylePRMerged.Render(text)
+	case "closed":
+		return stylePRClosed.Render(text)
 	default:
 		return text
 	}

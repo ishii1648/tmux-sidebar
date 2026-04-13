@@ -70,13 +70,13 @@ set-hook -g after-new-session \
 set-hook -g after-select-window \
   'if -F "#{==:#{@pane_role},sidebar}" \
     "select-pane -R" \
-    "run-shell \"for f in /tmp/tmux-sidebar-*.pid; do [ -f \\\"$f\\\" ] && kill -USR1 \\$(cat \\\"$f\\\") 2>/dev/null; done\""'
+    "run-shell \"for f in /tmp/tmux-sidebar-*.pid; do [ -f \\\"\\$f\\\" ] && kill -USR1 \\$(cat \\\"\\$f\\\") 2>/dev/null; done\""'
 
 # セッション切替後も同様
 set-hook -g client-session-changed \
   'if -F "#{==:#{@pane_role},sidebar}" \
     "select-pane -R" \
-    "run-shell \"for f in /tmp/tmux-sidebar-*.pid; do [ -f \\\"$f\\\" ] && kill -USR1 \\$(cat \\\"$f\\\") 2>/dev/null; done\""'
+    "run-shell \"for f in /tmp/tmux-sidebar-*.pid; do [ -f \\\"\\$f\\\" ] && kill -USR1 \\$(cat \\\"\\$f\\\") 2>/dev/null; done\""'
 
 ```
 

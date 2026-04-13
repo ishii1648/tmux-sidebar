@@ -213,9 +213,15 @@ func runFocusOrOpen() error {
 			break
 		}
 	}
+	winOut, err := exec.Command("tmux", "display-message", "-p", "#{window_id}").Output()
+	if err != nil {
+		return fmt.Errorf("display-message: %w", err)
+	}
+	winID := strings.TrimSpace(string(winOut))
+
 	if sidebarPaneID == "" {
 		// Sidebar is closed → open it.
-		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
+		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-t", winID, "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
 		if err != nil {
 			return fmt.Errorf("split-window: %w", err)
 		}
@@ -228,7 +234,7 @@ func runFocusOrOpen() error {
 		}
 	}
 	// Sidebar is open → focus it.
-	return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
+	return exec.Command("tmux", "select-pane", "-t", winID+"."+sidebarPaneID).Run()
 }
 
 // runToggleSidebar opens the sidebar if it does not exist, or closes it if it does.

@@ -240,6 +240,10 @@ func runFocusOrOpen() error {
 		if err := exec.Command("tmux", "set-option", "-p", "-t", sidebarPaneID, "@pane_role", "sidebar").Run(); err != nil {
 			return fmt.Errorf("set pane_role: %w", err)
 		}
+		// Use pane_id directly when the sidebar was just created; the
+		// winID+"."+paneID form can mis-resolve the %N token as a pane
+		// index and redirect focus back to the originating pane.
+		return exec.Command("tmux", "select-pane", "-t", sidebarPaneID).Run()
 	}
 	// Sidebar is open → focus it.
 	return exec.Command("tmux", "select-pane", "-t", winID+"."+sidebarPaneID).Run()

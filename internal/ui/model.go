@@ -692,7 +692,7 @@ func (m *Model) resetCursorToCurrentWindow() {
 }
 
 // relocateCursor finds the window that the cursor was previously on (by cursorWinID)
-// and moves the cursor to its new index. Falls back to currentWinID, then the first window.
+// and moves the cursor to its new index. Falls back to activeWinID, then currentWinID, then the first window.
 func (m *Model) relocateCursor() {
 	visible := m.visibleItems()
 	firstWindow := -1
@@ -708,7 +708,16 @@ func (m *Model) relocateCursor() {
 			return
 		}
 	}
-	// cursorWinID not found (window was deleted) — fall back to currentWinID
+	// cursorWinID not found (window was deleted) — fall back to activeWinID so the
+	// cursor follows the window tmux automatically switched to after the deletion.
+	for i, item := range visible {
+		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.activeWinID {
+			m.cursor = i
+			m.cursorWinID = item.Window.ID
+			return
+		}
+	}
+	// Then fall back to currentWinID (this sidebar's own window).
 	for i, item := range visible {
 		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.currentWinID {
 			m.cursor = i

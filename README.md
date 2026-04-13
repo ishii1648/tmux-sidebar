@@ -77,10 +77,11 @@ set-hook -g client-session-changed \
 
 ### 3. サイドバーのみ残ったウィンドウの自動削除（推奨）
 
-作業ペインを全て閉じた後に空のサイドバーウィンドウが残るのを防ぐ。
+作業ペインを全て閉じた後に空のサイドバーウィンドウが残るのを防ぐ。ペイン削除後にサイドバーが拡大する場合も自動で幅を修正する。
 
 ```tmux
-set-hook -g pane-exited 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
+set-hook -g pane-exited     'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
+set-hook -g after-kill-pane 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
 ```
 
 ### 4. SIGUSR1 による即時更新通知（推奨）

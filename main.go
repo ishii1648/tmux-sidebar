@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fsnotify/fsnotify"
+	"github.com/ishii1648/tmux-sidebar/internal/config"
 	"github.com/ishii1648/tmux-sidebar/internal/doctor"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
@@ -94,13 +95,20 @@ Subcommands:
 	// Useful for testing or non-standard environments.
 	sr := state.NewFSReader(os.Getenv("TMUX_SIDEBAR_STATE_DIR"))
 
+	// Load per-machine config (~/.config/tmux-sidebar/hidden_sessions).
+	cfg, err := config.Load(config.DefaultConfigPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tmux-sidebar: config: %v\n", err)
+		cfg = config.Config{}
+	}
+
 	// Determine our own window ID once at startup; it never changes while running.
 	currentWinID := ""
 	if cur, err := tc.CurrentPane(); err == nil {
 		currentWinID = cur.WindowID
 	}
 
-	model := ui.New(tc, sr, width, currentWinID)
+	model := ui.New(tc, sr, width, currentWinID, cfg)
 
 	// Prevent tmux from greying out the sidebar pane when it loses focus.
 	// window-style is set at pane level so only this pane is affected; the

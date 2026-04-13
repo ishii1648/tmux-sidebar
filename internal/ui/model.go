@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ishii1648/tmux-sidebar/internal/config"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 )
@@ -121,30 +122,32 @@ var (
 
 // Model is the bubbletea Model for the sidebar.
 type Model struct {
-	tmuxClient   tmux.Client
-	stateReader  state.Reader
-	items        []ListItem
-	winPaneNums  map[string][]int  // windowID → pane numbers; updated by loadData
-	cursor       int               // index into visibleItems()
-	cursorWinID  string            // window ID the cursor is currently on (tracks user selection across data refreshes)
-	currentWinID string            // window ID of the pane running this process
-	filter       FilterMode
-	width        int
-	height       int               // terminal height (from WindowSizeMsg)
-	offset       int               // scroll offset into visibleItems()
-	err          error
-	gitData      map[string]gitInfo // keyed by window ID
-	focused      bool               // true when this pane has terminal focus
-	searchQuery  string             // current search query text (always-on incremental filter)
-	confirmDelete *deleteWindowMsg  // non-nil when awaiting delete confirmation
+	tmuxClient    tmux.Client
+	stateReader   state.Reader
+	cfg           config.Config
+	items         []ListItem
+	winPaneNums   map[string][]int  // windowID → pane numbers; updated by loadData
+	cursor        int               // index into visibleItems()
+	cursorWinID   string            // window ID the cursor is currently on (tracks user selection across data refreshes)
+	currentWinID  string            // window ID of the pane running this process
+	filter        FilterMode
+	width         int
+	height        int               // terminal height (from WindowSizeMsg)
+	offset        int               // scroll offset into visibleItems()
+	err           error
+	gitData       map[string]gitInfo // keyed by window ID
+	focused       bool               // true when this pane has terminal focus
+	searchQuery   string             // current search query text (always-on incremental filter)
+	confirmDelete *deleteWindowMsg   // non-nil when awaiting delete confirmation
 }
 
 // New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
 // it is determined once at startup and never changes.
-func New(tc tmux.Client, sr state.Reader, width int, currentWinID string) *Model {
+func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg config.Config) *Model {
 	return &Model{
 		tmuxClient:   tc,
 		stateReader:  sr,
+		cfg:          cfg,
 		width:        width,
 		gitData:      map[string]gitInfo{},
 		winPaneNums:  map[string][]int{},
@@ -228,7 +231,7 @@ func (m *Model) loadData() tea.Cmd {
 		var items []ListItem
 		for _, sid := range sessionOrder {
 			sname := sessionNames[sid]
-			if sname == "main" {
+			if m.cfg.IsHiddenSession(sname) {
 				continue
 			}
 			items = append(items, ListItem{

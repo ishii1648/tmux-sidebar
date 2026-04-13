@@ -146,7 +146,7 @@ func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg co
 		width:        width,
 		gitData:      map[string]gitInfo{},
 		winPaneNums:  map[string][]int{},
-		focused:      false, // start unfocused; becomes true only when FocusMsg arrives
+		focused:      true, // start focused; BlurMsg will set false if another pane has focus
 		currentWinID: currentWinID,
 	}
 }

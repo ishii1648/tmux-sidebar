@@ -16,6 +16,7 @@ import (
 	"github.com/ishii1648/tmux-sidebar/internal/session"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
+	"github.com/mattn/go-runewidth"
 )
 
 // FilterMode describes which windows are shown in the sidebar list.
@@ -835,12 +836,12 @@ func (m *Model) View() string {
 			}
 			// Truncate window name to fit: cursor(2) + padding(1) + "N: " + name + suffix <= m.width
 			prefix := fmt.Sprintf("%d: ", item.Window.Index)
-			available := m.width - 2 - 1 - len(prefix) - lipgloss.Width(suffix)
+			available := m.width - 2 - 1 - runewidth.StringWidth(prefix) - lipgloss.Width(suffix)
 			name := item.Window.Name
 			if available <= 0 {
 				name = ""
-			} else if len(name) > available {
-				name = name[:available]
+			} else if runewidth.StringWidth(name) > available {
+				name = runewidth.Truncate(name, available, "")
 			}
 			label := prefix + name
 			sb.WriteString(cursor + styleWindow.Render(label+suffix) + "\n")
@@ -870,8 +871,8 @@ func (m *Model) View() string {
 		for i, line := range lines {
 			if truncated && i == len(lines)-1 {
 				// Last visible line: truncate and append "..."
-				if len(line) > m.width-3 {
-					line = line[:m.width-3]
+				if runewidth.StringWidth(line) > m.width-3 {
+					line = runewidth.Truncate(line, m.width-3, "")
 				}
 				line += "..."
 			}
@@ -904,7 +905,8 @@ func renderBadge(ps *state.PaneState) string {
 	}
 }
 
-// wrapText wraps text to the given width, breaking on whitespace.
+// wrapText wraps text to the given display width, breaking on whitespace and
+// within long words at character boundaries using visual (column) width.
 func wrapText(text string, width int) []string {
 	if width <= 0 {
 		return nil
@@ -920,16 +922,62 @@ func wrapText(text string, width int) []string {
 			lines = append(lines, "")
 			continue
 		}
-		line := words[0]
-		for _, w := range words[1:] {
-			if len(line)+1+len(w) > width {
-				lines = append(lines, line)
-				line = w
-			} else {
+		var line string
+		lineW := 0
+		for i, w := range words {
+			ww := runewidth.StringWidth(w)
+			if i == 0 {
+				// First word: if it fits, just set it; otherwise break it.
+				if ww <= width {
+					line = w
+					lineW = ww
+				} else {
+					broken := breakWord(w, width)
+					lines = append(lines, broken[:len(broken)-1]...)
+					line = broken[len(broken)-1]
+					lineW = runewidth.StringWidth(line)
+				}
+				continue
+			}
+			if lineW+1+ww <= width {
 				line += " " + w
+				lineW += 1 + ww
+			} else {
+				lines = append(lines, line)
+				if ww <= width {
+					line = w
+					lineW = ww
+				} else {
+					broken := breakWord(w, width)
+					lines = append(lines, broken[:len(broken)-1]...)
+					line = broken[len(broken)-1]
+					lineW = runewidth.StringWidth(line)
+				}
 			}
 		}
 		lines = append(lines, line)
+	}
+	return lines
+}
+
+// breakWord splits a single word into lines that each fit within the given
+// display width, breaking at character (rune) boundaries.
+func breakWord(word string, width int) []string {
+	var lines []string
+	var cur strings.Builder
+	curW := 0
+	for _, r := range word {
+		rw := runewidth.RuneWidth(r)
+		if curW+rw > width && cur.Len() > 0 {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			curW = 0
+		}
+		cur.WriteRune(r)
+		curW += rw
+	}
+	if cur.Len() > 0 {
+		lines = append(lines, cur.String())
 	}
 	return lines
 }

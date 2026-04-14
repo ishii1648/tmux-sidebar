@@ -626,3 +626,85 @@ func TestView_FooterShowsKeyHints(t *testing.T) {
 		t.Errorf("footer should contain Esc:clear hint:\n%s", view)
 	}
 }
+
+// ── wrapText ────────────────────────────────────────────────────────────────
+
+func TestWrapText_ASCIIOnly(t *testing.T) {
+	lines := wrapText("hello world foo bar", 12)
+	want := []string{"hello world", "foo bar"}
+	if len(lines) != len(want) {
+		t.Fatalf("got %d lines, want %d: %v", len(lines), len(want), lines)
+	}
+	for i, l := range lines {
+		if l != want[i] {
+			t.Errorf("line[%d] = %q, want %q", i, l, want[i])
+		}
+	}
+}
+
+func TestWrapText_CJKBreaksWithinWord(t *testing.T) {
+	// 21 CJK chars = 42 visual columns; width=40 should break.
+	input := "だと以下理由により利用できないので修正案を検討して"
+	lines := wrapText(input, 40)
+	if len(lines) < 2 {
+		t.Fatalf("expected CJK word to be broken into 2+ lines, got %d: %v", len(lines), lines)
+	}
+	// Reassemble and verify no characters are lost.
+	joined := strings.Join(lines, "")
+	if joined != input {
+		t.Errorf("reassembled text = %q, want %q", joined, input)
+	}
+}
+
+func TestWrapText_CJKFitsExactly(t *testing.T) {
+	// 20 CJK chars = 40 visual columns; width=40 should fit on one line.
+	input := "あいうえおかきくけこさしすせそたちつてと"
+	lines := wrapText(input, 40)
+	if len(lines) != 1 {
+		t.Errorf("expected 1 line, got %d: %v", len(lines), lines)
+	}
+	if lines[0] != input {
+		t.Errorf("line = %q, want %q", lines[0], input)
+	}
+}
+
+func TestWrapText_MixedASCIIAndCJK(t *testing.T) {
+	input := "helmfile mcp が helm v4 だと以下理由により利用できないので修正案を検討して"
+	lines := wrapText(input, 40)
+	// Should be at least 2 lines because the total visual width is well over 40.
+	if len(lines) < 2 {
+		t.Fatalf("expected 2+ lines, got %d: %v", len(lines), lines)
+	}
+	// Verify no characters are lost (join with spaces for whitespace-separated words).
+	joined := strings.Join(lines, " ")
+	if !strings.Contains(joined, "を検討して") {
+		t.Errorf("text should contain 'を検討して', got: %s", joined)
+	}
+}
+
+func TestWrapText_EmptyAndNewlines(t *testing.T) {
+	lines := wrapText("a\n\nb", 40)
+	want := []string{"a", "", "b"}
+	if len(lines) != len(want) {
+		t.Fatalf("got %d lines, want %d: %v", len(lines), len(want), lines)
+	}
+	for i, l := range lines {
+		if l != want[i] {
+			t.Errorf("line[%d] = %q, want %q", i, l, want[i])
+		}
+	}
+}
+
+func TestBreakWord_SplitsAtBoundary(t *testing.T) {
+	word := "あいうえおかきくけこ" // 10 chars = 20 visual cols
+	lines := breakWord(word, 10)     // max 5 chars per line
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(lines), lines)
+	}
+	if lines[0] != "あいうえお" {
+		t.Errorf("line[0] = %q, want %q", lines[0], "あいうえお")
+	}
+	if lines[1] != "かきくけこ" {
+		t.Errorf("line[1] = %q, want %q", lines[1], "かきくけこ")
+	}
+}

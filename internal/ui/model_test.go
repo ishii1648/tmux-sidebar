@@ -183,6 +183,18 @@ func TestBlurMsg_SetsFocusedFalse(t *testing.T) {
 	}
 }
 
+func TestBlurMsg_ClearsSearchQuery(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('a'))
+	if m.searchQuery == "" {
+		t.Fatal("precondition: searchQuery should not be empty after typing")
+	}
+	m.Update(tea.BlurMsg{})
+	if m.searchQuery != "" {
+		t.Errorf("after BlurMsg: searchQuery = %q, want empty", m.searchQuery)
+	}
+}
+
 // ── Enter key ────────────────────────────────────────────────────────────────
 
 func TestEnter_ReturnsSwitchWindowMsg(t *testing.T) {

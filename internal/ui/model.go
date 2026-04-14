@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ishii1648/tmux-sidebar/internal/config"
+	"github.com/ishii1648/tmux-sidebar/internal/session"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 )
@@ -59,6 +60,12 @@ type gitInfo struct {
 	prFetchedAt time.Time // when gh pr view was last called (zero means never)
 }
 
+// promptMsg carries a fetched initial prompt for the preview area.
+type promptMsg struct {
+	sessionID string
+	prompt    string
+}
+
 // Message types.
 
 // StateChangedMsg is sent (from main via p.Send) when a state file changes.
@@ -67,8 +74,8 @@ type StateChangedMsg struct{}
 // TmuxChangedMsg is sent (from main via p.Send) when tmux window layout changes.
 type TmuxChangedMsg struct{}
 
-// badgeTickMsg is sent by the badge-refresh ticker to update running-badge elapsed time.
-type badgeTickMsg time.Time
+// minuteTickMsg is sent by the 1-minute ticker to refresh running-badge elapsed time.
+type minuteTickMsg time.Time
 
 // dataMsg carries refreshed tmux/state data.
 type dataMsg struct {
@@ -113,7 +120,6 @@ var (
 	stylePRDraft  = lipgloss.NewStyle().Foreground(lipgloss.Color("248")) // gray (#8b949e)
 	stylePROpen   = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))  // green (#3fb950)
 	stylePRMerged = lipgloss.NewStyle().Foreground(lipgloss.Color("141")) // purple (#a371f7)
-	stylePRClosed = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))   // red
 )
 
 // Model is the bubbletea Model for the sidebar.
@@ -135,11 +141,12 @@ type Model struct {
 	gitData       map[string]gitInfo // keyed by window ID
 	focused       bool               // true when this pane has terminal focus
 	searchQuery   string             // current search query text (always-on incremental filter)
+	promptCache   map[string]string  // sessionID → initial prompt text (cached)
+	cursorPrompt  string             // initial prompt for the window currently under cursor
 }
 
 // New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
-// it is determined once at startup and never changes. initialFocused should reflect
-// whether this pane is the active pane at the moment of creation.
+// it is determined once at startup and never changes.
 func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg config.Config, initialFocused bool) *Model {
 	return &Model{
 		tmuxClient:   tc,
@@ -148,29 +155,27 @@ func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg co
 		width:        width,
 		gitData:      map[string]gitInfo{},
 		winPaneNums:  map[string][]int{},
+		promptCache:  map[string]string{},
 		focused:      initialFocused,
 		currentWinID: currentWinID,
 	}
 }
 
-// Init starts the first data load, the badge-refresh ticker, and the 10-second git ticker.
+// Init starts the first data load, the 1-minute badge-refresh ticker, and the 10-second git ticker.
 // Live updates arrive via StateChangedMsg (fsnotify) and TmuxChangedMsg (SIGUSR1)
 // injected by main through tea.Program.Send — no polling needed.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadData(),
-		badgeTickCmd(),
+		minuteTickCmd(),
 		m.loadGitInfo(),
 		gitTickCmd(),
 	)
 }
 
-// badgeTickCmd schedules the next badge refresh at 1-second intervals.
-// Elapsed time is computed dynamically from StartedAt in renderBadge, so
-// this tick only triggers a re-render — no I/O occurs.
-func badgeTickCmd() tea.Cmd {
-	return tea.Tick(1*time.Second, func(t time.Time) tea.Msg {
-		return badgeTickMsg(t)
+func minuteTickCmd() tea.Cmd {
+	return tea.Tick(time.Minute, func(t time.Time) tea.Msg {
+		return minuteTickMsg(t)
 	})
 }
 
@@ -442,6 +447,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
+	case promptMsg:
+		m.promptCache[msg.sessionID] = msg.prompt
+		// Update cursorPrompt if the cursor is still on this session
+		if sid := m.cursorSessionID(); sid == msg.sessionID {
+			m.cursorPrompt = msg.prompt
+		}
+		return m, nil
+
 	case TmuxChangedMsg:
 		// tmux window layout changed (SIGUSR1) — reload tmux + state together.
 		return m, m.loadData()
@@ -450,10 +463,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A state file changed (fsnotify) — reload state only, no tmux process.
 		return m, m.loadStateOnly()
 
-	case badgeTickMsg:
-		// Re-render to update elapsed time; elapsed is computed dynamically in
-		// renderBadge from StartedAt, so no I/O is needed here.
-		return m, badgeTickCmd()
+	case minuteTickMsg:
+		// Refresh running-badge elapsed time (changes at most once per minute).
+		return m, tea.Batch(m.loadStateOnly(), minuteTickCmd())
 
 	case dataMsg:
 		if msg.err != nil {
@@ -520,6 +532,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.BlurMsg:
 		m.focused = false
+		m.searchQuery = ""
 	}
 	return m, nil
 }
@@ -530,19 +543,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	if !m.focused {
+		return m, nil
+	}
+
 	switch msg.Type {
 	case tea.KeyEscape:
-		changed := false
 		if m.searchQuery != "" {
 			m.searchQuery = ""
-			changed = true
-		}
-		if m.filter != FilterAll {
-			m.filter = FilterAll
-			changed = true
-		}
-		if changed {
-			m.resetCursorToCurrentWindow()
+			m.resetCursorToFirstWindow()
 		}
 		return m, nil
 	case tea.KeyEnter:
@@ -553,22 +562,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resetCursorToFirstWindow()
 		}
 		return m, nil
-	case tea.KeyTab:
-		m.filter = (m.filter + 1) % 2
-		m.searchQuery = ""
-		m.resetCursorToCurrentWindow()
-		return m, nil
-	case tea.KeyShiftTab:
-		m.filter = (m.filter + 1) % 2
-		m.searchQuery = ""
-		m.resetCursorToCurrentWindow()
-		return m, nil
 	case tea.KeyUp:
 		m.moveCursor(-1)
-		return m, nil
+		return m, m.updateCursorPrompt()
 	case tea.KeyDown:
 		m.moveCursor(1)
-		return m, nil
+		return m, m.updateCursorPrompt()
 	case tea.KeyRunes:
 		r := msg.Runes
 		// j/k keys only when search is empty
@@ -576,10 +575,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch r[0] {
 			case 'j':
 				m.moveCursor(1)
-				return m, nil
+				return m, m.updateCursorPrompt()
 			case 'k':
 				m.moveCursor(-1)
-				return m, nil
+				return m, m.updateCursorPrompt()
 			}
 		}
 		m.searchQuery += string(r)
@@ -589,21 +588,26 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// headerLines returns the number of fixed lines above the item list
-// (title + filter tabs + separator).
-const headerLines = 3
+// headerLines is the number of fixed lines above the item list
+// (title + separator + search prompt + separator).
+const headerLines = 4
 
 // footerLines returns the number of fixed lines below the item list
 // (blank + key hints).
 const footerLines = 2
 
+// previewLines is the fixed number of text lines in the bottom preview area.
+const previewLines = 7
+
 // viewportHeight returns the number of item rows that fit on screen.
 // Returns 0 when the terminal height is unknown or too small.
 func (m *Model) viewportHeight() int {
-	if m.height <= headerLines+footerLines {
+	// 1 extra line for the preview separator
+	total := headerLines + footerLines + previewLines + 1
+	if m.height <= total {
 		return 0
 	}
-	return m.height - headerLines - footerLines
+	return m.height - total
 }
 
 // adjustScroll ensures the cursor is within the visible viewport,
@@ -671,37 +675,8 @@ func (m *Model) resetCursorToFirstWindow() {
 	m.offset = 0
 }
 
-func (m *Model) resetCursorToCurrentWindow() {
-	visible := m.visibleItems()
-	firstWindow := -1
-	for i, item := range visible {
-		if item.Kind != ItemWindow {
-			continue
-		}
-		if firstWindow < 0 {
-			firstWindow = i
-		}
-		if item.Window.ID == m.currentWinID {
-			m.cursor = i
-			m.cursorWinID = item.Window.ID
-			m.offset = 0
-			m.adjustScroll()
-			return
-		}
-	}
-	if firstWindow >= 0 {
-		m.cursor = firstWindow
-		if visible[firstWindow].Window != nil {
-			m.cursorWinID = visible[firstWindow].Window.ID
-		}
-	} else {
-		m.cursor = 0
-	}
-	m.offset = 0
-}
-
 // relocateCursor finds the window that the cursor was previously on (by cursorWinID)
-// and moves the cursor to its new index. Falls back to activeWinID, then currentWinID, then the first window.
+// and moves the cursor to its new index. Falls back to currentWinID, then the first window.
 func (m *Model) relocateCursor() {
 	visible := m.visibleItems()
 	firstWindow := -1
@@ -717,16 +692,7 @@ func (m *Model) relocateCursor() {
 			return
 		}
 	}
-	// cursorWinID not found (window was deleted) — fall back to activeWinID so the
-	// cursor follows the window tmux automatically switched to after the deletion.
-	for i, item := range visible {
-		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.activeWinID {
-			m.cursor = i
-			m.cursorWinID = item.Window.ID
-			return
-		}
-	}
-	// Then fall back to currentWinID (this sidebar's own window).
+	// cursorWinID not found (window was deleted) — fall back to currentWinID
 	for i, item := range visible {
 		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.currentWinID {
 			m.cursor = i
@@ -762,6 +728,48 @@ func (m *Model) switchSelected() tea.Cmd {
 	}
 }
 
+// cursorSessionID returns the Claude session ID of the window under the cursor,
+// or empty string if the cursor is not on a Claude window.
+func (m *Model) cursorSessionID() string {
+	visible := m.visibleItems()
+	if m.cursor >= len(visible) {
+		return ""
+	}
+	item := visible[m.cursor]
+	if item.Kind != ItemWindow || item.PaneState == nil {
+		return ""
+	}
+	return item.PaneState.SessionID
+}
+
+// updateCursorPrompt updates cursorPrompt based on the current cursor position.
+// If the prompt is cached, it is used immediately. Otherwise, a background fetch is started.
+func (m *Model) updateCursorPrompt() tea.Cmd {
+	sid := m.cursorSessionID()
+	if sid == "" {
+		m.cursorPrompt = ""
+		return nil
+	}
+	if cached, ok := m.promptCache[sid]; ok {
+		m.cursorPrompt = cached
+		return nil
+	}
+	// Fetch asynchronously
+	m.cursorPrompt = ""
+	return func() tea.Msg {
+		transcriptPath, err := session.FindTranscriptPath(sid)
+		if err != nil || transcriptPath == "" {
+			return promptMsg{sessionID: sid, prompt: ""}
+		}
+		prompt, err := session.ExtractInitialPrompt(transcriptPath)
+		if err != nil {
+			return promptMsg{sessionID: sid, prompt: ""}
+		}
+		return promptMsg{sessionID: sid, prompt: prompt}
+	}
+}
+
+
 // View renders the sidebar.
 func (m *Model) View() string {
 	if m.err != nil {
@@ -777,19 +785,7 @@ func (m *Model) View() string {
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("○ Sessions") + "\n")
 	}
 
-	// Filter tabs
-	for _, f := range []FilterMode{FilterAll, FilterWaiting} {
-		label := "[" + f.String() + "]"
-		if f == m.filter {
-			sb.WriteString(styleFilterActive.Render(label))
-		} else {
-			sb.WriteString(styleFilterFaint.Render(label))
-		}
-		sb.WriteString(" ")
-	}
-	sb.WriteString("\n")
-
-	// Search prompt (always visible, replaces separator)
+	// Search prompt
 	faintSep := lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width))
 	if m.searchQuery != "" {
 		sb.WriteString(faintSep + "\n")
@@ -829,8 +825,9 @@ func (m *Model) View() string {
 			// Build suffix: badge + PR (right side, fixed width)
 			suffix := ""
 			if item.PaneState != nil {
+				suffix += "[c]"
 				if b := renderBadge(item.PaneState); b != "" {
-					suffix = " " + b
+					suffix += b
 				}
 			}
 			if git, ok := m.gitData[item.Window.ID]; ok && git.prNumber != 0 {
@@ -850,28 +847,51 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Footer: scroll indicator + key hints
+	// Scroll indicator
 	if vp > 0 && endIdx < len(visible) {
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("  ↓ %d more", len(visible)-endIdx)) + "\n")
 	} else {
 		sb.WriteString("\n")
 	}
-	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter Esc:clear ^C:quit") + "\n")
+
+	// Footer key hints (above preview area)
+	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Esc:clear ^C:quit") + "\n")
+
+	// Preview area: separated by a line, showing initial prompt in normal color
+	previewH := previewLines
+	sb.WriteString(lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width)) + "\n")
+	if m.cursorPrompt != "" {
+		lines := wrapText(m.cursorPrompt, m.width)
+		maxLines := previewH - 1
+		truncated := len(lines) > maxLines
+		if truncated {
+			lines = lines[:maxLines]
+		}
+		for i, line := range lines {
+			if truncated && i == len(lines)-1 {
+				// Last visible line: truncate and append "..."
+				if len(line) > m.width-3 {
+					line = line[:m.width-3]
+				}
+				line += "..."
+			}
+			sb.WriteString(line + "\n")
+		}
+		for i := len(lines); i < maxLines; i++ {
+			sb.WriteString("\n")
+		}
+	} else {
+		for i := 0; i < previewH-1; i++ {
+			sb.WriteString("\n")
+		}
+	}
 	return sb.String()
 }
 
 func renderBadge(ps *state.PaneState) string {
 	switch ps.Status {
 	case state.StatusRunning:
-		var elapsed time.Duration
-		if !ps.StartedAt.IsZero() {
-			elapsed = time.Since(ps.StartedAt)
-		}
-		if elapsed < time.Minute {
-			secs := int(elapsed.Seconds())
-			return styleBadgeRun.Render(fmt.Sprintf("🔄%ds", secs))
-		}
-		mins := int(elapsed.Minutes())
+		mins := int(ps.Elapsed.Minutes())
 		return styleBadgeRun.Render(fmt.Sprintf("🔄%dm", mins))
 	case state.StatusIdle:
 		return "" // idle は非表示
@@ -884,6 +904,36 @@ func renderBadge(ps *state.PaneState) string {
 	}
 }
 
+// wrapText wraps text to the given width, breaking on whitespace.
+func wrapText(text string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	var lines []string
+	for _, paragraph := range strings.Split(text, "\n") {
+		if paragraph == "" {
+			lines = append(lines, "")
+			continue
+		}
+		words := strings.Fields(paragraph)
+		if len(words) == 0 {
+			lines = append(lines, "")
+			continue
+		}
+		line := words[0]
+		for _, w := range words[1:] {
+			if len(line)+1+len(w) > width {
+				lines = append(lines, line)
+				line = w
+			} else {
+				line += " " + w
+			}
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func renderPRBadge(prState string, number int) string {
 	text := fmt.Sprintf("#%d", number)
 	switch prState {
@@ -893,8 +943,6 @@ func renderPRBadge(prState string, number int) string {
 		return stylePROpen.Render(text)
 	case "merged":
 		return stylePRMerged.Render(text)
-	case "closed":
-		return stylePRClosed.Render(text)
 	default:
 		return text
 	}

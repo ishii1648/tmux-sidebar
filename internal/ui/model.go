@@ -100,12 +100,6 @@ type switchWindowMsg struct {
 type gitTickMsg time.Time
 
 
-// deleteWindowMsg is sent when the user confirms deletion of the selected window.
-type deleteWindowMsg struct {
-	sessionName string
-	windowIndex int
-}
-
 // gitDataMsg carries refreshed git/PR info for all visible windows.
 type gitDataMsg struct {
 	data map[string]gitInfo // keyed by window ID
@@ -147,7 +141,6 @@ type Model struct {
 	gitData       map[string]gitInfo // keyed by window ID
 	focused       bool               // true when this pane has terminal focus
 	searchQuery   string             // current search query text (always-on incremental filter)
-	confirmDelete *deleteWindowMsg   // non-nil when awaiting delete confirmation
 	promptCache   map[string]string  // sessionID → initial prompt text (cached)
 	cursorPrompt  string             // initial prompt for the window currently under cursor
 }
@@ -523,12 +516,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case deleteWindowMsg:
-		return m, func() tea.Msg {
-			_ = m.tmuxClient.KillWindow(msg.sessionName, msg.windowIndex)
-			return nil
-		}
-
 	case switchWindowMsg:
 		return m, func() tea.Msg {
 			_ = m.tmuxClient.SwitchWindow(msg.sessionName, msg.windowIndex)
@@ -559,24 +546,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Confirmation mode: only y/n/Esc are accepted
-	if m.confirmDelete != nil {
-		switch msg.String() {
-		case "y":
-			del := m.confirmDelete
-			m.confirmDelete = nil
-			return m, func() tea.Msg {
-				return deleteWindowMsg{
-					sessionName: del.sessionName,
-					windowIndex: del.windowIndex,
-				}
-			}
-		case "n", "esc":
-			m.confirmDelete = nil
-		}
-		return m, nil
-	}
-
 	switch msg.Type {
 	case tea.KeyEscape:
 		if m.searchQuery != "" {
@@ -592,16 +561,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resetCursorToFirstWindow()
 		}
 		return m, nil
-	case tea.KeyTab:
-		m.filter = (m.filter + 1) % 2
-		m.searchQuery = ""
-		m.resetCursorToCurrentWindow()
-		return m, nil
-	case tea.KeyShiftTab:
-		m.filter = (m.filter + 1) % 2
-		m.searchQuery = ""
-		m.resetCursorToCurrentWindow()
-		return m, nil
 	case tea.KeyUp:
 		m.moveCursor(-1)
 		return m, m.updateCursorPrompt()
@@ -610,7 +569,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.updateCursorPrompt()
 	case tea.KeyRunes:
 		r := msg.Runes
-		// j/k/d keys only when search is empty
+		// j/k keys only when search is empty
 		if m.searchQuery == "" && len(r) == 1 {
 			switch r[0] {
 			case 'j':
@@ -619,9 +578,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case 'k':
 				m.moveCursor(-1)
 				return m, m.updateCursorPrompt()
-			case 'd':
-				m.promptDeleteSelectedWindow()
-				return m, nil
 			}
 		}
 		m.searchQuery += string(r)
@@ -631,9 +587,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// headerLines returns the number of fixed lines above the item list
-// (title + filter tabs + separator).
-const headerLines = 3
+// headerLines is the number of fixed lines above the item list
+// (title + separator + search prompt + separator).
+const headerLines = 4
 
 // footerLines returns the number of fixed lines below the item list
 // (blank + key hints).
@@ -715,35 +671,6 @@ func (m *Model) resetCursorToFirstWindow() {
 		}
 	}
 	m.cursor = 0
-	m.offset = 0
-}
-
-func (m *Model) resetCursorToCurrentWindow() {
-	visible := m.visibleItems()
-	firstWindow := -1
-	for i, item := range visible {
-		if item.Kind != ItemWindow {
-			continue
-		}
-		if firstWindow < 0 {
-			firstWindow = i
-		}
-		if item.Window.ID == m.currentWinID {
-			m.cursor = i
-			m.cursorWinID = item.Window.ID
-			m.offset = 0
-			m.adjustScroll()
-			return
-		}
-	}
-	if firstWindow >= 0 {
-		m.cursor = firstWindow
-		if visible[firstWindow].Window != nil {
-			m.cursorWinID = visible[firstWindow].Window.ID
-		}
-	} else {
-		m.cursor = 0
-	}
 	m.offset = 0
 }
 
@@ -841,21 +768,6 @@ func (m *Model) updateCursorPrompt() tea.Cmd {
 	}
 }
 
-// promptDeleteSelectedWindow sets confirmDelete to prompt the user before killing the selected window.
-func (m *Model) promptDeleteSelectedWindow() {
-	visible := m.visibleItems()
-	if m.cursor >= len(visible) {
-		return
-	}
-	item := visible[m.cursor]
-	if item.Kind != ItemWindow || item.Window == nil {
-		return
-	}
-	m.confirmDelete = &deleteWindowMsg{
-		sessionName: item.SessionName,
-		windowIndex: item.Window.Index,
-	}
-}
 
 // View renders the sidebar.
 func (m *Model) View() string {
@@ -872,19 +784,7 @@ func (m *Model) View() string {
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("○ Sessions") + "\n")
 	}
 
-	// Filter tabs
-	for _, f := range []FilterMode{FilterAll, FilterWaiting} {
-		label := "[" + f.String() + "]"
-		if f == m.filter {
-			sb.WriteString(styleFilterActive.Render(label))
-		} else {
-			sb.WriteString(styleFilterFaint.Render(label))
-		}
-		sb.WriteString(" ")
-	}
-	sb.WriteString("\n")
-
-	// Search prompt (always visible, replaces separator)
+	// Search prompt
 	faintSep := lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width))
 	if m.searchQuery != "" {
 		sb.WriteString(faintSep + "\n")
@@ -946,12 +846,6 @@ func (m *Model) View() string {
 		}
 	}
 
-	// Confirmation prompt
-	if m.confirmDelete != nil {
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1")).Render(
-			fmt.Sprintf("Delete window %s:%d? (y/n)", m.confirmDelete.sessionName, m.confirmDelete.windowIndex)) + "\n")
-	}
-
 	// Scroll indicator
 	if vp > 0 && endIdx < len(visible) {
 		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("  ↓ %d more", len(visible)-endIdx)) + "\n")
@@ -960,7 +854,7 @@ func (m *Model) View() string {
 	}
 
 	// Footer key hints (above preview area)
-	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Tab:filter d:del Esc:clear ^C:quit") + "\n")
+	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Esc:clear ^C:quit") + "\n")
 
 	// Preview area: separated by a line, showing initial prompt in normal color
 	previewH := previewLines

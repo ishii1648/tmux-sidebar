@@ -250,7 +250,7 @@ func TestView_UnfocusedHidesCursorAndChangesHeader(t *testing.T) {
 func TestView_FocusedShowsFooter(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "Tab:filter") {
+	if !strings.Contains(view, "Esc:clear") {
 		t.Errorf("focused View should show footer hints:\n%s", view)
 	}
 }
@@ -259,7 +259,7 @@ func TestView_FooterAlwaysVisible(t *testing.T) {
 	for _, focused := range []bool{true, false} {
 		m := newTestModel(sampleItems(), 1, focused)
 		view := stripANSI(m.View())
-		if !strings.Contains(view, "Tab:filter") {
+		if !strings.Contains(view, "Esc:clear") {
 			t.Errorf("View (focused=%v) should always show footer hints:\n%s", focused, view)
 		}
 	}
@@ -325,100 +325,6 @@ func TestView_NoBadgeWhenNoPaneState(t *testing.T) {
 		if strings.Contains(view, badge) {
 			t.Errorf("View should NOT contain badge %q when PaneState is nil:\n%s", badge, view)
 		}
-	}
-}
-
-// ── filter / visibleItems ────────────────────────────────────────────────────
-
-func sampleItemsWithStates() []ListItem {
-	running := state.PaneState{Status: state.StatusRunning}
-	perm := state.PaneState{Status: state.StatusPermission}
-	return []ListItem{
-		{Kind: ItemSession, SessionName: "session-a"},
-		{Kind: ItemWindow, SessionName: "session-a", Window: &tmux.Window{ID: "@1", Index: 0, Name: "run-win"}, PaneState: &running},
-		{Kind: ItemWindow, SessionName: "session-a", Window: &tmux.Window{ID: "@2", Index: 1, Name: "plain-win"}},
-		{Kind: ItemSession, SessionName: "session-b"},
-		{Kind: ItemWindow, SessionName: "session-b", Window: &tmux.Window{ID: "@3", Index: 0, Name: "wait-win"}, PaneState: &perm},
-	}
-}
-
-func TestFilterAll_ShowsAllItems(t *testing.T) {
-	m := newTestModel(sampleItemsWithStates(), 1, true)
-	visible := m.visibleItems()
-	if len(visible) != 5 {
-		t.Errorf("FilterAll: len(visibleItems) = %d, want 5", len(visible))
-	}
-}
-
-func TestFilterWaiting_ShowsOnlyPermissionAndAsk(t *testing.T) {
-	ask := state.PaneState{Status: state.StatusAsk}
-	items := []ListItem{
-		{Kind: ItemSession, SessionName: "s"},
-		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "ask-win"}, PaneState: &ask},
-		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@2", Index: 1, Name: "idle-win"},
-			PaneState: &state.PaneState{Status: state.StatusIdle}},
-	}
-	m := newTestModel(items, 1, true)
-	m.filter = FilterWaiting
-	visible := m.visibleItems()
-	if len(visible) != 2 {
-		t.Errorf("FilterWaiting: len = %d, want 2", len(visible))
-	}
-	if visible[1].Window.Name != "ask-win" {
-		t.Errorf("FilterWaiting: expected ask-win, got %s", visible[1].Window.Name)
-	}
-}
-
-func TestTabKey_CyclesFilterForward(t *testing.T) {
-	m := newTestModel(sampleItemsWithStates(), 1, true)
-	m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if m.filter != FilterWaiting {
-		t.Errorf("after Tab: filter = %v, want FilterWaiting", m.filter)
-	}
-	m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if m.filter != FilterAll {
-		t.Errorf("after Tab×2: filter = %v, want FilterAll", m.filter)
-	}
-}
-
-func TestShiftTabKey_CyclesFilterBackward(t *testing.T) {
-	m := newTestModel(sampleItemsWithStates(), 1, true)
-	m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if m.filter != FilterWaiting {
-		t.Errorf("after Shift+Tab: filter = %v, want FilterWaiting", m.filter)
-	}
-	m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if m.filter != FilterAll {
-		t.Errorf("after Shift+Tab×2: filter = %v, want FilterAll", m.filter)
-	}
-}
-
-func TestFilterChange_ResetsCursorToFirstWindow(t *testing.T) {
-	m := newTestModel(sampleItemsWithStates(), 4, true)
-	m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if m.cursor != 1 {
-		t.Errorf("cursor after filter change = %d, want 1", m.cursor)
-	}
-}
-
-func TestFilterChange_UnfocusedIgnoresTab(t *testing.T) {
-	m := newTestModel(sampleItemsWithStates(), 1, false)
-	m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if m.filter != FilterAll {
-		t.Errorf("Tab when unfocused changed filter: got %v", m.filter)
-	}
-}
-
-func TestView_ShowsFilterTabs(t *testing.T) {
-	m := newTestModel(sampleItemsWithStates(), 1, true)
-	view := stripANSI(m.View())
-	for _, label := range []string{"[All]", "[Waiting]"} {
-		if !strings.Contains(view, label) {
-			t.Errorf("View should contain filter tab %q:\n%s", label, view)
-		}
-	}
-	if strings.Contains(view, "[Running]") {
-		t.Errorf("View should NOT contain [Running] tab:\n%s", view)
 	}
 }
 
@@ -528,7 +434,7 @@ func manyItems(n int) []ListItem {
 func TestScroll_ViewportLimitsRenderedRows(t *testing.T) {
 	items := manyItems(20)
 	m := newTestModel(items, 1, true)
-	m.height = 15
+	m.height = 20
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "win-0") {
 		t.Errorf("should contain win-0:\n%s", view)
@@ -544,7 +450,7 @@ func TestScroll_ViewportLimitsRenderedRows(t *testing.T) {
 func TestScroll_CursorDownScrollsView(t *testing.T) {
 	items := manyItems(20)
 	m := newTestModel(items, 1, true)
-	m.height = 15
+	m.height = 20
 	for i := 0; i < 10; i++ {
 		m.Update(key('j'))
 	}
@@ -559,7 +465,7 @@ func TestScroll_CursorDownScrollsView(t *testing.T) {
 func TestScroll_CursorUpScrollsBack(t *testing.T) {
 	items := manyItems(20)
 	m := newTestModel(items, 1, true)
-	m.height = 15
+	m.height = 20
 	for i := 0; i < 10; i++ {
 		m.Update(key('j'))
 	}
@@ -698,85 +604,6 @@ func TestView_SearchPromptShowsQuery(t *testing.T) {
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "> test") {
 		t.Errorf("View should show search query in prompt:\n%s", view)
-	}
-}
-
-// ── delete window with confirmation ─────────────────────────────────────────
-
-func TestDeleteKey_ShowsConfirmation(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-	m.Update(key('d'))
-	if m.confirmDelete == nil {
-		t.Fatal("d key should set confirmDelete")
-	}
-	if m.confirmDelete.sessionName != "session-a" {
-		t.Errorf("confirmDelete.sessionName = %q, want %q", m.confirmDelete.sessionName, "session-a")
-	}
-	if m.confirmDelete.windowIndex != 0 {
-		t.Errorf("confirmDelete.windowIndex = %d, want 0", m.confirmDelete.windowIndex)
-	}
-}
-
-func TestDeleteConfirm_Y_SendsDeleteWindowMsg(t *testing.T) {
-	m := newTestModel(sampleItems(), 2, true)
-	m.Update(key('d'))
-	if m.confirmDelete == nil {
-		t.Fatal("d should set confirmDelete")
-	}
-	_, cmd := m.Update(key('y'))
-	if m.confirmDelete != nil {
-		t.Error("y should clear confirmDelete")
-	}
-	if cmd == nil {
-		t.Fatal("y should return a Cmd")
-	}
-	msg := cmd()
-	delMsg, ok := msg.(deleteWindowMsg)
-	if !ok {
-		t.Fatalf("Cmd returned %T, want deleteWindowMsg", msg)
-	}
-	if delMsg.sessionName != "session-a" || delMsg.windowIndex != 1 {
-		t.Errorf("deleteWindowMsg = %+v, want session-a:1", delMsg)
-	}
-}
-
-func TestDeleteConfirm_N_Cancels(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-	m.Update(key('d'))
-	m.Update(key('n'))
-	if m.confirmDelete != nil {
-		t.Error("n should clear confirmDelete")
-	}
-}
-
-func TestDeleteConfirm_Esc_Cancels(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-	m.Update(key('d'))
-	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
-	if m.confirmDelete != nil {
-		t.Error("Esc should clear confirmDelete")
-	}
-}
-
-func TestDeleteConfirm_BlocksOtherKeys(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-	m.Update(key('d'))
-	savedCursor := m.cursor
-	m.Update(key('j'))
-	if m.cursor != savedCursor {
-		t.Error("j should be blocked during confirmation")
-	}
-	if m.confirmDelete == nil {
-		t.Error("confirmDelete should still be set after j")
-	}
-}
-
-func TestView_ShowsConfirmPrompt(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-	m.confirmDelete = &deleteWindowMsg{sessionName: "session-a", windowIndex: 0}
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "Delete window session-a:0? (y/n)") {
-		t.Errorf("View should show confirmation prompt:\n%s", view)
 	}
 }
 

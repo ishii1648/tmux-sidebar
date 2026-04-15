@@ -22,6 +22,7 @@ type indexEntry struct {
 // transcriptLine represents a single line in a transcript JSONL file.
 type transcriptLine struct {
 	Type    string          `json:"type"`
+	IsMeta  bool            `json:"isMeta"`
 	Message json.RawMessage `json:"message"`
 }
 
@@ -60,6 +61,27 @@ func findTranscriptPathFrom(indexPath, sessionID string) (string, error) {
 	return "", nil
 }
 
+// syntheticPromptPrefixes are tag prefixes that indicate a transcript "user"
+// message is synthetic (slash command invocation, local command output,
+// caveat banner, etc.) rather than a real user prompt.
+var syntheticPromptPrefixes = []string{
+	"<local-command-caveat>",
+	"<local-command-stdout>",
+	"<local-command-stderr>",
+	"<command-name>",
+	"<command-message>",
+	"<command-args>",
+}
+
+func isSyntheticPrompt(s string) bool {
+	for _, p := range syntheticPromptPrefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ExtractInitialPrompt reads a transcript JSONL file and returns the first
 // user message content (the initial prompt). Returns empty string if no user
 // message is found.
@@ -83,7 +105,7 @@ func ExtractInitialPrompt(transcriptPath string) (string, error) {
 		if json.Unmarshal(line, &tl) != nil {
 			continue
 		}
-		if tl.Type != "user" {
+		if tl.Type != "user" || tl.IsMeta {
 			continue
 		}
 		// Extract content from the message field.
@@ -92,9 +114,10 @@ func ExtractInitialPrompt(transcriptPath string) (string, error) {
 			continue
 		}
 		prompt := strings.TrimSpace(msg.Content)
-		if prompt != "" {
-			return prompt, nil
+		if prompt == "" || isSyntheticPrompt(prompt) {
+			continue
 		}
+		return prompt, nil
 	}
 	return "", nil
 }

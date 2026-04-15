@@ -96,6 +96,11 @@ var requiredTmuxHooks = []struct {
 		needle: "tmux-sidebar-",
 		hint:   "see README Setup §1 — add window-linked/unlinked and session-created/closed hooks",
 	},
+	{
+		label:  "sidebar width enforcement",
+		needle: "client-resized",
+		hint:   "see README Setup §4 — add a `client-resized` hook that restores sidebar width after display moves / window resize",
+	},
 }
 
 // ── settings.json helpers ────────────────────────────────────────────────────

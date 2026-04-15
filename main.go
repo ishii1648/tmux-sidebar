@@ -239,7 +239,8 @@ func runFocusOrOpen() error {
 
 	if sidebarPaneID == "" {
 		// Sidebar is closed → open it.
-		if err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-t", winID, "tmux-sidebar").Run(); err != nil {
+		widthArg := strconv.Itoa(sidebarWidth())
+		if err := exec.Command("tmux", "split-window", "-hfb", "-l", widthArg, "-t", winID, "tmux-sidebar").Run(); err != nil {
 			return fmt.Errorf("split-window: %w", err)
 		}
 		// -hfb always places the new pane at the leftmost position in the window.
@@ -275,7 +276,8 @@ func runToggleSidebar() error {
 		return exec.Command("tmux", "kill-pane", "-t", sidebarPaneID).Run()
 	}
 	// Sidebar is closed → open it.
-	newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
+	widthArg := strconv.Itoa(sidebarWidth())
+	newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", widthArg, "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
 	if err != nil {
 		return fmt.Errorf("split-window: %w", err)
 	}
@@ -351,8 +353,8 @@ func runCleanupIfOnlySidebar() error {
 			exec.Command("tmux", "kill-window", "-t", wid).Run()
 		} else if sidebarPaneID != "" {
 			// Other panes still exist but tmux may have expanded the sidebar when a
-			// neighbouring pane was killed; restore it to its fixed 40-column width.
-			exec.Command("tmux", "resize-pane", "-t", sidebarPaneID, "-x", "40").Run()
+			// neighbouring pane was killed; restore it to its configured width.
+			exec.Command("tmux", "resize-pane", "-t", sidebarPaneID, "-x", strconv.Itoa(sidebarWidth())).Run()
 		}
 	}
 	return nil
@@ -396,8 +398,9 @@ func runRestart() error {
 	}
 
 	// Re-create a sidebar in each window that had one.
+	widthArg := strconv.Itoa(sidebarWidth())
 	for _, wid := range windowsWithSidebar {
-		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", "40", "-t", wid, "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
+		newOut, err := exec.Command("tmux", "split-window", "-hfb", "-l", widthArg, "-t", wid, "-P", "-F", "#{pane_id}", "tmux-sidebar").Output()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to open sidebar in window %s: %v\n", wid, err)
 			continue
@@ -410,4 +413,14 @@ func runRestart() error {
 
 	fmt.Printf("restarted %d sidebar(s)\n", len(windowsWithSidebar))
 	return nil
+}
+
+// sidebarWidth loads the configured sidebar width (columns).
+// Falls back to config.DefaultSidebarWidth when loading fails.
+func sidebarWidth() int {
+	cfg, err := config.Load(config.DefaultConfigPath())
+	if err != nil || cfg.Width < config.MinSidebarWidth {
+		return config.DefaultSidebarWidth
+	}
+	return cfg.Width
 }

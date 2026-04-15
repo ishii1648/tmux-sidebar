@@ -106,21 +106,27 @@ type gitDataMsg struct {
 	data map[string]gitInfo // keyed by window ID
 }
 
-// Styles used for rendering.
+// Styles used for rendering. Colors use AdaptiveColor so the sidebar works on
+// both light and dark terminal backgrounds.
 var (
-	styleCursor       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
-	styleSession      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	styleWindow       = lipgloss.NewStyle().PaddingLeft(1)
-	styleBadgeRun     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styleBadgeIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styleBadgePerm    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	styleBadgeAsk     = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-	styleHeader       = lipgloss.NewStyle().Bold(true).Underline(true)
-	styleFilterActive = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styleFilterFaint  = lipgloss.NewStyle().Faint(true)
-	stylePRDraft  = lipgloss.NewStyle().Foreground(lipgloss.Color("248")) // gray (#8b949e)
-	stylePROpen   = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))  // green (#3fb950)
-	stylePRMerged = lipgloss.NewStyle().Foreground(lipgloss.Color("141")) // purple (#a371f7)
+	colAccent   = lipgloss.AdaptiveColor{Light: "#0066cc", Dark: "#3b9eff"}
+	colMuted    = lipgloss.AdaptiveColor{Light: "#6e7781", Dark: "#8b949e"}
+	colRunning  = lipgloss.AdaptiveColor{Light: "#1a7f37", Dark: "#3fb950"}
+	colPending  = lipgloss.AdaptiveColor{Light: "#9a6700", Dark: "#d29922"}
+	colWaiting  = lipgloss.AdaptiveColor{Light: "#8250df", Dark: "#a371f7"}
+	colActiveBg = lipgloss.AdaptiveColor{Light: "#ddf4ff", Dark: "#0a3069"}
+
+	styleCursor   = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	styleSession  = lipgloss.NewStyle().Foreground(colMuted)
+	styleWindow   = lipgloss.NewStyle().PaddingLeft(1)
+	styleBadgeRun = lipgloss.NewStyle().Foreground(colRunning)
+	styleBadgePerm = lipgloss.NewStyle().Foreground(colPending)
+	styleBadgeAsk  = lipgloss.NewStyle().Foreground(colWaiting)
+	styleHeader    = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	styleFaint     = lipgloss.NewStyle().Foreground(colMuted)
+	stylePRDraft   = lipgloss.NewStyle().Foreground(colMuted)
+	stylePROpen    = lipgloss.NewStyle().Foreground(colRunning)
+	stylePRMerged  = lipgloss.NewStyle().Foreground(colWaiting)
 )
 
 // Model is the bubbletea Model for the sidebar.
@@ -589,22 +595,28 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// headerLines is the number of fixed lines above the item list
-// (title + separator + search prompt + separator).
-const headerLines = 4
-
-// footerLines returns the number of fixed lines below the item list
+// footerLines is the number of fixed lines below the item list
 // (blank + key hints).
 const footerLines = 2
 
 // previewLines is the fixed number of text lines in the bottom preview area.
 const previewLines = 7
 
+// headerLines returns the number of fixed lines above the item list.
+// Without a search query: title + query-hint = 2 lines.
+// With a search query: title + query + separator = 3 lines.
+func (m *Model) headerLines() int {
+	if m.searchQuery != "" {
+		return 3
+	}
+	return 2
+}
+
 // viewportHeight returns the number of item rows that fit on screen.
 // Returns 0 when the terminal height is unknown or too small.
 func (m *Model) viewportHeight() int {
 	// 1 extra line for the preview separator
-	total := headerLines + footerLines + previewLines + 1
+	total := m.headerLines() + footerLines + previewLines + 1
 	if m.height <= total {
 		return 0
 	}
@@ -783,19 +795,16 @@ func (m *Model) View() string {
 	if m.focused {
 		sb.WriteString(styleHeader.Render("● Sessions") + "\n")
 	} else {
-		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("○ Sessions") + "\n")
+		sb.WriteString(styleFaint.Render("○ Sessions") + "\n")
 	}
 
-	// Search prompt
-	faintSep := lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width))
+	// Search prompt (no decorative separators; one faint rule under the query
+	// when the user is actively searching)
 	if m.searchQuery != "" {
-		sb.WriteString(faintSep + "\n")
-		sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("> ") + m.searchQuery + "▏\n")
-		sb.WriteString(faintSep + "\n")
+		sb.WriteString(styleCursor.Render("> ") + m.searchQuery + "▏\n")
+		sb.WriteString(styleFaint.Render(strings.Repeat("─", m.width)) + "\n")
 	} else {
-		sb.WriteString(faintSep + "\n")
-		sb.WriteString(lipgloss.NewStyle().Faint(true).Render("> type to filter...") + "\n")
-		sb.WriteString(faintSep + "\n")
+		sb.WriteString(styleFaint.Render("> type to filter...") + "\n")
 	}
 
 	// Session / window list
@@ -813,17 +822,17 @@ func (m *Model) View() string {
 		item := visible[i]
 		switch item.Kind {
 		case ItemSession:
-			sb.WriteString(styleSession.Render(item.SessionName) + "\n")
+			sb.WriteString(styleSession.Render("▾ "+item.SessionName) + "\n")
 		case ItemWindow:
 			cursor := "  "
 			if i == m.cursor {
 				if m.focused {
 					cursor = styleCursor.Render("▶ ")
 				} else {
-					cursor = lipgloss.NewStyle().Faint(true).Render("▶ ")
+					cursor = styleFaint.Render("▶ ")
 				}
 			}
-			// Build suffix: badge + PR (right side, fixed width)
+			// Build suffix: badge + PR (right-aligned on the row)
 			suffix := ""
 			if item.PaneState != nil {
 				suffix += "[c]"
@@ -834,9 +843,16 @@ func (m *Model) View() string {
 			if git, ok := m.gitData[item.Window.ID]; ok && git.prNumber != 0 {
 				suffix += " " + renderPRBadge(git.prState, git.prNumber)
 			}
-			// Truncate window name to fit: cursor(2) + padding(1) + "N: " + name + suffix <= m.width
+			// Reserve at least one space between name and suffix.
+			// Layout: [cursor(2)][space(1)][prefix][name][pad][suffix]
 			prefix := fmt.Sprintf("%d: ", item.Window.Index)
-			available := m.width - 2 - 1 - runewidth.StringWidth(prefix) - lipgloss.Width(suffix)
+			suffixW := lipgloss.Width(suffix)
+			fixedW := 2 + 1 + runewidth.StringWidth(prefix) + suffixW
+			minGap := 1
+			if suffixW == 0 {
+				minGap = 0
+			}
+			available := m.width - fixedW - minGap
 			name := item.Window.Name
 			if available <= 0 {
 				name = ""
@@ -844,23 +860,32 @@ func (m *Model) View() string {
 				name = runewidth.Truncate(name, available, "")
 			}
 			label := prefix + name
-			sb.WriteString(cursor + styleWindow.Render(label+suffix) + "\n")
+			left := cursor + styleWindow.Render(label)
+			pad := m.width - lipgloss.Width(left) - suffixW
+			if pad < minGap {
+				pad = minGap
+			}
+			row := left + strings.Repeat(" ", pad) + suffix
+			if item.Window.ID == m.activeWinID {
+				row = paintActiveRow(row, m.width)
+			}
+			sb.WriteString(row + "\n")
 		}
 	}
 
 	// Scroll indicator
 	if vp > 0 && endIdx < len(visible) {
-		sb.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("  ↓ %d more", len(visible)-endIdx)) + "\n")
+		sb.WriteString(styleFaint.Render(fmt.Sprintf("  ↓ %d more", len(visible)-endIdx)) + "\n")
 	} else {
 		sb.WriteString("\n")
 	}
 
 	// Footer key hints (above preview area)
-	sb.WriteString(lipgloss.NewStyle().Faint(true).MaxWidth(m.width).Render("Esc:clear ^C:quit") + "\n")
+	sb.WriteString(styleFaint.MaxWidth(m.width).Render("Esc:clear ^C:quit") + "\n")
 
 	// Preview area: separated by a line, showing initial prompt in normal color
 	previewH := previewLines
-	sb.WriteString(lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", m.width)) + "\n")
+	sb.WriteString(styleFaint.Render(strings.Repeat("─", m.width)) + "\n")
 	if m.cursorPrompt != "" {
 		lines := wrapText(m.cursorPrompt, m.width)
 		maxLines := previewH - 1
@@ -887,6 +912,32 @@ func (m *Model) View() string {
 		}
 	}
 	return sb.String()
+}
+
+// paintActiveRow wraps a pre-rendered row with the active-background color so
+// the highlight extends to the right edge. lipgloss.Style.Render does not
+// re-apply the outer background after inner "\x1b[0m" resets, so we inject
+// the bg SGR after every reset and pad the line to the full width.
+func paintActiveRow(row string, width int) string {
+	bgOpen := activeBgSGR()
+	if bgOpen == "" {
+		return row
+	}
+	if w := lipgloss.Width(row); w < width {
+		row += strings.Repeat(" ", width-w)
+	}
+	row = bgOpen + strings.ReplaceAll(row, "\x1b[0m", "\x1b[0m"+bgOpen) + "\x1b[0m"
+	return row
+}
+
+// activeBgSGR returns the opening SGR for colActiveBg under the current
+// terminal profile, or "" if no color is available.
+func activeBgSGR() string {
+	sample := lipgloss.NewStyle().Background(colActiveBg).Render(" ")
+	if i := strings.IndexByte(sample, 'm'); i >= 0 {
+		return sample[:i+1]
+	}
+	return ""
 }
 
 func renderBadge(ps *state.PaneState) string {

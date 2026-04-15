@@ -8,9 +8,18 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
+	"github.com/muesli/termenv"
 )
+
+// Force a color profile so AdaptiveColor styles always emit SGR escape
+// sequences under `go test`, which otherwise strips color because there's no
+// TTY attached.
+func init() {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+}
 
 // ── fakes ────────────────────────────────────────────────────────────────────
 
@@ -706,5 +715,112 @@ func TestBreakWord_SplitsAtBoundary(t *testing.T) {
 	}
 	if lines[1] != "かきくけこ" {
 		t.Errorf("line[1] = %q, want %q", lines[1], "かきくけこ")
+	}
+}
+
+// ── active window background ────────────────────────────────────────────────
+
+// windowLine returns the rendered line (including ANSI) that contains the
+// given window name. Fails the test if not found.
+func windowLine(t *testing.T, view, name string) string {
+	t.Helper()
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(stripANSI(line), name) {
+			return line
+		}
+	}
+	t.Fatalf("window %q not found in view:\n%s", name, view)
+	return ""
+}
+
+func TestView_ActiveWindowHasBackground(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.activeWinID = "@2" // "work"
+	view := m.View()
+
+	activeLine := windowLine(t, view, "work")
+	inactiveLine := windowLine(t, view, "main")
+
+	// Background SGR uses parameters starting with 48 (48;5;n or 48;2;r;g;b).
+	bgRE := regexp.MustCompile(`\x1b\[[0-9;]*48[;m]`)
+	if !bgRE.MatchString(activeLine) {
+		t.Errorf("active window line should contain a background SGR (48;...):\n%q", activeLine)
+	}
+	if bgRE.MatchString(inactiveLine) {
+		t.Errorf("inactive window line should NOT contain a background SGR:\n%q", inactiveLine)
+	}
+}
+
+func TestView_CursorAndActiveAreIndependent(t *testing.T) {
+	// cursor on "work" (@2), active window on "main" (@1)
+	m := newTestModel(sampleItems(), 2, true)
+	m.activeWinID = "@1"
+	view := m.View()
+
+	activeLine := windowLine(t, view, "main")
+	cursorLine := windowLine(t, view, "work")
+
+	bgRE := regexp.MustCompile(`\x1b\[[0-9;]*48[;m]`)
+	if !bgRE.MatchString(activeLine) {
+		t.Errorf("active row (main) should have background:\n%q", activeLine)
+	}
+	if bgRE.MatchString(cursorLine) {
+		t.Errorf("cursor-but-not-active row (work) should NOT have background:\n%q", cursorLine)
+	}
+	if !strings.Contains(stripANSI(cursorLine), "▶") {
+		t.Errorf("cursor row should still carry the ▶ marker:\n%q", cursorLine)
+	}
+}
+
+// ── PR badge right-alignment ────────────────────────────────────────────────
+
+func TestPaintActiveRow_EndsWithReset(t *testing.T) {
+	inner := styleCursor.Render("▶ ") + " plain " + lipgloss.NewStyle().Foreground(colRunning).Render("🔄2m")
+	out := paintActiveRow(inner, 40)
+	if !strings.HasSuffix(out, "\x1b[0m") {
+		t.Errorf("paintActiveRow must terminate with \\x1b[0m, got tail %q", out[max(0, len(out)-10):])
+	}
+	// After every internal reset, bg SGR must be re-applied.
+	bg := activeBgSGR()
+	if bg == "" {
+		t.Skip("no color profile")
+	}
+	// Every "\x1b[0m" except the last must be followed by bg.
+	remaining := out
+	trimmed := strings.TrimSuffix(remaining, "\x1b[0m")
+	if strings.Count(trimmed, "\x1b[0m") == 0 {
+		t.Errorf("expected at least one internal reset; got %q", trimmed)
+	}
+	parts := strings.Split(trimmed, "\x1b[0m")
+	for i := 0; i < len(parts)-1; i++ {
+		next := parts[i+1]
+		if !strings.HasPrefix(next, bg) {
+			t.Errorf("internal reset #%d not followed by bg %q; following = %q", i, bg, next[:min(20, len(next))])
+		}
+	}
+}
+
+func TestView_PRBadgeRightAligned(t *testing.T) {
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "feat"}},
+	}
+	m := newTestModel(items, 1, true)
+	m.width = 40
+	m.gitData = map[string]gitInfo{
+		"@1": {branch: "feat", prState: "open", prNumber: 42},
+	}
+
+	view := m.View()
+	line := stripANSI(windowLine(t, view, "feat"))
+	line = strings.TrimRight(line, " ")
+
+	if !strings.HasSuffix(line, "#42") {
+		t.Errorf("PR badge should be at the right edge; line = %q", line)
+	}
+	// Expect multiple padding spaces between the name and the suffix
+	// (not just the single mandatory gap), since the name is short.
+	if !strings.Contains(line, "feat   ") {
+		t.Errorf("expected padding between name and suffix; line = %q", line)
 	}
 }

@@ -87,7 +87,26 @@ set-hook -g after-kill-pane 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
 
 > **注意**: `-ga`（append）ではなく `-g`（上書き）を使用してください。`pane-exited` はプロセスが自然終了した場合、`after-kill-pane` は `kill-pane` で強制削除した場合に発火します。両方設定すると `kill-pane` 時に cleanup が2回走りますが、`cleanup-if-only-sidebar` は冪等なため問題ありません。
 
-### 4. SIGUSR1 による即時更新通知（推奨）
+### 4. ディスプレイ移動時のサイドバー幅維持（推奨）
+
+tmux はクライアントウィンドウのリサイズ時に全ペインを **比例的にスケール** するため、
+異なる解像度のディスプレイ間を移動するとサイドバーの幅（列数）が変動し、
+比率が一定に保てない。絶対セル数を再適用するフックを設定すると解消される。
+
+```tmux
+# client-resized: ウィンドウ全体のサイズ変化時に発火
+# 全ウィンドウの sidebar ペインを 40 列に resize し直す
+set-hook -g client-resized \
+  'run-shell "tmux list-panes -aF \"##{pane_id} ##{@pane_role}\" | while read pane role; do [ \"\$role\" = sidebar ] && tmux resize-pane -t \"\$pane\" -x 40; done"'
+```
+
+> `##{...}` の `##` はサイドバー側に `#{...}` として渡すためのエスケープ（tmux format 展開を抑止）。
+> シェル変数の `\$role` / `\$pane` も、tmux config 層で `$` を保護するためにバックスラッシュでエスケープしている。
+
+幅をカスタマイズする場合は、`tmux split-window -l 40` と `resize-pane -x 40` の数値を揃えて変更する
+（§1 の `after-new-window` / `after-new-session` フックも含む）。
+
+### 5. SIGUSR1 による即時更新通知（推奨）
 
 ```tmux
 set-hook -g window-linked   'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ -f \"$f\" ] && kill -USR1 \$(cat \"$f\") 2>/dev/null; done"'
@@ -100,13 +119,13 @@ set-hook -g session-closed  'run-shell "for f in /tmp/tmux-sidebar-*.pid; do [ -
 
 > 未設定でも動作しますが、ウィンドウの追加・削除がサイドバーに反映されるまで最大10秒かかります。
 
-### 5. toggle キーバインド（任意）
+### 6. toggle キーバインド（任意）
 
 ```tmux
 bind-key e run-shell 'tmux-sidebar toggle'
 ```
 
-### 6. サイドバーへのフォーカスキーバインド（任意）
+### 7. サイドバーへのフォーカスキーバインド（任意）
 
 ```tmux
 # サイドバーがなければ作成してフォーカス、あればフォーカス移動
@@ -115,7 +134,7 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 
 > `<key>` は端末エミュレータ側で割り当てた escape sequence に合わせて変更してください。
 
-### 7. Claude Code の状態ファイル（任意）
+### 8. Claude Code の状態ファイル（任意）
 
 状態バッジを表示するには Claude Code の hook が `/tmp/claude-pane-state/` に状態ファイルを書き出す必要があります。
 
@@ -206,6 +225,7 @@ fi
 | 変数 | 説明 |
 |------|------|
 | `TMUX_SIDEBAR_STATE_DIR` | 状態ファイルのディレクトリ（デフォルト: `/tmp/claude-pane-state`） |
+| `TMUX_SIDEBAR_WIDTH` | サイドバー幅の既定値（列数、デフォルト: `40`、最小: `20`） |
 | `TMUX_SIDEBAR_NO_ALT_SCREEN` | 設定するとオルタネートスクリーンを無効化（E2E テスト用） |
 
 ## Configuration files
@@ -222,6 +242,18 @@ main
 ```
 
 上記の例では `main` セッションがサイドバーのセッション一覧から非表示になります。ファイルが存在しない場合は全セッションが表示されます。
+
+### width
+
+サイドバーの既定幅（列数）を指定するファイルです。`TMUX_SIDEBAR_WIDTH` 環境変数が優先されます。
+
+**ファイルパス**: `~/.config/tmux-sidebar/width`
+
+```
+40
+```
+
+最小値は `20`。範囲外や不正値はデフォルト `40` にフォールバックします。§1 と §4 の tmux.conf 側の数値も合わせて変更してください。
 
 ## License
 

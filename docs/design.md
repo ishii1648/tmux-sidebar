@@ -147,9 +147,58 @@ Go の TUI ライブラリ（[bubbletea](https://github.com/charmbracelet/bubble
 
 ---
 
+## サイドバー幅の管理
+
+### 課題
+
+`split-window -hfb -l 40` の `-l` は **絶対セル数** の指定になる。
+tmux はクライアントウィンドウのリサイズ時に全ペインを **比例的にスケール** するため、
+
+- 作成直後は 40 列でも、画面幅の異なるディスプレイへ移動した直後や
+  ウィンドウリサイズ後にサイドバーの幅が 40 以外になり、
+- 結果として表示比率がディスプレイごとに大きく変動する
+
+という問題があった。
+
+### 方針
+
+参考: [manaflow-ai/cmux](https://github.com/manaflow-ai/cmux) の Swift 版サイドバー
+（`SessionPersistence.swift:10`, `ContentView.swift:2332-2333`）は
+**絶対ピクセル幅** をユーザ設定として保持し、極端に狭い画面では
+`maximumSidebarWidthRatio = 1/3` で clamp するのみ。
+tmux-sidebar でも同じ思想で **絶対セル数を正** とする。
+
+| 要素 | 値 |
+|------|----|
+| デフォルト幅 | 40 列（`config.DefaultSidebarWidth`） |
+| 最小幅 | 20 列（`config.MinSidebarWidth`） |
+| 最大比率 clamp | ウィンドウ幅の 1/3（`enforce-width` 実行時のみ） |
+| 設定元 | `TMUX_SIDEBAR_WIDTH` 環境変数 > `~/.config/tmux-sidebar/width` > デフォルト |
+
+### 実装
+
+1. `config.Config.Width` にユーザ指定幅を読み込む（`TMUX_SIDEBAR_WIDTH` 環境変数 > `~/.config/tmux-sidebar/width` > デフォルト 40）
+2. すべての `split-window -l` / `resize-pane -x` 呼び出しを `cfg.Width` 基準に統一
+3. tmux.conf 側に `client-resized` フックを追加してサイドバー幅を再適用（README Setup §4 に記載）:
+
+   ```
+   set-hook -g client-resized \
+     'run-shell "tmux list-panes -aF \"##{pane_id} ##{@pane_role}\" | while read pane role; do [ \"$role\" = sidebar ] && tmux resize-pane -t \"$pane\" -x 40; done"'
+   ```
+
+   CLI サブコマンド化は見送り。ロジックが単純な resize のみでサブコマンド化のメリットが薄く、
+   tmux.conf 層でワンライナーとして完結させる方が依存関係も少ないため。doctor は
+   `client-resized` の有無のみを検出する。
+
+これにより、ディスプレイ間の移動やウィンドウリサイズ直後にも
+サイドバー幅が絶対セル数で一貫して保たれる。
+
+---
+
 ## 未決定事項
 
 - [ ] Go TUI ライブラリの選定（[bubbletea](https://github.com/charmbracelet/bubbletea) vs [tview](https://github.com/rivo/tview) vs 自前）
 - [ ] 「通常ペイン移動からの除外」の実装方式（`after-select-pane` hook vs TUI 内でのキャプチャ）
 - [ ] passive display（表示のみ）と interactive モードの切り替え方式
 - [ ] `cmd+s` でのフォーカス対応（Ghostty キーマップ設定が必要）
+- [ ] サイドバー幅のドラッグ変更対応（現状は設定ファイル編集のみ）

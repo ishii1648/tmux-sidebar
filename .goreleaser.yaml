@@ -16,7 +16,7 @@ builds:
     hooks:
       post:
         # Ad-hoc codesign for macOS binaries to pass Gatekeeper (no Apple Developer account needed).
-        - cmd: sh -c 'if [ "{{ .Os }}" = "darwin" ]; then codesign --sign - "{{ .Path }}"; fi'
+        - cmd: sh -c 'if [ "{{ .Os }}" = "darwin" ] && command -v codesign >/dev/null 2>&1; then codesign --sign - "{{ .Path }}"; fi'
 
 archives:
   - id: tmux-sidebar

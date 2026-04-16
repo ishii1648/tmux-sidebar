@@ -16,6 +16,7 @@ import (
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 	"github.com/ishii1648/tmux-sidebar/internal/ui"
+	"github.com/ishii1648/tmux-sidebar/internal/upgrade"
 )
 
 // version is set at build time via -ldflags "-X main.version=x.y.z".
@@ -38,6 +39,7 @@ Subcommands:
   cleanup-if-only-sidebar   Kill window if only the sidebar pane remains
   restart                   Restart sidebar in all tmux windows
   doctor [--yes]            Check tmux configuration; --yes to auto-apply fixes
+  upgrade                   Download and install the latest release from GitHub
   version                   Print version
 
 `)
@@ -76,6 +78,12 @@ Subcommands:
 			autoApply := len(os.Args) > 2 && os.Args[2] == "--yes"
 			if err := doctor.Run(autoApply); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar doctor: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "upgrade":
+			if err := upgrade.Run(version); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar upgrade: %v\n", err)
 				os.Exit(1)
 			}
 			return

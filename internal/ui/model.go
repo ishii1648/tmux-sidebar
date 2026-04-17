@@ -493,7 +493,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// items are added/removed and indices shift.
 		m.relocateCursor()
 		m.adjustScroll()
-		return m, nil
+		return m, m.updateCursorPrompt()
 
 	case stateOnlyMsg:
 		// Update PaneState on each window item using the cached pane-number map.
@@ -510,7 +510,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		return m, nil
+		return m, m.updateCursorPrompt()
 
 	case gitTickMsg:
 		return m, tea.Batch(m.loadGitInfo(), gitTickCmd())

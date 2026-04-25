@@ -23,7 +23,9 @@ func init() {
 
 // ── fakes ────────────────────────────────────────────────────────────────────
 
-type fakeTmuxClient struct{}
+type fakeTmuxClient struct {
+	panes []tmux.PaneInfo
+}
 
 func (f *fakeTmuxClient) ListSessions() ([]tmux.Session, error)    { return nil, nil }
 func (f *fakeTmuxClient) ListWindows() ([]tmux.Window, error)      { return nil, nil }
@@ -31,7 +33,7 @@ func (f *fakeTmuxClient) ListPanes() ([]tmux.Pane, error)          { return nil,
 func (f *fakeTmuxClient) CurrentPane() (tmux.CurrentPane, error)   { return tmux.CurrentPane{}, nil }
 func (f *fakeTmuxClient) SwitchWindow(_ string, _ int) error       { return nil }
 func (f *fakeTmuxClient) PaneCurrentPath(_ string) (string, error) { return "", nil }
-func (f *fakeTmuxClient) ListAll() ([]tmux.PaneInfo, error)        { return nil, nil }
+func (f *fakeTmuxClient) ListAll() ([]tmux.PaneInfo, error)        { return f.panes, nil }
 func (f *fakeTmuxClient) KillSession(_ string) error               { return nil }
 func (f *fakeTmuxClient) KillWindow(_ string, _ int) error         { return nil }
 
@@ -201,6 +203,51 @@ func TestBlurMsg_ClearsSearchQuery(t *testing.T) {
 	m.Update(tea.BlurMsg{})
 	if m.searchQuery != "" {
 		t.Errorf("after BlurMsg: searchQuery = %q, want empty", m.searchQuery)
+	}
+}
+
+func TestBlurMsg_SnapsCursorBackToActiveWindow(t *testing.T) {
+	// Regression: when the user navigates the cursor with j/k to a window
+	// in another session ("preview while focused") and then crosses tmux
+	// sessions via switch-client, the dataMsg handler skips the cursor
+	// update because the sidebar's own session's active window did not
+	// change. The manual cross-session position then persists, so when
+	// the user comes back to this session the cursor is still pointing
+	// at the previously-hovered window.
+	//
+	// BlurMsg fires when focus leaves the sidebar (which always happens
+	// on session crossing) — that's the right moment to discard any
+	// stale "preview" position and re-anchor to the active window.
+	m := newTestModel(sampleItems(), 1, true)
+	m.activeWinID = "@1"  // own session's current window
+	m.cursorWinID = "@99" // user manually navigated to some other window
+	m.cursor = 4          // index pointing somewhere else
+
+	m.Update(tea.BlurMsg{})
+
+	if m.cursorWinID != "@1" {
+		t.Errorf("after BlurMsg: cursorWinID = %q, want %q (snap back to active)", m.cursorWinID, "@1")
+	}
+	// cursor index must reflect the snapped-back position so the next
+	// View() draws ▶ on the active row.
+	if m.cursor != 1 {
+		t.Errorf("after BlurMsg: cursor = %d, want 1 (index of @1 in sampleItems)", m.cursor)
+	}
+}
+
+func TestBlurMsg_NoOpWhenActiveWinIDUnknown(t *testing.T) {
+	// If activeWinID has not been set yet (very first dataMsg hasn't
+	// arrived), BlurMsg must not stomp cursorWinID with "" — the cursor
+	// would lose its anchor and relocateCursor would fall through to
+	// the first-window fallback.
+	m := newTestModel(sampleItems(), 2, true)
+	m.activeWinID = ""
+	m.cursorWinID = "@2"
+
+	m.Update(tea.BlurMsg{})
+
+	if m.cursorWinID != "@2" {
+		t.Errorf("BlurMsg with empty activeWinID stomped cursorWinID: got %q, want %q", m.cursorWinID, "@2")
 	}
 }
 
@@ -797,6 +844,193 @@ func TestPaintActiveRow_EndsWithReset(t *testing.T) {
 		if !strings.HasPrefix(next, bg) {
 			t.Errorf("internal reset #%d not followed by bg %q; following = %q", i, bg, next[:min(20, len(next))])
 		}
+	}
+}
+
+// ── activeWinID detection (multi-session) ──────────────────────────────────
+
+// newLoadDataModel builds a Model wired to fakeTmuxClient with the given panes
+// and the given currentSessionID, suitable for exercising loadData() in isolation.
+func newLoadDataModel(panes []tmux.PaneInfo, currentSessionID string) *Model {
+	return &Model{
+		tmuxClient:       &fakeTmuxClient{panes: panes},
+		stateReader:      &fakeStateReader{states: map[int]state.PaneState{}},
+		currentSessionID: currentSessionID,
+		winPaneNums:      map[string][]int{},
+		gitData:          map[string]gitInfo{},
+		promptCache:      map[string]string{},
+	}
+}
+
+// pane builds a PaneInfo with sensible defaults for tests.
+func pane(sessID, winID string, winActive, sessAttached bool, paneNum int) tmux.PaneInfo {
+	return tmux.PaneInfo{
+		SessionID:       sessID,
+		SessionName:     "sess" + sessID,
+		WindowID:        winID,
+		WindowIndex:     0,
+		WindowName:      "win" + winID,
+		PaneID:          fmt.Sprintf("%%%d", paneNum),
+		PaneIndex:       0,
+		PaneNumber:      paneNum,
+		WindowActive:    winActive,
+		SessionAttached: sessAttached,
+	}
+}
+
+func TestLoadData_ActiveWinIDPicksOwnSessionsActiveWindow(t *testing.T) {
+	// Two sessions, both attached, each with its own active window.
+	// Order is intentional: session $2 is iterated first so the broken
+	// "first attached active" logic would pick @9 instead of @1.
+	panes := []tmux.PaneInfo{
+		pane("$2", "@9", true, true, 9),
+		pane("$1", "@1", true, true, 1),
+		pane("$1", "@2", false, true, 2),
+	}
+	m := newLoadDataModel(panes, "$1")
+	msg, ok := m.loadData()().(dataMsg)
+	if !ok {
+		t.Fatalf("loadData did not return dataMsg")
+	}
+	if msg.err != nil {
+		t.Fatalf("loadData err: %v", msg.err)
+	}
+	if msg.activeWinID != "@1" {
+		t.Errorf("activeWinID = %q, want %q (own session's current window)", msg.activeWinID, "@1")
+	}
+}
+
+func TestLoadData_ActiveWinIDForSidebarInOtherSession(t *testing.T) {
+	// Same data as above but the sidebar lives in $2 — must pick @9.
+	panes := []tmux.PaneInfo{
+		pane("$1", "@1", true, true, 1),
+		pane("$1", "@2", false, true, 2),
+		pane("$2", "@9", true, true, 9),
+	}
+	m := newLoadDataModel(panes, "$2")
+	msg, ok := m.loadData()().(dataMsg)
+	if !ok {
+		t.Fatalf("loadData did not return dataMsg")
+	}
+	if msg.activeWinID != "@9" {
+		t.Errorf("activeWinID = %q, want %q (own session's current window)", msg.activeWinID, "@9")
+	}
+}
+
+func TestGitTick_AlsoRefreshesActiveWinID(t *testing.T) {
+	// Regression: SIGUSR1 from tmux hooks may fail to deliver (missing hook config,
+	// /tmp permissions, etc.). The 10s git tick must also refresh activeWinID so
+	// the active-window highlight does not stay stuck on a stale window forever.
+	m := newLoadDataModel(nil, "$1")
+	_, cmd := m.Update(gitTickMsg(time.Now()))
+	if cmd == nil {
+		t.Fatal("gitTickMsg should return a Cmd")
+	}
+	// Drive the batched Cmd until we see a dataMsg — that proves loadData is wired up.
+	// tea.Batch returns a BatchMsg which contains pointers to functions; we walk them.
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from gitTickMsg, got %T", msg)
+	}
+	sawDataMsg := false
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		if _, ok := sub().(dataMsg); ok {
+			sawDataMsg = true
+			break
+		}
+	}
+	if !sawDataMsg {
+		t.Errorf("gitTickMsg batch must include a Cmd producing dataMsg (loadData) so activeWinID is refreshed periodically")
+	}
+}
+
+func TestLoadData_ActiveWinIDWhenOwnSessionDetached(t *testing.T) {
+	// Sidebar's session is currently detached (no client attached) but
+	// tmux still tracks a current window for it. The sidebar must surface
+	// that window so cursor position remains correct when the user re-attaches.
+	panes := []tmux.PaneInfo{
+		pane("$1", "@1", true, false, 1),
+		pane("$2", "@9", true, true, 9),
+	}
+	m := newLoadDataModel(panes, "$1")
+	msg, ok := m.loadData()().(dataMsg)
+	if !ok {
+		t.Fatalf("loadData did not return dataMsg")
+	}
+	if msg.activeWinID != "@1" {
+		t.Errorf("activeWinID = %q, want %q (own session's current window even when detached)", msg.activeWinID, "@1")
+	}
+}
+
+// ── relocateCursor fallback ────────────────────────────────────────────────
+
+func TestRelocateCursor_FallsBackToActiveWinIDBeforeCurrentWinID(t *testing.T) {
+	// Regression: when cursorWinID points to a window that has just disappeared
+	// (deleted, hidden, filtered out) AND activeWinID did not change, the data
+	// handler does not re-sync cursorWinID. relocateCursor must then prefer
+	// activeWinID (where the user actually is) over currentWinID (where this
+	// sidebar's pane lives) — otherwise the cursor "stays at the original tmux
+	// window" instead of following the user.
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "user-here"}},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@9", Index: 1, Name: "sidebar-home"}},
+	}
+	m := newTestModel(items, 0, true)
+	m.cursorWinID = "@5"  // window the cursor was on; just got deleted
+	m.activeWinID = "@1"  // user's actual current tmux window
+	m.currentWinID = "@9" // window where this sidebar's pane lives
+	m.relocateCursor()
+	if m.cursorWinID != "@1" {
+		t.Errorf("cursorWinID = %q, want %q (cursor must follow active window, not jump to sidebar's home)", m.cursorWinID, "@1")
+	}
+	if m.cursor != 1 {
+		t.Errorf("cursor index = %d, want 1 (index of @1 in items)", m.cursor)
+	}
+}
+
+func TestRelocateCursor_FallsBackToCurrentWinIDWhenActiveAlsoMissing(t *testing.T) {
+	// activeWinID is not in the visible items (e.g., it lives in a hidden
+	// session) — relocateCursor must fall back further to currentWinID.
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@9", Index: 0, Name: "sidebar-home"}},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@2", Index: 1, Name: "other"}},
+	}
+	m := newTestModel(items, 0, true)
+	m.cursorWinID = "@5"  // missing
+	m.activeWinID = "@7"  // also missing (e.g., in hidden session)
+	m.currentWinID = "@9" // present
+	m.relocateCursor()
+	if m.cursorWinID != "@9" {
+		t.Errorf("cursorWinID = %q, want %q (must fall back to currentWinID)", m.cursorWinID, "@9")
+	}
+}
+
+func TestRelocateCursor_PreservesValidCursorWinID(t *testing.T) {
+	// Sanity check: when cursorWinID still exists in the items (e.g., the user
+	// manually moved the cursor and nothing else changed), it must stay where
+	// the user put it — the activeWinID fallback only kicks in when the cursor
+	// target has disappeared.
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "active"}},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@2", Index: 1, Name: "manual"}},
+	}
+	m := newTestModel(items, 0, true)
+	m.cursorWinID = "@2" // user moved here
+	m.activeWinID = "@1"
+	m.currentWinID = "@1"
+	m.relocateCursor()
+	if m.cursorWinID != "@2" {
+		t.Errorf("cursorWinID = %q, want %q (manual position should stick)", m.cursorWinID, "@2")
+	}
+	if m.cursor != 2 {
+		t.Errorf("cursor index = %d, want 2", m.cursor)
 	}
 }
 

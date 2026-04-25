@@ -110,9 +110,13 @@ Subcommands:
 		cfg = config.Config{}
 	}
 
-	// Determine our own window ID once at startup; it never changes while running.
+	// Determine our own session/window ID once at startup; they never change while running.
+	// SessionID is needed to filter the "active window" detection so each sidebar tracks
+	// only its own session's current window, not another attached session's.
+	currentSessionID := ""
 	currentWinID := ""
 	if cur, err := tc.CurrentPane(); err == nil {
+		currentSessionID = cur.SessionID
 		currentWinID = cur.WindowID
 	}
 
@@ -126,7 +130,7 @@ Subcommands:
 		}
 	}
 
-	model := ui.New(tc, sr, width, currentWinID, cfg, initialFocused)
+	model := ui.New(tc, sr, width, currentSessionID, currentWinID, cfg, initialFocused)
 
 	// Prevent tmux from greying out the sidebar pane when it loses focus.
 	// window-style is set at pane level so only this pane is affected; the

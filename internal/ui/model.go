@@ -150,21 +150,23 @@ type Model struct {
 	searchQuery   string             // current search query text (always-on incremental filter)
 	promptCache   map[string]string  // sessionID → initial prompt text (cached)
 	cursorPrompt  string             // initial prompt for the window currently under cursor
+	currentSessionID string          // tmux session ID of the pane running this process (e.g. "$3")
 }
 
-// New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
-// it is determined once at startup and never changes.
-func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg config.Config, initialFocused bool) *Model {
+// New creates a new Model. currentSessionID and currentWinID identify this
+// sidebar's own pane; they are determined once at startup and never change.
+func New(tc tmux.Client, sr state.Reader, width int, currentSessionID, currentWinID string, cfg config.Config, initialFocused bool) *Model {
 	return &Model{
-		tmuxClient:   tc,
-		stateReader:  sr,
-		cfg:          cfg,
-		width:        width,
-		gitData:      map[string]gitInfo{},
-		winPaneNums:  map[string][]int{},
-		promptCache:  map[string]string{},
-		focused:      initialFocused,
-		currentWinID: currentWinID,
+		tmuxClient:       tc,
+		stateReader:      sr,
+		cfg:              cfg,
+		width:            width,
+		gitData:          map[string]gitInfo{},
+		winPaneNums:      map[string][]int{},
+		promptCache:      map[string]string{},
+		focused:          initialFocused,
+		currentSessionID: currentSessionID,
+		currentWinID:     currentWinID,
 	}
 }
 
@@ -268,12 +270,14 @@ func (m *Model) loadData() tea.Cmd {
 			}
 		}
 
-		// Determine the currently active window from the pane list.
-		// A window is "active" when its session is attached AND it is the current window
-		// in that session. This avoids a separate display-message call.
+		// Determine the currently active window for this sidebar's own session.
+		// `window_active=1` is per-session: every session has exactly one current
+		// window, regardless of attach state. Filtering by SessionID prevents
+		// cross-session bleed-through where sidebars in different sessions all
+		// follow whichever attached session happens to come first in the pane list.
 		activeWinID := ""
 		for _, p := range allPanes {
-			if p.SessionAttached && p.WindowActive {
+			if p.SessionID == m.currentSessionID && p.WindowActive {
 				activeWinID = p.WindowID
 				break
 			}
@@ -513,7 +517,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.updateCursorPrompt()
 
 	case gitTickMsg:
-		return m, tea.Batch(m.loadGitInfo(), gitTickCmd())
+		// Also refresh tmux data so activeWinID converges within 10s even when
+		// SIGUSR1 from tmux hooks fails to deliver (missing/broken hook config,
+		// /tmp permissions, etc.). Without this the active-window highlight can
+		// stay stuck indefinitely after a window switch.
+		return m, tea.Batch(m.loadData(), m.loadGitInfo(), gitTickCmd())
 
 	case gitDataMsg:
 		// Merge instead of overwrite: loadGitInfo only fetches visible windows,
@@ -540,6 +548,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 		m.searchQuery = ""
+		// Snap the cursor back to this sidebar's own session's active window.
+		// Manual j/k positions are "preview while focused" — once the user
+		// leaves (e.g., switches tmux sessions or selects another pane), any
+		// stale cross-session position would otherwise persist until the
+		// active window changes. Without this, after `switch-client` the
+		// cursor stays on whatever window the user last hovered.
+		if m.activeWinID != "" {
+			m.cursorWinID = m.activeWinID
+			m.relocateCursor()
+		}
 	}
 	return m, nil
 }
@@ -689,7 +707,15 @@ func (m *Model) resetCursorToFirstWindow() {
 }
 
 // relocateCursor finds the window that the cursor was previously on (by cursorWinID)
-// and moves the cursor to its new index. Falls back to currentWinID, then the first window.
+// and moves the cursor to its new index. Falls back to activeWinID (the user's
+// current tmux window), then currentWinID (this sidebar's own window), then the
+// first window.
+//
+// activeWinID must come before currentWinID in the chain: when the cursor was
+// pointing at a window that has just disappeared (deleted, hidden-session
+// filter, search filter), the user expects "follow tmux", which is activeWinID.
+// currentWinID is this sidebar's own pane's window — using it first would pin
+// the cursor to where the sidebar lives instead of where the user actually is.
 func (m *Model) relocateCursor() {
 	visible := m.visibleItems()
 	firstWindow := -1
@@ -705,7 +731,18 @@ func (m *Model) relocateCursor() {
 			return
 		}
 	}
-	// cursorWinID not found (window was deleted) — fall back to currentWinID
+	// cursorWinID not found — fall back to activeWinID first so the cursor
+	// follows the user's current tmux window.
+	if m.activeWinID != "" {
+		for i, item := range visible {
+			if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.activeWinID {
+				m.cursor = i
+				m.cursorWinID = item.Window.ID
+				return
+			}
+		}
+	}
+	// Then fall back to currentWinID (this sidebar's own pane's window).
 	for i, item := range visible {
 		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.currentWinID {
 			m.cursor = i

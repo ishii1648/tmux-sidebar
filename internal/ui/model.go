@@ -697,7 +697,15 @@ func (m *Model) resetCursorToFirstWindow() {
 }
 
 // relocateCursor finds the window that the cursor was previously on (by cursorWinID)
-// and moves the cursor to its new index. Falls back to currentWinID, then the first window.
+// and moves the cursor to its new index. Falls back to activeWinID (the user's
+// current tmux window), then currentWinID (this sidebar's own window), then the
+// first window.
+//
+// activeWinID must come before currentWinID in the chain: when the cursor was
+// pointing at a window that has just disappeared (deleted, hidden-session
+// filter, search filter), the user expects "follow tmux", which is activeWinID.
+// currentWinID is this sidebar's own pane's window — using it first would pin
+// the cursor to where the sidebar lives instead of where the user actually is.
 func (m *Model) relocateCursor() {
 	visible := m.visibleItems()
 	firstWindow := -1
@@ -713,7 +721,18 @@ func (m *Model) relocateCursor() {
 			return
 		}
 	}
-	// cursorWinID not found (window was deleted) — fall back to currentWinID
+	// cursorWinID not found — fall back to activeWinID first so the cursor
+	// follows the user's current tmux window.
+	if m.activeWinID != "" {
+		for i, item := range visible {
+			if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.activeWinID {
+				m.cursor = i
+				m.cursorWinID = item.Window.ID
+				return
+			}
+		}
+	}
+	// Then fall back to currentWinID (this sidebar's own pane's window).
 	for i, item := range visible {
 		if item.Kind == ItemWindow && item.Window != nil && item.Window.ID == m.currentWinID {
 			m.cursor = i

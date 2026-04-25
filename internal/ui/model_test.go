@@ -921,6 +921,74 @@ func TestLoadData_ActiveWinIDWhenOwnSessionDetached(t *testing.T) {
 	}
 }
 
+// ── relocateCursor fallback ────────────────────────────────────────────────
+
+func TestRelocateCursor_FallsBackToActiveWinIDBeforeCurrentWinID(t *testing.T) {
+	// Regression: when cursorWinID points to a window that has just disappeared
+	// (deleted, hidden, filtered out) AND activeWinID did not change, the data
+	// handler does not re-sync cursorWinID. relocateCursor must then prefer
+	// activeWinID (where the user actually is) over currentWinID (where this
+	// sidebar's pane lives) — otherwise the cursor "stays at the original tmux
+	// window" instead of following the user.
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "user-here"}},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@9", Index: 1, Name: "sidebar-home"}},
+	}
+	m := newTestModel(items, 0, true)
+	m.cursorWinID = "@5"  // window the cursor was on; just got deleted
+	m.activeWinID = "@1"  // user's actual current tmux window
+	m.currentWinID = "@9" // window where this sidebar's pane lives
+	m.relocateCursor()
+	if m.cursorWinID != "@1" {
+		t.Errorf("cursorWinID = %q, want %q (cursor must follow active window, not jump to sidebar's home)", m.cursorWinID, "@1")
+	}
+	if m.cursor != 1 {
+		t.Errorf("cursor index = %d, want 1 (index of @1 in items)", m.cursor)
+	}
+}
+
+func TestRelocateCursor_FallsBackToCurrentWinIDWhenActiveAlsoMissing(t *testing.T) {
+	// activeWinID is not in the visible items (e.g., it lives in a hidden
+	// session) — relocateCursor must fall back further to currentWinID.
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@9", Index: 0, Name: "sidebar-home"}},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@2", Index: 1, Name: "other"}},
+	}
+	m := newTestModel(items, 0, true)
+	m.cursorWinID = "@5"  // missing
+	m.activeWinID = "@7"  // also missing (e.g., in hidden session)
+	m.currentWinID = "@9" // present
+	m.relocateCursor()
+	if m.cursorWinID != "@9" {
+		t.Errorf("cursorWinID = %q, want %q (must fall back to currentWinID)", m.cursorWinID, "@9")
+	}
+}
+
+func TestRelocateCursor_PreservesValidCursorWinID(t *testing.T) {
+	// Sanity check: when cursorWinID still exists in the items (e.g., the user
+	// manually moved the cursor and nothing else changed), it must stay where
+	// the user put it — the activeWinID fallback only kicks in when the cursor
+	// target has disappeared.
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "active"}},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@2", Index: 1, Name: "manual"}},
+	}
+	m := newTestModel(items, 0, true)
+	m.cursorWinID = "@2" // user moved here
+	m.activeWinID = "@1"
+	m.currentWinID = "@1"
+	m.relocateCursor()
+	if m.cursorWinID != "@2" {
+		t.Errorf("cursorWinID = %q, want %q (manual position should stick)", m.cursorWinID, "@2")
+	}
+	if m.cursor != 2 {
+		t.Errorf("cursor index = %d, want 2", m.cursor)
+	}
+}
+
 func TestView_PRBadgeRightAligned(t *testing.T) {
 	items := []ListItem{
 		{Kind: ItemSession, SessionName: "s"},

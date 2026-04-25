@@ -548,6 +548,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 		m.searchQuery = ""
+		// Snap the cursor back to this sidebar's own session's active window.
+		// Manual j/k positions are "preview while focused" — once the user
+		// leaves (e.g., switches tmux sessions or selects another pane), any
+		// stale cross-session position would otherwise persist until the
+		// active window changes. Without this, after `switch-client` the
+		// cursor stays on whatever window the user last hovered.
+		if m.activeWinID != "" {
+			m.cursorWinID = m.activeWinID
+			m.relocateCursor()
+		}
 	}
 	return m, nil
 }

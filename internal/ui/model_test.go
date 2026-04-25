@@ -206,6 +206,51 @@ func TestBlurMsg_ClearsSearchQuery(t *testing.T) {
 	}
 }
 
+func TestBlurMsg_SnapsCursorBackToActiveWindow(t *testing.T) {
+	// Regression: when the user navigates the cursor with j/k to a window
+	// in another session ("preview while focused") and then crosses tmux
+	// sessions via switch-client, the dataMsg handler skips the cursor
+	// update because the sidebar's own session's active window did not
+	// change. The manual cross-session position then persists, so when
+	// the user comes back to this session the cursor is still pointing
+	// at the previously-hovered window.
+	//
+	// BlurMsg fires when focus leaves the sidebar (which always happens
+	// on session crossing) — that's the right moment to discard any
+	// stale "preview" position and re-anchor to the active window.
+	m := newTestModel(sampleItems(), 1, true)
+	m.activeWinID = "@1"  // own session's current window
+	m.cursorWinID = "@99" // user manually navigated to some other window
+	m.cursor = 4          // index pointing somewhere else
+
+	m.Update(tea.BlurMsg{})
+
+	if m.cursorWinID != "@1" {
+		t.Errorf("after BlurMsg: cursorWinID = %q, want %q (snap back to active)", m.cursorWinID, "@1")
+	}
+	// cursor index must reflect the snapped-back position so the next
+	// View() draws ▶ on the active row.
+	if m.cursor != 1 {
+		t.Errorf("after BlurMsg: cursor = %d, want 1 (index of @1 in sampleItems)", m.cursor)
+	}
+}
+
+func TestBlurMsg_NoOpWhenActiveWinIDUnknown(t *testing.T) {
+	// If activeWinID has not been set yet (very first dataMsg hasn't
+	// arrived), BlurMsg must not stomp cursorWinID with "" — the cursor
+	// would lose its anchor and relocateCursor would fall through to
+	// the first-window fallback.
+	m := newTestModel(sampleItems(), 2, true)
+	m.activeWinID = ""
+	m.cursorWinID = "@2"
+
+	m.Update(tea.BlurMsg{})
+
+	if m.cursorWinID != "@2" {
+		t.Errorf("BlurMsg with empty activeWinID stomped cursorWinID: got %q, want %q", m.cursorWinID, "@2")
+	}
+}
+
 // ── Enter key ────────────────────────────────────────────────────────────────
 
 func TestEnter_ReturnsSwitchWindowMsg(t *testing.T) {

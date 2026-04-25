@@ -23,7 +23,9 @@ func init() {
 
 // ── fakes ────────────────────────────────────────────────────────────────────
 
-type fakeTmuxClient struct{}
+type fakeTmuxClient struct {
+	panes []tmux.PaneInfo
+}
 
 func (f *fakeTmuxClient) ListSessions() ([]tmux.Session, error)    { return nil, nil }
 func (f *fakeTmuxClient) ListWindows() ([]tmux.Window, error)      { return nil, nil }
@@ -31,7 +33,7 @@ func (f *fakeTmuxClient) ListPanes() ([]tmux.Pane, error)          { return nil,
 func (f *fakeTmuxClient) CurrentPane() (tmux.CurrentPane, error)   { return tmux.CurrentPane{}, nil }
 func (f *fakeTmuxClient) SwitchWindow(_ string, _ int) error       { return nil }
 func (f *fakeTmuxClient) PaneCurrentPath(_ string) (string, error) { return "", nil }
-func (f *fakeTmuxClient) ListAll() ([]tmux.PaneInfo, error)        { return nil, nil }
+func (f *fakeTmuxClient) ListAll() ([]tmux.PaneInfo, error)        { return f.panes, nil }
 func (f *fakeTmuxClient) KillSession(_ string) error               { return nil }
 func (f *fakeTmuxClient) KillWindow(_ string, _ int) error         { return nil }
 
@@ -797,6 +799,125 @@ func TestPaintActiveRow_EndsWithReset(t *testing.T) {
 		if !strings.HasPrefix(next, bg) {
 			t.Errorf("internal reset #%d not followed by bg %q; following = %q", i, bg, next[:min(20, len(next))])
 		}
+	}
+}
+
+// ── activeWinID detection (multi-session) ──────────────────────────────────
+
+// newLoadDataModel builds a Model wired to fakeTmuxClient with the given panes
+// and the given currentSessionID, suitable for exercising loadData() in isolation.
+func newLoadDataModel(panes []tmux.PaneInfo, currentSessionID string) *Model {
+	return &Model{
+		tmuxClient:       &fakeTmuxClient{panes: panes},
+		stateReader:      &fakeStateReader{states: map[int]state.PaneState{}},
+		currentSessionID: currentSessionID,
+		winPaneNums:      map[string][]int{},
+		gitData:          map[string]gitInfo{},
+		promptCache:      map[string]string{},
+	}
+}
+
+// pane builds a PaneInfo with sensible defaults for tests.
+func pane(sessID, winID string, winActive, sessAttached bool, paneNum int) tmux.PaneInfo {
+	return tmux.PaneInfo{
+		SessionID:       sessID,
+		SessionName:     "sess" + sessID,
+		WindowID:        winID,
+		WindowIndex:     0,
+		WindowName:      "win" + winID,
+		PaneID:          fmt.Sprintf("%%%d", paneNum),
+		PaneIndex:       0,
+		PaneNumber:      paneNum,
+		WindowActive:    winActive,
+		SessionAttached: sessAttached,
+	}
+}
+
+func TestLoadData_ActiveWinIDPicksOwnSessionsActiveWindow(t *testing.T) {
+	// Two sessions, both attached, each with its own active window.
+	// Order is intentional: session $2 is iterated first so the broken
+	// "first attached active" logic would pick @9 instead of @1.
+	panes := []tmux.PaneInfo{
+		pane("$2", "@9", true, true, 9),
+		pane("$1", "@1", true, true, 1),
+		pane("$1", "@2", false, true, 2),
+	}
+	m := newLoadDataModel(panes, "$1")
+	msg, ok := m.loadData()().(dataMsg)
+	if !ok {
+		t.Fatalf("loadData did not return dataMsg")
+	}
+	if msg.err != nil {
+		t.Fatalf("loadData err: %v", msg.err)
+	}
+	if msg.activeWinID != "@1" {
+		t.Errorf("activeWinID = %q, want %q (own session's current window)", msg.activeWinID, "@1")
+	}
+}
+
+func TestLoadData_ActiveWinIDForSidebarInOtherSession(t *testing.T) {
+	// Same data as above but the sidebar lives in $2 — must pick @9.
+	panes := []tmux.PaneInfo{
+		pane("$1", "@1", true, true, 1),
+		pane("$1", "@2", false, true, 2),
+		pane("$2", "@9", true, true, 9),
+	}
+	m := newLoadDataModel(panes, "$2")
+	msg, ok := m.loadData()().(dataMsg)
+	if !ok {
+		t.Fatalf("loadData did not return dataMsg")
+	}
+	if msg.activeWinID != "@9" {
+		t.Errorf("activeWinID = %q, want %q (own session's current window)", msg.activeWinID, "@9")
+	}
+}
+
+func TestGitTick_AlsoRefreshesActiveWinID(t *testing.T) {
+	// Regression: SIGUSR1 from tmux hooks may fail to deliver (missing hook config,
+	// /tmp permissions, etc.). The 10s git tick must also refresh activeWinID so
+	// the active-window highlight does not stay stuck on a stale window forever.
+	m := newLoadDataModel(nil, "$1")
+	_, cmd := m.Update(gitTickMsg(time.Now()))
+	if cmd == nil {
+		t.Fatal("gitTickMsg should return a Cmd")
+	}
+	// Drive the batched Cmd until we see a dataMsg — that proves loadData is wired up.
+	// tea.Batch returns a BatchMsg which contains pointers to functions; we walk them.
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from gitTickMsg, got %T", msg)
+	}
+	sawDataMsg := false
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		if _, ok := sub().(dataMsg); ok {
+			sawDataMsg = true
+			break
+		}
+	}
+	if !sawDataMsg {
+		t.Errorf("gitTickMsg batch must include a Cmd producing dataMsg (loadData) so activeWinID is refreshed periodically")
+	}
+}
+
+func TestLoadData_ActiveWinIDWhenOwnSessionDetached(t *testing.T) {
+	// Sidebar's session is currently detached (no client attached) but
+	// tmux still tracks a current window for it. The sidebar must surface
+	// that window so cursor position remains correct when the user re-attaches.
+	panes := []tmux.PaneInfo{
+		pane("$1", "@1", true, false, 1),
+		pane("$2", "@9", true, true, 9),
+	}
+	m := newLoadDataModel(panes, "$1")
+	msg, ok := m.loadData()().(dataMsg)
+	if !ok {
+		t.Fatalf("loadData did not return dataMsg")
+	}
+	if msg.activeWinID != "@1" {
+		t.Errorf("activeWinID = %q, want %q (own session's current window even when detached)", msg.activeWinID, "@1")
 	}
 }
 

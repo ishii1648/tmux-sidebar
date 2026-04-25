@@ -150,21 +150,23 @@ type Model struct {
 	searchQuery   string             // current search query text (always-on incremental filter)
 	promptCache   map[string]string  // sessionID → initial prompt text (cached)
 	cursorPrompt  string             // initial prompt for the window currently under cursor
+	currentSessionID string          // tmux session ID of the pane running this process (e.g. "$3")
 }
 
-// New creates a new Model. currentWinID is the window ID of this sidebar's own pane;
-// it is determined once at startup and never changes.
-func New(tc tmux.Client, sr state.Reader, width int, currentWinID string, cfg config.Config, initialFocused bool) *Model {
+// New creates a new Model. currentSessionID and currentWinID identify this
+// sidebar's own pane; they are determined once at startup and never change.
+func New(tc tmux.Client, sr state.Reader, width int, currentSessionID, currentWinID string, cfg config.Config, initialFocused bool) *Model {
 	return &Model{
-		tmuxClient:   tc,
-		stateReader:  sr,
-		cfg:          cfg,
-		width:        width,
-		gitData:      map[string]gitInfo{},
-		winPaneNums:  map[string][]int{},
-		promptCache:  map[string]string{},
-		focused:      initialFocused,
-		currentWinID: currentWinID,
+		tmuxClient:       tc,
+		stateReader:      sr,
+		cfg:              cfg,
+		width:            width,
+		gitData:          map[string]gitInfo{},
+		winPaneNums:      map[string][]int{},
+		promptCache:      map[string]string{},
+		focused:          initialFocused,
+		currentSessionID: currentSessionID,
+		currentWinID:     currentWinID,
 	}
 }
 
@@ -268,12 +270,14 @@ func (m *Model) loadData() tea.Cmd {
 			}
 		}
 
-		// Determine the currently active window from the pane list.
-		// A window is "active" when its session is attached AND it is the current window
-		// in that session. This avoids a separate display-message call.
+		// Determine the currently active window for this sidebar's own session.
+		// `window_active=1` is per-session: every session has exactly one current
+		// window, regardless of attach state. Filtering by SessionID prevents
+		// cross-session bleed-through where sidebars in different sessions all
+		// follow whichever attached session happens to come first in the pane list.
 		activeWinID := ""
 		for _, p := range allPanes {
-			if p.SessionAttached && p.WindowActive {
+			if p.SessionID == m.currentSessionID && p.WindowActive {
 				activeWinID = p.WindowID
 				break
 			}
@@ -513,7 +517,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.updateCursorPrompt()
 
 	case gitTickMsg:
-		return m, tea.Batch(m.loadGitInfo(), gitTickCmd())
+		// Also refresh tmux data so activeWinID converges within 10s even when
+		// SIGUSR1 from tmux hooks fails to deliver (missing/broken hook config,
+		// /tmp permissions, etc.). Without this the active-window highlight can
+		// stay stuck indefinitely after a window switch.
+		return m, tea.Batch(m.loadData(), m.loadGitInfo(), gitTickCmd())
 
 	case gitDataMsg:
 		// Merge instead of overwrite: loadGitInfo only fetches visible windows,

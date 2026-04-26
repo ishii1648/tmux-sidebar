@@ -1,8 +1,10 @@
-// Package state reads Claude Code pane-state files written by ADR-007 hooks.
+// Package state reads agent pane-state files written by ADR-063 hooks
+// (Claude Code / Codex CLI 両対応).
 //
-// State files live in /tmp/claude-pane-state/ (or a configurable directory):
+// State files live in /tmp/agent-pane-state/ (or a configurable directory):
 //
-//	pane_N          — status: "running" | "idle" | "permission" | "ask"
+//	pane_N          — line 1: status ("running" | "idle" | "permission" | "ask")
+//	                  line 2: agent kind ("claude" | "codex"; missing or unknown → "")
 //	pane_N_started  — unix epoch timestamp when running started
 package state
 
@@ -15,9 +17,9 @@ import (
 )
 
 // DefaultStateDir is the directory where state files are written by hooks.
-const DefaultStateDir = "/tmp/claude-pane-state"
+const DefaultStateDir = "/tmp/agent-pane-state"
 
-// Status represents the state of a Claude Code pane.
+// Status represents the state of an agent pane.
 type Status string
 
 const (
@@ -28,12 +30,19 @@ const (
 	StatusUnknown    Status = ""
 )
 
+// Agent kinds written on line 2 of pane_N. Anything else parses to "".
+const (
+	AgentClaude = "claude"
+	AgentCodex  = "codex"
+)
+
 // PaneState holds the state for a single tmux pane.
 type PaneState struct {
 	Status    Status
+	Agent     string        // "claude" | "codex" | "" (unknown / legacy)
 	Elapsed   time.Duration // only valid when Status == StatusRunning
-	WorkDir   string        // initial working directory of the Claude session (from pane_N_path)
-	SessionID string        // Claude Code session UUID (from pane_N_session_id)
+	WorkDir   string        // initial working directory of the agent session (from pane_N_path)
+	SessionID string        // agent session UUID (from pane_N_session_id)
 }
 
 // Reader is the interface for reading pane state.
@@ -67,8 +76,9 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 		return nil, err
 	}
 
-	// First pass: collect status, started epoch, workdir, and session ID per pane number.
+	// First pass: collect status, agent, started epoch, workdir, and session ID per pane number.
 	statuses := map[int]Status{}
+	agents := map[int]string{}
 	started := map[int]int64{}
 	workdirs := map[int]string{}
 	sessionIDs := map[int]string{}
@@ -127,7 +137,7 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 			}
 			workdirs[num] = strings.TrimSpace(string(data))
 		} else {
-			// pane_N
+			// pane_N: line 1 is status, line 2 (optional) is agent kind.
 			num, err := strconv.Atoi(rest)
 			if err != nil {
 				continue
@@ -136,12 +146,26 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 			if err != nil {
 				continue
 			}
-			raw := strings.TrimSpace(string(data))
-			switch Status(raw) {
+			lines := strings.Split(string(data), "\n")
+			statusLine := ""
+			if len(lines) > 0 {
+				statusLine = strings.TrimSpace(lines[0])
+			}
+			switch Status(statusLine) {
 			case StatusRunning, StatusIdle, StatusPermission, StatusAsk:
-				statuses[num] = Status(raw)
+				statuses[num] = Status(statusLine)
 			default:
 				statuses[num] = StatusUnknown
+			}
+			agentLine := ""
+			if len(lines) > 1 {
+				agentLine = strings.TrimSpace(lines[1])
+			}
+			switch agentLine {
+			case AgentClaude, AgentCodex:
+				agents[num] = agentLine
+			default:
+				agents[num] = ""
 			}
 		}
 	}
@@ -149,7 +173,7 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 	result := make(map[int]PaneState, len(statuses))
 	now := time.Now()
 	for num, status := range statuses {
-		ps := PaneState{Status: status}
+		ps := PaneState{Status: status, Agent: agents[num]}
 		if status == StatusRunning {
 			if epoch, ok := started[num]; ok {
 				elapsed := now.Sub(time.Unix(epoch, 0))

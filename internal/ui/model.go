@@ -114,19 +114,21 @@ var (
 	colRunning  = lipgloss.AdaptiveColor{Light: "#1a7f37", Dark: "#3fb950"}
 	colPending  = lipgloss.AdaptiveColor{Light: "#9a6700", Dark: "#d29922"}
 	colWaiting  = lipgloss.AdaptiveColor{Light: "#8250df", Dark: "#a371f7"}
+	colCodex    = lipgloss.AdaptiveColor{Light: "#0e7490", Dark: "#22d3ee"}
 	colActiveBg = lipgloss.AdaptiveColor{Light: "#ddf4ff", Dark: "#0a3069"}
 
-	styleCursor   = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
-	styleSession  = lipgloss.NewStyle().Foreground(colMuted)
-	styleWindow   = lipgloss.NewStyle().PaddingLeft(1)
-	styleBadgeRun = lipgloss.NewStyle().Foreground(colRunning)
-	styleBadgePerm = lipgloss.NewStyle().Foreground(colPending)
-	styleBadgeAsk  = lipgloss.NewStyle().Foreground(colWaiting)
-	styleHeader    = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
-	styleFaint     = lipgloss.NewStyle().Foreground(colMuted)
-	stylePRDraft   = lipgloss.NewStyle().Foreground(colMuted)
-	stylePROpen    = lipgloss.NewStyle().Foreground(colRunning)
-	stylePRMerged  = lipgloss.NewStyle().Foreground(colWaiting)
+	styleCursor      = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	styleSession     = lipgloss.NewStyle().Foreground(colMuted)
+	styleWindow      = lipgloss.NewStyle().PaddingLeft(1)
+	styleBadgeRun    = lipgloss.NewStyle().Foreground(colRunning)
+	styleBadgePerm   = lipgloss.NewStyle().Foreground(colPending)
+	styleBadgeAsk    = lipgloss.NewStyle().Foreground(colWaiting)
+	styleAgentCodex  = lipgloss.NewStyle().Foreground(colCodex)
+	styleHeader      = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	styleFaint       = lipgloss.NewStyle().Foreground(colMuted)
+	stylePRDraft     = lipgloss.NewStyle().Foreground(colMuted)
+	stylePROpen      = lipgloss.NewStyle().Foreground(colRunning)
+	stylePRMerged    = lipgloss.NewStyle().Foreground(colWaiting)
 )
 
 // Model is the bubbletea Model for the sidebar.
@@ -872,7 +874,7 @@ func (m *Model) View() string {
 			// Build suffix: badge + PR (right-aligned on the row)
 			suffix := ""
 			if item.PaneState != nil {
-				suffix += "[c]"
+				suffix += renderAgentTag(item.PaneState.Agent)
 				if b := renderBadge(item.PaneState); b != "" {
 					suffix += b
 				}
@@ -975,6 +977,19 @@ func activeBgSGR() string {
 		return sample[:i+1]
 	}
 	return ""
+}
+
+// renderAgentTag returns the per-agent identifier shown before the status
+// badge: "[c]" for Claude (既存色 = 無着色 fallback) and "[x]" colored cyan
+// for Codex. Unknown / missing agent falls back to the Claude-style tag so
+// pre-existing state files keep rendering as before.
+func renderAgentTag(agent string) string {
+	switch agent {
+	case state.AgentCodex:
+		return styleAgentCodex.Render("[x]")
+	default:
+		return "[c]"
+	}
 }
 
 func renderBadge(ps *state.PaneState) string {

@@ -382,6 +382,32 @@ func TestView_ContainsStateBadges(t *testing.T) {
 	}
 }
 
+func TestView_AgentTagSwitchesByAgent(t *testing.T) {
+	claudePS := state.PaneState{Status: state.StatusIdle, Agent: state.AgentClaude}
+	codexPS := state.PaneState{Status: state.StatusIdle, Agent: state.AgentCodex}
+	unknownPS := state.PaneState{Status: state.StatusIdle, Agent: ""}
+
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "claude-w"}, PaneState: &claudePS},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@2", Index: 1, Name: "codex-w"}, PaneState: &codexPS},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@3", Index: 2, Name: "fallback-w"}, PaneState: &unknownPS},
+	}
+	m := newTestModel(items, 1, true)
+	view := stripANSI(m.View())
+
+	if !strings.Contains(view, "[c]") {
+		t.Errorf("View should contain [c] tag for Claude pane:\n%s", view)
+	}
+	if !strings.Contains(view, "[x]") {
+		t.Errorf("View should contain [x] tag for Codex pane:\n%s", view)
+	}
+	// Claude (1) + unknown fallback (1) = 2 instances of [c].
+	if got := strings.Count(view, "[c]"); got != 2 {
+		t.Errorf("[c] count = %d, want 2 (claude + unknown fallback):\n%s", got, view)
+	}
+}
+
 func TestView_NoBadgeWhenNoPaneState(t *testing.T) {
 	items := []ListItem{
 		{Kind: ItemSession, SessionName: "s"},

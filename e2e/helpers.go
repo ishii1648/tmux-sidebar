@@ -218,3 +218,18 @@ func (e *testEnv) waitForNoText(target, text string, timeout time.Duration) erro
 	return fmt.Errorf("timed out (%v) waiting for %q to disappear from %s\ncurrent:\n%s",
 		timeout, text, target, e.capturePane(target))
 }
+
+func (e *testEnv) waitForCursorOn(target, text string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		output := e.capturePane(target)
+		for _, line := range strings.Split(output, "\n") {
+			if strings.Contains(line, "▶") && strings.Contains(line, text) {
+				return nil
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out (%v) waiting for cursor on %q in %s\ncurrent:\n%s",
+		timeout, text, target, e.capturePane(target))
+}

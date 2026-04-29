@@ -7,9 +7,9 @@
 │ Sessions             │                                          │
 │ ─────────────────────│                                          │
 │ ishii1648_dotfiles   │         作業ペイン                        │
-│   1: nvim  [idle]    │                                          │
+│   1: nvim            │                                          │
 │ ishii1648_work       │                                          │
-│ ▶ 1: main  [running] │                                          │
+│ ▶ 1: main  [c]🔄3m   │                                          │
 │   2: fish            │                                          │
 │ infra                │                                          │
 │   1: deploy          │                                          │
@@ -250,7 +250,7 @@ fi
 
 | バッジ | 状態 | 意味 |
 |---|---|---|
-| `🔄Nm` | `running` | 実行中。`N` は `pane_N_started` から計算した経過分数（`int(elapsed.Minutes())`。1 分未満は `🔄0m`） |
+| `🔄Ns` / `🔄Nm` | `running` | 実行中。1 分未満は秒、1 分以上は分で表示 |
 | `💬` | `permission` | 権限確認待ち（permission 用の色） |
 | `💬` | `ask` | ユーザー応答待ち（ask 用の色。実装上 Claude のみ）|
 | (非表示) | `idle` | バッジを描画しない |

@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,62 +27,50 @@ func TestCursorMovement(t *testing.T) {
 		t.Fatalf("sidebar did not load sessions: %v", err)
 	}
 
-	// Initial cursor is at index 0 (scratch session header), so ▶ is not shown.
-	// Press j once: cursor advances to the first window item.
-	env.sendKeys("scratch", "j")
-	if err := env.waitForText("scratch", "▶", 2*time.Second); err != nil {
-		t.Fatalf("▶ did not appear after first j: %v", err)
-	}
-
-	snap1 := env.capturePane("scratch")
-
-	// Press j again: cursor advances to the next window item.
-	env.sendKeys("scratch", "j")
-	time.Sleep(300 * time.Millisecond) // allow re-render
-	snap2 := env.capturePane("scratch")
-	if snap1 == snap2 {
-		t.Error("cursor did not move after second j")
-	}
-
-	// Press k: cursor should move back to the previous window item.
 	env.sendKeys("scratch", "k")
-	time.Sleep(300 * time.Millisecond)
-	snap3 := env.capturePane("scratch")
-	if snap2 == snap3 {
-		t.Error("cursor did not move back after k")
+	if err := env.waitForCursorOn("scratch", "beta", 2*time.Second); err != nil {
+		t.Fatalf("cursor did not move to beta: %v", err)
+	}
+
+	env.sendKeys("scratch", "k")
+	if err := env.waitForCursorOn("scratch", "alpha", 2*time.Second); err != nil {
+		t.Fatalf("cursor did not move to alpha: %v", err)
+	}
+
+	env.sendKeys("scratch", "j")
+	if err := env.waitForCursorOn("scratch", "beta", 2*time.Second); err != nil {
+		t.Fatalf("cursor did not move back to beta: %v", err)
 	}
 }
 
-// TestPassiveMode verifies that q enters passive mode (shows "[i] to activate",
-// hides ▶) and that i returns to interactive mode.
-func TestPassiveMode(t *testing.T) {
+// TestSearchMode verifies that printable keys enter the always-on search mode
+// and Esc clears the query.
+func TestSearchMode(t *testing.T) {
 	env := newTestEnv(t)
+
+	env.newSession("find")
+	env.newWindow("find", "target")
 
 	env.runSidebar("scratch")
 	// Wait for focus before pressing keys.
 	if err := env.waitForText("scratch", "●", 5*time.Second); err != nil {
 		t.Fatalf("sidebar did not become focused: %v", err)
 	}
-
-	// Move cursor onto a window row so ▶ is visible.
-	env.sendKeys("scratch", "j")
-	if err := env.waitForText("scratch", "▶", 2*time.Second); err != nil {
-		t.Fatalf("▶ did not appear after j: %v", err)
+	if err := env.waitForText("scratch", "target", 3*time.Second); err != nil {
+		t.Fatalf("sidebar did not load target window: %v", err)
 	}
 
-	// Press q → sidebar enters passive mode.
-	env.sendKeys("scratch", "q")
-	if err := env.waitForText("scratch", "[i] to activate", 2*time.Second); err != nil {
-		t.Fatalf("[i] to activate did not appear after q: %v", err)
+	env.sendKeys("scratch", "t")
+	if err := env.waitForText("scratch", "> t▏", 2*time.Second); err != nil {
+		t.Fatalf("search query did not appear: %v", err)
 	}
-	// ▶ should be gone in passive mode.
-	if err := env.waitForNoText("scratch", "▶", 1*time.Second); err != nil {
-		t.Fatalf("▶ should disappear in passive mode: %v", err)
+	output := env.capturePane("scratch")
+	if !strings.Contains(output, "target") {
+		t.Fatalf("filtered output should contain target window:\n%s", output)
 	}
 
-	// Press i → sidebar re-enters interactive mode.
-	env.sendKeys("scratch", "i")
-	if err := env.waitForNoText("scratch", "[i] to activate", 2*time.Second); err != nil {
-		t.Fatalf("[i] to activate should disappear after i: %v", err)
+	env.sendKeys("scratch", "Escape")
+	if err := env.waitForText("scratch", "> type to filter...", 2*time.Second); err != nil {
+		t.Fatalf("search query did not clear after Escape: %v", err)
 	}
 }

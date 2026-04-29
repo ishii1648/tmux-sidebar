@@ -63,8 +63,8 @@ type gitInfo struct {
 
 // promptMsg carries a fetched initial prompt for the preview area.
 type promptMsg struct {
-	sessionID string
-	prompt    string
+	cacheKey string
+	prompt   string
 }
 
 // Message types.
@@ -80,10 +80,10 @@ type minuteTickMsg time.Time
 
 // dataMsg carries refreshed tmux/state data.
 type dataMsg struct {
-	items        []ListItem
-	winPaneNums  map[string][]int // windowID → pane numbers (for state-only updates)
-	activeWinID  string           // currently active tmux window ID (empty on error)
-	err          error
+	items       []ListItem
+	winPaneNums map[string][]int // windowID → pane numbers (for state-only updates)
+	activeWinID string           // currently active tmux window ID (empty on error)
+	err         error
 }
 
 // stateOnlyMsg carries a refreshed state map without touching tmux.
@@ -99,7 +99,6 @@ type switchWindowMsg struct {
 
 // gitTickMsg is sent by the 10-second git polling ticker.
 type gitTickMsg time.Time
-
 
 // gitDataMsg carries refreshed git/PR info for all visible windows.
 type gitDataMsg struct {
@@ -117,42 +116,42 @@ var (
 	colCodex    = lipgloss.AdaptiveColor{Light: "#0e7490", Dark: "#22d3ee"}
 	colActiveBg = lipgloss.AdaptiveColor{Light: "#ddf4ff", Dark: "#0a3069"}
 
-	styleCursor      = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
-	styleSession     = lipgloss.NewStyle().Foreground(colMuted)
-	styleWindow      = lipgloss.NewStyle().PaddingLeft(1)
-	styleBadgeRun    = lipgloss.NewStyle().Foreground(colRunning)
-	styleBadgePerm   = lipgloss.NewStyle().Foreground(colPending)
-	styleBadgeAsk    = lipgloss.NewStyle().Foreground(colWaiting)
-	styleAgentCodex  = lipgloss.NewStyle().Foreground(colCodex)
-	styleHeader      = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
-	styleFaint       = lipgloss.NewStyle().Foreground(colMuted)
-	stylePRDraft     = lipgloss.NewStyle().Foreground(colMuted)
-	stylePROpen      = lipgloss.NewStyle().Foreground(colRunning)
-	stylePRMerged    = lipgloss.NewStyle().Foreground(colWaiting)
+	styleCursor     = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	styleSession    = lipgloss.NewStyle().Foreground(colMuted)
+	styleWindow     = lipgloss.NewStyle().PaddingLeft(1)
+	styleBadgeRun   = lipgloss.NewStyle().Foreground(colRunning)
+	styleBadgePerm  = lipgloss.NewStyle().Foreground(colPending)
+	styleBadgeAsk   = lipgloss.NewStyle().Foreground(colWaiting)
+	styleAgentCodex = lipgloss.NewStyle().Foreground(colCodex)
+	styleHeader     = lipgloss.NewStyle().Bold(true).Foreground(colAccent)
+	styleFaint      = lipgloss.NewStyle().Foreground(colMuted)
+	stylePRDraft    = lipgloss.NewStyle().Foreground(colMuted)
+	stylePROpen     = lipgloss.NewStyle().Foreground(colRunning)
+	stylePRMerged   = lipgloss.NewStyle().Foreground(colWaiting)
 )
 
 // Model is the bubbletea Model for the sidebar.
 type Model struct {
-	tmuxClient    tmux.Client
-	stateReader   state.Reader
-	cfg           config.Config
-	items         []ListItem
-	winPaneNums   map[string][]int  // windowID → pane numbers; updated by loadData
-	cursor        int               // index into visibleItems()
-	cursorWinID   string            // window ID the cursor is currently on (tracks user selection across data refreshes)
-	currentWinID  string            // window ID of the pane running this process
-	activeWinID   string            // last known active tmux window ID (updated on each loadData)
-	filter        FilterMode
-	width         int
-	height        int               // terminal height (from WindowSizeMsg)
-	offset        int               // scroll offset into visibleItems()
-	err           error
-	gitData       map[string]gitInfo // keyed by window ID
-	focused       bool               // true when this pane has terminal focus
-	searchQuery   string             // current search query text (always-on incremental filter)
-	promptCache   map[string]string  // sessionID → initial prompt text (cached)
-	cursorPrompt  string             // initial prompt for the window currently under cursor
-	currentSessionID string          // tmux session ID of the pane running this process (e.g. "$3")
+	tmuxClient       tmux.Client
+	stateReader      state.Reader
+	cfg              config.Config
+	items            []ListItem
+	winPaneNums      map[string][]int // windowID → pane numbers; updated by loadData
+	cursor           int              // index into visibleItems()
+	cursorWinID      string           // window ID the cursor is currently on (tracks user selection across data refreshes)
+	currentWinID     string           // window ID of the pane running this process
+	activeWinID      string           // last known active tmux window ID (updated on each loadData)
+	filter           FilterMode
+	width            int
+	height           int // terminal height (from WindowSizeMsg)
+	offset           int // scroll offset into visibleItems()
+	err              error
+	gitData          map[string]gitInfo // keyed by window ID
+	focused          bool               // true when this pane has terminal focus
+	searchQuery      string             // current search query text (always-on incremental filter)
+	promptCache      map[string]string  // agent:sessionID → initial prompt text (cached)
+	cursorPrompt     string             // initial prompt for the window currently under cursor
+	currentSessionID string             // tmux session ID of the pane running this process (e.g. "$3")
 }
 
 // New creates a new Model. currentSessionID and currentWinID identify this
@@ -461,9 +460,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case promptMsg:
-		m.promptCache[msg.sessionID] = msg.prompt
+		m.promptCache[msg.cacheKey] = msg.prompt
 		// Update cursorPrompt if the cursor is still on this session
-		if sid := m.cursorSessionID(); sid == msg.sessionID {
+		if key := m.cursorPromptKey(); key == msg.cacheKey {
 			m.cursorPrompt = msg.prompt
 		}
 		return m, nil
@@ -780,47 +779,53 @@ func (m *Model) switchSelected() tea.Cmd {
 	}
 }
 
-// cursorSessionID returns the Claude session ID of the window under the cursor,
-// or empty string if the cursor is not on a Claude window.
-func (m *Model) cursorSessionID() string {
+func (m *Model) cursorPaneState() *state.PaneState {
 	visible := m.visibleItems()
 	if m.cursor >= len(visible) {
-		return ""
+		return nil
 	}
 	item := visible[m.cursor]
 	if item.Kind != ItemWindow || item.PaneState == nil {
+		return nil
+	}
+	return item.PaneState
+}
+
+func promptCacheKey(agent, sessionID string) string {
+	return agent + ":" + sessionID
+}
+
+func (m *Model) cursorPromptKey() string {
+	ps := m.cursorPaneState()
+	if ps == nil || ps.SessionID == "" {
 		return ""
 	}
-	return item.PaneState.SessionID
+	return promptCacheKey(ps.Agent, ps.SessionID)
 }
 
 // updateCursorPrompt updates cursorPrompt based on the current cursor position.
 // If the prompt is cached, it is used immediately. Otherwise, a background fetch is started.
 func (m *Model) updateCursorPrompt() tea.Cmd {
-	sid := m.cursorSessionID()
-	if sid == "" {
+	ps := m.cursorPaneState()
+	if ps == nil || ps.SessionID == "" {
 		m.cursorPrompt = ""
 		return nil
 	}
-	if cached, ok := m.promptCache[sid]; ok {
+	cacheKey := promptCacheKey(ps.Agent, ps.SessionID)
+	if cached, ok := m.promptCache[cacheKey]; ok {
 		m.cursorPrompt = cached
 		return nil
 	}
 	// Fetch asynchronously
 	m.cursorPrompt = ""
 	return func() tea.Msg {
-		transcriptPath, err := session.FindTranscriptPath(sid)
-		if err != nil || transcriptPath == "" {
-			return promptMsg{sessionID: sid, prompt: ""}
-		}
-		prompt, err := session.ExtractInitialPrompt(transcriptPath)
+		prompt, err := session.ExtractInitialPromptForAgent(ps.Agent, ps.SessionID)
 		if err != nil {
-			return promptMsg{sessionID: sid, prompt: ""}
+			return promptMsg{cacheKey: cacheKey, prompt: ""}
 		}
-		return promptMsg{sessionID: sid, prompt: prompt}
+		return promptMsg{cacheKey: cacheKey, prompt: prompt}
 	}
 }
-
 
 // View renders the sidebar.
 func (m *Model) View() string {

@@ -1,6 +1,6 @@
 # tmux-sidebar
 
-全 tmux セッション・ウィンドウの一覧と Claude Code の状態をサイドバーペインに表示し、キーボード選択で対象ウィンドウへ即座に移動できる TUI ツール。
+全 tmux セッション・ウィンドウの一覧と agent (Claude Code / Codex CLI) の状態をサイドバーペインに表示し、キーボード選択で対象ウィンドウへ即座に移動できる TUI ツール。
 
 ```
 ┌──────────────────────┬──────────────────────────────────────────┐
@@ -18,11 +18,10 @@
 
 ## Features
 
-- 全セッション・ウィンドウを階層表示（Claude Code がいないウィンドウも含む）
-- Claude Code の状態バッジ: `[running Nm]` / `[idle]` / `[permission]` / `[ask]`
-- `j`/`k` でカーソル移動、`Enter` で対象ウィンドウへジャンプ
-- `q` で passive モード（サイドバーを表示したままキー入力を通過させる）
-- `i` で interactive モードに復帰
+- 全セッション・ウィンドウを階層表示（agent がいないウィンドウも含む）
+- agent (Claude Code / Codex CLI) の状態バッジ: 行頭に agent タグ (`[c]` / `[x]`)、続けて状態絵文字 (`🔄Nm` / `💬`)
+- `j` / `k` / `↑` / `↓` でカーソル移動、`Enter` で対象ウィンドウへジャンプ
+- 任意の文字を入力するとインクリメンタル検索フィルタが効く（`Esc` でクリア）
 - `after-new-window` フックで新しいウィンドウに自動生成
 
 ## Installation
@@ -134,11 +133,20 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 
 > `<key>` は端末エミュレータ側で割り当てた escape sequence に合わせて変更してください。
 
-### 8. Claude Code の状態ファイル（任意）
+### 8. Agent (Claude Code / Codex CLI) の状態ファイル（任意）
 
-状態バッジを表示するには Claude Code の hook が `/tmp/claude-pane-state/` に状態ファイルを書き出す必要があります。
+状態バッジを表示するには、agent (Claude Code / Codex CLI) の hook が `/tmp/agent-pane-state/` に状態ファイルを書き出す必要があります（ADR-063 Phase A 以降の形式）。
 
-`.claude/settings.json` の hooks に以下を追加してください：
+サイドバーが読むファイルは以下の通りです（真実の出典: `internal/state/state.go`）。
+
+| ファイル | 内容 |
+|---|---|
+| `pane_N` | 1 行目: status (`running` / `idle` / `permission` / `ask`)<br>2 行目: agent kind (`claude` / `codex`)。空行や未対応文字列は unknown として扱われる |
+| `pane_N_started` | `running` に遷移した unix epoch 秒。`🔄Nm` の経過分数の起点になる |
+| `pane_N_path` | agent セッションの起動ディレクトリ。サイドバーの Git/PR 表示はこのパスを基準にする |
+| `pane_N_session_id` | agent session の UUID。サイドバー右下の prompt プレビューを引くキーになる |
+
+`.claude/settings.json` の hooks に以下を追加してください（Codex CLI も同様に hook 経由で同じスクリプトを呼び出すか、kind だけ書き換えた専用版を呼び出します）：
 
 ```json
 {
@@ -147,7 +155,7 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "claude-pane-state.sh running" }
+          { "type": "command", "command": "agent-pane-state.sh running" }
         ]
       }
     ],
@@ -155,7 +163,7 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "claude-pane-state.sh idle" }
+          { "type": "command", "command": "agent-pane-state.sh idle" }
         ]
       }
     ],
@@ -163,7 +171,7 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "claude-pane-state.sh idle" }
+          { "type": "command", "command": "agent-pane-state.sh idle" }
         ]
       }
     ]
@@ -171,20 +179,31 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 }
 ```
 
-`claude-pane-state.sh` の例：
+`agent-pane-state.sh` の例（Claude Code 用。Codex 用に流用する場合は `AGENT_KIND=codex` を環境変数なり引数なりで渡し、2 行目に書き分けてください）：
 
 ```sh
 #!/bin/sh
-# $TMUX_PANE の数値部分を使って状態ファイルを書く
+# $TMUX_PANE の数値部分をペイン番号として使う
 num=$(echo "$TMUX_PANE" | tr -d '%')
-dir=/tmp/claude-pane-state
+dir=/tmp/agent-pane-state
 mkdir -p "$dir"
-echo "$1" > "$dir/pane_${num}"
+
+# pane_N: 1 行目=status, 2 行目=agent kind ("claude" | "codex")
+# サイドバーは 2 行目を見て [c] / [x] のタグを描画する
+kind="${AGENT_KIND:-claude}"
+printf '%s\n%s\n' "$1" "$kind" > "$dir/pane_${num}"
+
 if [ "$1" = "running" ]; then
   date +%s > "$dir/pane_${num}_started"
   # セッション起動ディレクトリを記録（初回のみ）
   # サイドバーの Git 情報はこのパスを基準に表示される
   [ -f "$dir/pane_${num}_path" ] || pwd > "$dir/pane_${num}_path"
+fi
+
+# agent session UUID をプレビュー用に書き出す（hook が JSON で渡してくる場合は
+# それを jq で抜くか、あるいはエージェント側の env を参照する）
+if [ -n "$CLAUDE_SESSION_ID" ]; then
+  echo "$CLAUDE_SESSION_ID" > "$dir/pane_${num}_session_id"
 fi
 ```
 
@@ -197,34 +216,50 @@ fi
 | `toggle` | サイドバーの表示/非表示を切り替え |
 | `focus-or-open` | サイドバーがあればフォーカス、なければ作成 |
 | `cleanup-if-only-sidebar` | sidebar のみ残ったウィンドウを削除 |
+| `restart` | 全 tmux ウィンドウのサイドバーペインを kill して再生成（バイナリ更新後に使う） |
 | `doctor [--yes]` | tmux 設定をチェック（`--yes` で自動修正） |
+| `upgrade` | GitHub Releases から最新バイナリをダウンロードしてインストール |
 | `version` | バージョンを表示 |
 
 ## Keyboard shortcuts
 
+フッターには `Esc:clear ^C:quit` が表示されます。
+
 | キー | 動作 |
 |------|------|
-| `j` / `↓` | 次のウィンドウ行へ |
-| `k` / `↑` | 前のウィンドウ行へ |
+| `j` / `↓` | 次のウィンドウ行へ（検索クエリが空のときのみ。検索中は文字入力扱い） |
+| `k` / `↑` | 前のウィンドウ行へ（検索クエリが空のときのみ） |
 | `Enter` | 選択ウィンドウへ移動 |
-| `q` / `Esc` | passive モード（キー入力をペインに通過させる） |
-| `i` | interactive モードに復帰 |
+| 任意の文字入力 | インクリメンタル検索フィルタ（セッション名・ウィンドウ名に対する大文字小文字非依存の部分一致） |
+| `Backspace` | 検索クエリを 1 文字削除 |
+| `Esc` | 検索クエリをクリア |
 | `Ctrl+C` | 終了 |
 
 ## State badges
 
-| バッジ | 意味 |
-|--------|------|
-| `[running Nm]` | Claude Code が実行中（N 分経過） |
-| `[idle]` | Claude Code がアイドル状態 |
-| `[permission]` | 権限確認待ち |
-| `[ask]` | ユーザーへの確認待ち |
+各ウィンドウ行は `<agent タグ><状態バッジ>` の形式で右端に表示されます。状態バッジは `idle` のときだけ非表示です。
+
+### Agent タグ
+
+| タグ | 装飾 | 意味 |
+|---|---|---|
+| `[c]` | 無着色 | Claude Code（`pane_N` の 2 行目が `claude` または unknown のフォールバック） |
+| `[x]` | cyan | Codex CLI（`pane_N` の 2 行目が `codex`） |
+
+### Status バッジ
+
+| バッジ | 状態 | 意味 |
+|---|---|---|
+| `🔄Nm` | `running` | 実行中。`N` は `pane_N_started` から計算した経過分数（`int(elapsed.Minutes())`。1 分未満は `🔄0m`） |
+| `💬` | `permission` | 権限確認待ち（permission 用の色） |
+| `💬` | `ask` | ユーザー応答待ち（ask 用の色。実装上 Claude のみ）|
+| (非表示) | `idle` | バッジを描画しない |
 
 ## Environment variables
 
 | 変数 | 説明 |
 |------|------|
-| `TMUX_SIDEBAR_STATE_DIR` | 状態ファイルのディレクトリ（デフォルト: `/tmp/claude-pane-state`） |
+| `TMUX_SIDEBAR_STATE_DIR` | 状態ファイルのディレクトリ（デフォルト: `/tmp/agent-pane-state`） |
 | `TMUX_SIDEBAR_WIDTH` | サイドバー幅の既定値（列数、デフォルト: `40`、最小: `20`） |
 | `TMUX_SIDEBAR_NO_ALT_SCREEN` | 設定するとオルタネートスクリーンを無効化（E2E テスト用） |
 

@@ -9,7 +9,7 @@ import (
 )
 
 // TestDisplayShowsSessionsAndBadges verifies that session names, window names,
-// and state badges ([idle] / [ask] / [permission]) are rendered in the sidebar.
+// and agent/status badges are rendered in the sidebar.
 func TestDisplayShowsSessionsAndBadges(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -37,7 +37,7 @@ func TestDisplayShowsSessionsAndBadges(t *testing.T) {
 	for _, want := range []string{
 		"work", "editor",
 		"infra", "log",
-		"[idle]", "[ask]",
+		"[c]", "💬",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("want %q in capture output:\n%s", want, output)
@@ -45,7 +45,7 @@ func TestDisplayShowsSessionsAndBadges(t *testing.T) {
 	}
 }
 
-// TestDisplayPermissionBadge verifies that the [permission] badge is rendered.
+// TestDisplayPermissionBadge verifies that the permission badge is rendered.
 func TestDisplayPermissionBadge(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -56,12 +56,12 @@ func TestDisplayPermissionBadge(t *testing.T) {
 	env.setupStateFile(paneNum, "permission")
 
 	env.runSidebar("scratch")
-	if err := env.waitForText("scratch", "[permission]", 5*time.Second); err != nil {
+	if err := env.waitForText("scratch", "💬", 5*time.Second); err != nil {
 		t.Fatalf("permission badge did not appear: %v", err)
 	}
 }
 
-// TestDisplayRunningBadge verifies that the [running Nm] badge is rendered for
+// TestDisplayRunningBadge verifies that the running badge is rendered for
 // a pane that has a running state file and a _started epoch file.
 func TestDisplayRunningBadge(t *testing.T) {
 	env := newTestEnv(t)
@@ -75,7 +75,7 @@ func TestDisplayRunningBadge(t *testing.T) {
 	env.setupStateFileStarted(paneNum, time.Now().Add(-3*time.Minute).Unix())
 
 	env.runSidebar("scratch")
-	if err := env.waitForText("scratch", "[running", 5*time.Second); err != nil {
+	if err := env.waitForText("scratch", "🔄3m", 5*time.Second); err != nil {
 		t.Fatalf("running badge did not appear: %v", err)
 	}
 

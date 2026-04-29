@@ -24,15 +24,15 @@ func TestPollingUpdatesState(t *testing.T) {
 		t.Fatalf("sidebar did not show 'worker': %v", err)
 	}
 
-	// Confirm no [idle] badge is visible yet.
+	// Confirm no agent tag is visible yet.
 	output := env.capturePane("scratch")
-	if strings.Contains(output, "[idle]") {
-		t.Fatalf("unexpected [idle] badge before state file written:\n%s", output)
+	if strings.Contains(output, "[c]") {
+		t.Fatalf("unexpected agent tag before state file written:\n%s", output)
 	}
 
 	// Write the state file; the sidebar should pick it up on the next tick.
 	env.setupStateFile(paneNum, "idle")
-	if err := env.waitForText("scratch", "[idle]", 3*time.Second); err != nil {
+	if err := env.waitForText("scratch", "[c]", 3*time.Second); err != nil {
 		t.Fatalf("badge did not appear after writing state file: %v", err)
 	}
 }
@@ -46,16 +46,16 @@ func TestPollingRemovesState(t *testing.T) {
 	env.newWindow("rm-sess", "cleanup")
 	paneNum := env.paneNumber("rm-sess:1")
 
-	// Start with an idle badge visible.
+	// Start with an idle agent tag visible.
 	env.setupStateFile(paneNum, "idle")
 	env.runSidebar("scratch")
-	if err := env.waitForText("scratch", "[idle]", 5*time.Second); err != nil {
-		t.Fatalf("initial [idle] badge did not appear: %v", err)
+	if err := env.waitForText("scratch", "[c]", 5*time.Second); err != nil {
+		t.Fatalf("initial agent tag did not appear: %v", err)
 	}
 
-	// Remove the state file; badge should disappear within the next poll.
+	// Remove the state file; agent tag should disappear within the next poll.
 	env.removeStateFile(paneNum)
-	if err := env.waitForNoText("scratch", "[idle]", 3*time.Second); err != nil {
+	if err := env.waitForNoText("scratch", "[c]", 3*time.Second); err != nil {
 		t.Fatalf("badge did not disappear after removing state file: %v", err)
 	}
 }

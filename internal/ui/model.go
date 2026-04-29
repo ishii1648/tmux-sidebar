@@ -995,6 +995,10 @@ func renderAgentTag(agent string) string {
 func renderBadge(ps *state.PaneState) string {
 	switch ps.Status {
 	case state.StatusRunning:
+		if ps.Elapsed < time.Minute {
+			secs := int(ps.Elapsed.Seconds())
+			return styleBadgeRun.Render(fmt.Sprintf("🔄%ds", secs))
+		}
 		mins := int(ps.Elapsed.Minutes())
 		return styleBadgeRun.Render(fmt.Sprintf("🔄%dm", mins))
 	case state.StatusIdle:

@@ -437,6 +437,37 @@ func TestView_RunningBadgeShowsMinutes(t *testing.T) {
 	}
 }
 
+// 1分未満の経過時間は分ではなく秒でバッジ表示する。
+func TestView_RunningBadgeShowsSecondsUnderOneMinute(t *testing.T) {
+	cases := []struct {
+		name    string
+		elapsed time.Duration
+		want    string
+		notWant string
+	}{
+		{name: "zero", elapsed: 0, want: "0s", notWant: "0m"},
+		{name: "30s", elapsed: 30 * time.Second, want: "30s", notWant: "0m"},
+		{name: "59s", elapsed: 59 * time.Second, want: "59s", notWant: "0m"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runState := state.PaneState{Status: state.StatusRunning, Elapsed: tc.elapsed}
+			items := []ListItem{
+				{Kind: ItemSession, SessionName: "s"},
+				{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "w"}, PaneState: &runState},
+			}
+			m := newTestModel(items, 1, true)
+			view := stripANSI(m.View())
+			if !strings.Contains(view, tc.want) {
+				t.Errorf("View should contain %q:\n%s", tc.want, view)
+			}
+			if strings.Contains(view, tc.notWant) {
+				t.Errorf("View should NOT contain %q:\n%s", tc.notWant, view)
+			}
+		})
+	}
+}
+
 // ── ctrl+c ───────────────────────────────────────────────────────────────────
 
 func TestCtrlC_QuitsWhenFocused(t *testing.T) {

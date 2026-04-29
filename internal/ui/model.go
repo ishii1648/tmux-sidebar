@@ -460,8 +460,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case promptMsg:
-		m.promptCache[msg.cacheKey] = msg.prompt
-		// Update cursorPrompt if the cursor is still on this session
+		// Cache only non-empty results: a transient empty (transcript not yet
+		// written/flushed) must not pin "" forever and block the eventual real
+		// prompt from ever displaying.
+		if msg.prompt != "" {
+			m.promptCache[msg.cacheKey] = msg.prompt
+		}
 		if key := m.cursorPromptKey(); key == msg.cacheKey {
 			m.cursorPrompt = msg.prompt
 		}
@@ -812,7 +816,7 @@ func (m *Model) updateCursorPrompt() tea.Cmd {
 		return nil
 	}
 	cacheKey := promptCacheKey(ps.Agent, ps.SessionID)
-	if cached, ok := m.promptCache[cacheKey]; ok {
+	if cached, ok := m.promptCache[cacheKey]; ok && cached != "" {
 		m.cursorPrompt = cached
 		return nil
 	}

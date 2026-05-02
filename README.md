@@ -40,8 +40,6 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 - window/session の close (`d`/`D`)
 - pin の永続化（`p`）
 - `N` で popup picker mode 起動 → ghq repo + agent mode (`claude` / `codex` / `dispatch` / `orchestrate`) 選択
-- unread permission/ask の履歴バッジ
-- カーソル window の capture-pane プレビュー
 
 詳細は [docs/spec.md](docs/spec.md) と [docs/TODO.md](docs/TODO.md) を参照。
 

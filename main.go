@@ -14,6 +14,7 @@ import (
 	"github.com/ishii1648/tmux-sidebar/internal/config"
 	"github.com/ishii1648/tmux-sidebar/internal/dispatch"
 	"github.com/ishii1648/tmux-sidebar/internal/doctor"
+	"github.com/ishii1648/tmux-sidebar/internal/hook"
 	"github.com/ishii1648/tmux-sidebar/internal/picker"
 	"github.com/ishii1648/tmux-sidebar/internal/repo"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
@@ -39,6 +40,8 @@ Subcommands:
   new                       Popup picker for new session (invoke via tmux bind-key + display-popup)
   dispatch <repo> [prompt] [flags]
                             Create a worktree + tmux session and start a launcher
+  hook <status> [--kind claude|codex]
+                            Write agent pane state (invoke from Claude Code / Codex hooks)
   close                     Close sidebar if open
   toggle                    Open sidebar if closed, close if open
   focus-or-open             Focus sidebar if open, open if closed
@@ -115,6 +118,12 @@ Subcommands:
 				// to fire dispatch in the background).
 				_ = exec.Command("tmux", "display-message", "-d", "5000",
 					"tmux-sidebar dispatch: "+err.Error()).Run()
+				os.Exit(1)
+			}
+			return
+		case "hook":
+			if err := runHook(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar hook: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -690,4 +699,53 @@ func parseDispatchArgs(args []string) (dispatch.Options, error) {
 		opts.SessionExplicit = true
 	}
 	return opts, nil
+}
+
+// runHook is the entry point for `tmux-sidebar hook <status> [--kind ...]`.
+// It is invoked from Claude Code / Codex hook configurations so users can
+// configure hooks with one command instead of inlining a shell script.
+//
+// Usage in .claude/settings.json:
+//
+//	{ "type": "command", "command": "tmux-sidebar hook running" }
+//
+// Stdin: Claude Code passes a JSON payload containing `session_id` and `cwd`;
+// the hook package parses it best-effort. Codex CLI stdin (if any) that is
+// not valid JSON is ignored.
+func runHook(args []string) error {
+	status := ""
+	kind := ""
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "--kind":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--kind requires a value")
+			}
+			kind = args[i+1]
+			i += 2
+		case strings.HasPrefix(a, "--kind="):
+			kind = strings.TrimPrefix(a, "--kind=")
+			i++
+		case strings.HasPrefix(a, "--"):
+			return fmt.Errorf("unknown flag: %s", a)
+		default:
+			if status == "" {
+				status = a
+			} else {
+				return fmt.Errorf("unexpected positional argument: %s", a)
+			}
+			i++
+		}
+	}
+	if status == "" {
+		return fmt.Errorf("status required (running|idle|permission|ask)")
+	}
+	return hook.Write(hook.Options{
+		Status: status,
+		Kind:   kind,
+		PaneID: os.Getenv("TMUX_PANE"),
+		Stdin:  os.Stdin,
+	})
 }

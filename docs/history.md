@@ -187,3 +187,25 @@ control surface 拡張の初版 spec で Phase 2 に含めていた window/sessi
 - design.md: `internal/tmux` 責務、modal sub-state 列挙、mutate 翻訳表の R/Shift+R、`## inline rename UI` セクション全体を削除
 - TODO.md: Phase 2 の rename サブセクションを削除し、「採用しない・延期する項目」表に inline rename を理由付きで追加
 - README.md: 概要文 / 実装中 lifecycle 列挙 / Lifecycle 表 / normal mode 説明から rename 言及を削除
+
+---
+
+## カーソル session 内に新規 window（`n`）の取り下げ
+
+control surface 拡張の初版 spec で Phase 2 に含めていた `n` キー
+（カーソル session 内に新規 window 作成、cwd は session の current path）を、
+実装着手前の見直しで取り下げた。`N`（popup picker で新規 session）は維持する。
+
+### 却下理由
+
+- current session への new-window は cmd+t（terminal 側 mapping）/ `prefix+c` の 1 ストロークで完結する。sidebar の `n` は「focus → カーソル移動 → `n`」の 3 アクションが必要で明確に遅い
+- 「current 以外の session に window を追加したい」シーンは実運用で頻度が低く、必要になっても `prefix+c` で current に作って `m`（move-window）で移すワークフローで吸収できる
+- session の current path 引き継ぎは `bind c new-window -c "#{pane_current_path}"` で tmux native でも実現可能。差別化ポイントにならない
+- 「sidebar dominant + native fallback」原則の下、native で済む操作を sidebar に持ち込むのは認知負荷を下げる場合のみ。`n` は逆に「current への new-window と挙動が違う（カーソル session 対象）」ことを覚える必要があり、認知負荷を増やす
+
+### 影響範囲
+
+- spec.md: Lifecycle 表から `n` 行を削除（`N` のみ残す）
+- design.md: `internal/tmux` 責務から `new` を削除、mutate 翻訳表の `n`（新規 window）行を削除
+- TODO.md: Phase 2 の「### 新規 window」サブセクションを削除し、「採用しない・延期する項目」表に `n` を理由付きで追加。実装順序根拠も `Phase 2 (close)` に修正
+- README.md: Lifecycle 表の `n / N` を `N` のみに

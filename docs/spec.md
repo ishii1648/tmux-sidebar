@@ -84,7 +84,6 @@ pinned session は上部に区切り線で隔てて並べる。
 |---|---|---|
 | `d` | カーソル window を close | running agent 検出時は強い confirm |
 | `D` | カーソル session を close | 複数 window 影響のため必ず confirm |
-| `n` | カーソル session 内に新規 window 作成 | session の current path を引き継ぐ |
 | `N` | popup picker mode で新規 session 作成 | 後述 |
 
 destructive 操作（close 系）は **state file の `running` / `permission` / `ask` 状態を根拠に confirm 強度を変える**。

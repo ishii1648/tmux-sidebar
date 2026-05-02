@@ -116,7 +116,7 @@ normal モードの主なキー:
 | 移動 | `j`/`k`, `gg`/`G`, `Tab`/`Shift+Tab` | 行移動、先頭/末尾、フィルタ切替 |
 | 切替 | `Enter` | 選択 window へ移動 |
 | Lifecycle | `d` / `D` | window/session の close（state に応じた confirm 強度） |
-| Lifecycle | `n` / `N` | カーソル session 内に新規 window / popup picker で新規 session |
+| Lifecycle | `N` | popup picker で新規 session |
 | 並べ替え | `Shift+J`/`Shift+K` | 同 session 内 swap |
 | 並べ替え | `m` | mark → drop で別 session へ move |
 | 装飾 | `p` | pin toggle |

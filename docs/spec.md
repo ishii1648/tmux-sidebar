@@ -97,6 +97,9 @@ destructive 操作（close 系）は **state file の `running` / `permission` /
 |---|---|
 | `p` | カーソル session の pin toggle |
 
+`p` を押すとカーソル window の **所属 session** が pin/unpin される。pinned session は上部に持ち上げられ、`📌 <name>` で表示される。pinned 群と unpinned 群の境界には区切り線が入る。
+状態は `~/.config/tmux-sidebar/pinned_sessions` に書き戻され、再起動を跨いで保持される（後述 [Configuration files](#configuration-files)）。
+
 ### その他
 
 | キー | 動作 |
@@ -166,10 +169,30 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 | `hidden_sessions` | 表示しない session 名 |
 | `pinned_sessions` | pin する session 名（行順 = 表示順） |
 
+### `pinned_sessions` の編集
+
+pin の追加/解除は **2 通り** で行える。どちらも結果は同じファイルに反映される。
+
+1. **`p` キーで toggle**: sidebar focus 中、カーソル window の所属 session が即時 pin/unpin される。ファイルは sidebar が自動で書き戻し、行末追記または該当行の削除を行う。
+2. **エディタで直接編集**: `~/.config/tmux-sidebar/pinned_sessions` を開き、1 行 1 session 名で書く。**行の順序がそのまま表示順になる**。tmux の session 列挙順とは独立しているため、運用優先度に合わせて並べられる。`#` で始まる行と空行は無視される。
+
+例:
+
+```
+# pinned_sessions
+# 上から順に sidebar 上部に並ぶ
+infra
+work
+tmux-sidebar
+```
+
+ファイルが存在しない / 空の場合は「pinned なし」として扱う。書き込みの際 `~/.config/tmux-sidebar/` ディレクトリが無ければ自動生成される。
+
 ### 競合時の優先
 
-- `hidden` > 表示（hidden 指定された session は何があっても出さない）
-- `pinned` 群と unpinned 群の境界に区切り線
+- `hidden` > 表示（hidden 指定された session は pin されていても出さない）
+- 表示される pinned session は **`pinned_sessions` の行順** で並ぶ（tmux 列挙順より優先）
+- pinned 群と unpinned 群の境界に区切り線。両群とも非空のときだけ描画する（全件 pinned / 全件 unpinned のときは出さない）
 
 ## Environment variables
 

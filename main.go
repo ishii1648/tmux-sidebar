@@ -589,7 +589,7 @@ func runDispatch(args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := dispatch.Launch(opts)
+	res, err := dispatch.Launch(opts, dispatch.ClaudeNamer{})
 	if err != nil {
 		return err
 	}

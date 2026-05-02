@@ -94,11 +94,19 @@ func TestPickerDispatchFlowClaude(t *testing.T) {
 	if runner.dispatchOpts.Launcher != dispatch.LauncherClaude {
 		t.Errorf("Launcher = %q want claude", runner.dispatchOpts.Launcher)
 	}
-	if runner.dispatchOpts.Branch != "feat/add-thing" {
-		t.Errorf("Branch = %q", runner.dispatchOpts.Branch)
+	// Branch is left empty in the normal flow so the spawned dispatch
+	// process can derive it (claude -p with slugify fallback) without
+	// blocking the popup. Checkout mode is what carries an explicit
+	// Branch — see TestPickerCheckoutMode.
+	if runner.dispatchOpts.Branch != "" {
+		t.Errorf("Branch = %q want empty (named by dispatch process)", runner.dispatchOpts.Branch)
 	}
-	if !runner.dispatchOpts.Switch {
-		t.Errorf("Switch should be true (picker controls switch ordering)")
+	// Picker no longer auto-switches the calling client into the new
+	// session — keeping the user's current work in focus is preferred
+	// over the convenience of jumping into the freshly dispatched
+	// session. The display-message from dispatch is the success signal.
+	if runner.dispatchOpts.Switch {
+		t.Errorf("Switch should be false (picker must not hijack the user's current pane)")
 	}
 	// Prompt is shipped via PromptFile (not the literal Prompt field) so
 	// shell quoting in run-shell -b can't mangle newlines / specials.
@@ -286,8 +294,11 @@ func TestPickerPasteNormalizesNewlines(t *testing.T) {
 		t.Errorf("prompt = %q want \"line one\\nline two\\nline three\"", got)
 	}
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if runner.dispatchOpts.Branch != "feat/line-one" {
-		t.Errorf("Branch = %q want feat/line-one (first line slug)", runner.dispatchOpts.Branch)
+	// Branch is empty: naming runs in the spawned dispatch process. The
+	// prompt file content (asserted below) is what carries the lines
+	// that dispatch will use for both naming and the launcher input.
+	if runner.dispatchOpts.Branch != "" {
+		t.Errorf("Branch = %q want empty (named by dispatch process)", runner.dispatchOpts.Branch)
 	}
 	t.Cleanup(func() { os.Remove(runner.dispatchOpts.PromptFile) })
 	body, err := os.ReadFile(runner.dispatchOpts.PromptFile)
@@ -326,6 +337,41 @@ func TestFuzzyFilterAndCursorReset(t *testing.T) {
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
 	if len(m.filtered) != 2 {
 		t.Fatalf("after backspace filtered = %+v", m.filtered)
+	}
+}
+
+// TestPromptBackspaceMultiByteRune ensures backspace deletes one rune (not one
+// byte) so multi-byte input like Japanese is not corrupted into replacement
+// glyphs (e.g. ◆) on the next render.
+func TestPromptBackspaceMultiByteRune(t *testing.T) {
+	m := New(Context{}, sampleRepos(), &fakeRunner{})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
+	for _, r := range []rune("こんにちは") {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.prompt != "こんにち" {
+		t.Errorf("prompt = %q want %q", m.prompt, "こんにち")
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.prompt != "" {
+		t.Errorf("prompt = %q want empty after deleting all runes", m.prompt)
+	}
+}
+
+// TestRepoQueryBackspaceMultiByteRune mirrors the prompt test for the repo
+// filter input on Step 1.
+func TestRepoQueryBackspaceMultiByteRune(t *testing.T) {
+	m := New(Context{}, sampleRepos(), &fakeRunner{})
+	for _, r := range []rune("あい") {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.query != "あ" {
+		t.Errorf("query = %q want %q", m.query, "あ")
 	}
 }
 

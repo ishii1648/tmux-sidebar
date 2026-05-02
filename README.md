@@ -37,6 +37,18 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 
 詳細は [docs/spec.md](docs/spec.md) を参照。
 
+## Required tools
+
+| ツール | 用途 |
+|---|---|
+| `tmux` 3.2+ | popup / pane / session 制御 |
+| `git` | worktree / branch 操作 |
+| `ghq` | repo 一覧 |
+| [`claude`](https://github.com/anthropics/claude-code) | `--launcher claude` の launcher、および popup 経由 dispatch の LLM branch 命名 |
+| [`codex`](https://github.com/openai/codex) | `--launcher codex` の launcher |
+
+`claude` / `codex` は片方でも動作する。`claude` 不在時は branch 名が決定論的 slugify にフォールバックする。詳細は [docs/spec.md#required-external-tools](docs/spec.md#required-external-tools) を参照。
+
 ## Installation
 
 ```sh

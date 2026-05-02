@@ -55,6 +55,7 @@ infra
 - pinned session は `📌` を付与し、unpinned 群との境界に区切り線
 - 現在の tmux window は背景色で highlight
 - sidebar pane が focus されている場合は title が `● Sessions`、focus されていない場合は `○ Sessions`
+- **作成直後 10 秒以内** の session は session ヘッダ行 (`▾ <name>`) と所属 window 行が緑系の前景色で強調表示される。dispatch 完了の合図として display-message に依存しない可視化（時間経過で自然に通常スタイルに戻る）
 
 ## 操作（normal mode）
 
@@ -138,9 +139,9 @@ claude / codex  <repo>
 
 - 上の launcher 表示は active（bold + 緑）と inactive（faint）で示される。`Tab` で claude ↔ codex を切り替えられる
 - `Enter` で git worktree 作成 + tmux session 生成 + prompt 投入が実行される
-- prompt の先頭行から branch 名を `feat/<slug>` 形式で自動生成し、入力中にプレビュー表示する
-- 複数行の prompt は **bracketed paste で貼り付け** て入れる、もしくは **Ctrl+J / Shift+Enter / Alt+Enter** で改行を挿入する（Shift+Enter / Alt+Enter は kitty キーボードプロトコル等で plain Enter と区別できる terminal でのみ動く。区別できない terminal では plain Enter として扱われ確定する）。CR / CRLF は LF に正規化される。先頭行が branch 名生成に使われ、全文がそのまま launcher に渡る
-- `Enter` で dispatch を **背景で起動** して popup は即閉じる（`tmux run-shell -b 'tmux-sidebar dispatch ...'`）。worktree 作成 + tmux session 生成 + launcher 起動はユーザを待たせず、完了時に Switch によって新 session に自動 attach される。dispatch 中のエラーは `tmux display-message` で通知される
+- branch 名は **dispatch 側（popup ではなく background process）** が prompt 内容から決定する。`claude -p` で短い `<type>/<slug>` を生成し、`claude` 不在 / 認証切れ / timeout / 不正な出力時は決定論的な `feat/<slug>` slugify にフォールバックする。実際の branch 名は新 session が sidebar に出現したタイミングで確認できる。popup 入力中はプレビューを出さない（実値と異なる「予想 slug」を見せると誤導になるため）。例外として `:<branch>` checkout モードのときだけ、入力した branch 名そのものを `checkout:` プレビューとして faint 表示する
+- 複数行の prompt は **bracketed paste で貼り付け** て入れる、もしくは **Ctrl+J / Shift+Enter / Alt+Enter** で改行を挿入する（Shift+Enter / Alt+Enter は kitty キーボードプロトコル等で plain Enter と区別できる terminal でのみ動く。区別できない terminal では plain Enter として扱われ確定する）。CR / CRLF は LF に正規化される。先頭行が slugify フォールバック用に使われ、全文がそのまま launcher に渡る（LLM 命名は全文を見る）
+- `Enter` で dispatch を **背景で起動** して popup は即閉じる（`tmux run-shell -b 'tmux-sidebar dispatch ...'`）。worktree 作成 + tmux session 生成 + launcher 起動 + LLM 命名はユーザを待たせない。**作業中の client は新 session に自動移動しない**。成功時の通知は出さず、新 session が sidebar に出現する（reload tick 最大 10 秒、または SIGUSR1 hook で即時）のがそのまま完了サインになる。attach するかは `prefix s` / sidebar からユーザが任意のタイミングで決める。失敗時のみ `tmux display-message` で `tmux-sidebar dispatch: <err>` が status line に出る
 - `:<branch>` プレフィックスで先頭行を始めると **branch 接続モード**になる: 指定 branch が local にあればそれを、remote のみなら fetch してから、どこにも無ければ `origin/<default>` から新規作成して worktree を作る。prompt は launcher に渡されず idle で起動する
 - `Esc` で Step 1 に戻る
 
@@ -189,6 +190,20 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 - `hidden` > 表示（hidden 指定された session は pin されていても出さない）
 - 表示される pinned session は **`pinned_sessions` の行順** で並ぶ（tmux 列挙順より優先）
 - pinned 群と unpinned 群の境界に区切り線。両群とも非空のときだけ描画する（全件 pinned / 全件 unpinned のときは出さない）
+
+## Required external tools
+
+dispatch / popup picker のフローはローカルの CLI を直接呼び出す。以下が PATH に存在し、必要に応じて認証済みであることを前提とする。
+
+| ツール | 用途 | 必須度 |
+|---|---|---|
+| `tmux` 3.2+ | popup / pane / session 制御全般 | 必須 |
+| `git` | worktree / branch 操作 | 必須 |
+| `ghq` | repo 一覧 (`ghq list -p`) | 必須 |
+| `claude` ([Claude Code CLI](https://github.com/anthropics/claude-code)) | popup picker の Step 2 で `--launcher claude` を選んだ時の launcher、および dispatch 側の LLM branch 命名（`claude -p`） | popup picker を使うなら必須。命名のみ用途なら未認証でもフォールバックは動くが体験が落ちる |
+| `codex` ([Codex CLI](https://github.com/openai/codex)) | popup picker の Step 2 で `--launcher codex` を選んだ時の launcher | codex を使うなら必須 |
+
+`claude` / `codex` のどちらか片方しか使わない場合は、もう一方を入れる必要はない。LLM 命名は `claude` だけを使う（codex の `exec` サブコマンドは命名用途には使わない設計）。
 
 ## Environment variables
 

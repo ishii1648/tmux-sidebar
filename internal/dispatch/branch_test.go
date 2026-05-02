@@ -1,10 +1,21 @@
 package dispatch
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 )
+
+type fakeNamer struct {
+	out string
+	err error
+}
+
+func (f fakeNamer) Name(_ context.Context, _ string) (string, error) {
+	return f.out, f.err
+}
 
 func TestBranchFromPrompt(t *testing.T) {
 	cases := []struct {
@@ -106,6 +117,78 @@ func TestWriteTempPrompt(t *testing.T) {
 	}
 	if string(got) != body {
 		t.Errorf("file = %q want %q", got, body)
+	}
+}
+
+func TestDeriveBranchUsesNamer(t *testing.T) {
+	got := DeriveBranch(context.Background(), fakeNamer{out: "feat/add-auth"}, "Add user auth flow")
+	if got != "feat/add-auth" {
+		t.Errorf("DeriveBranch = %q want %q (namer output should win)", got, "feat/add-auth")
+	}
+}
+
+func TestDeriveBranchFallsBackOnError(t *testing.T) {
+	got := DeriveBranch(context.Background(), fakeNamer{err: errors.New("boom")}, "Add user auth")
+	if got != "feat/add-user-auth" {
+		t.Errorf("DeriveBranch = %q want slug fallback feat/add-user-auth", got)
+	}
+}
+
+func TestDeriveBranchFallsBackOnInvalidShape(t *testing.T) {
+	cases := []string{
+		"random text",                          // no type prefix
+		"feature/foo",                          // unsupported type
+		"feat/" + strings.Repeat("a", 30),      // too long
+		"feat/-leading-dash",                   // bad first slug char
+		"feat/Add-Auth",                        // uppercase
+		"feat/has spaces",                      // space
+		"refactor/foo",                         // unsupported type
+	}
+	for _, name := range cases {
+		got := DeriveBranch(context.Background(), fakeNamer{out: name}, "Add user auth")
+		if got != "feat/add-user-auth" {
+			t.Errorf("namer=%q DeriveBranch = %q, want fallback feat/add-user-auth", name, got)
+		}
+	}
+}
+
+func TestDeriveBranchAcceptsValidShapes(t *testing.T) {
+	cases := []string{
+		"feat/add-auth",
+		"fix/flaky-ci",
+		"chore/upgrade-deps",
+		"feat/x" + strings.Repeat("a", 23), // 25 char slug = limit
+	}
+	for _, name := range cases {
+		got := DeriveBranch(context.Background(), fakeNamer{out: name}, "irrelevant")
+		if got != name {
+			t.Errorf("namer=%q DeriveBranch = %q, want pass-through", name, got)
+		}
+	}
+}
+
+func TestDeriveBranchNilNamer(t *testing.T) {
+	got := DeriveBranch(context.Background(), nil, "Add health check")
+	if got != "feat/add-health-check" {
+		t.Errorf("DeriveBranch(nil) = %q want feat/add-health-check", got)
+	}
+}
+
+func TestLastNonEmptyLine(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"feat/foo", "feat/foo"},
+		{"  feat/foo  ", "feat/foo"},
+		{"prefix\nfeat/foo\n", "feat/foo"},
+		{"prefix\nfeat/foo\n\n  \n", "feat/foo"},
+		{"\n\n", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := lastNonEmptyLine(c.in); got != c.want {
+			t.Errorf("lastNonEmptyLine(%q) = %q want %q", c.in, got, c.want)
+		}
 	}
 }
 

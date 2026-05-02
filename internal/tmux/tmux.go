@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // tmuxDelim is used as a field separator in tmux format strings.
@@ -55,8 +56,9 @@ type PaneInfo struct {
 	PaneID          string
 	PaneIndex       int
 	PaneNumber      int
-	WindowActive    bool // true if this is the current window in its session
-	SessionAttached bool // true if the session has a client attached
+	WindowActive    bool      // true if this is the current window in its session
+	SessionAttached bool      // true if the session has a client attached
+	SessionCreated  time.Time // session creation time (zero if tmux didn't supply it)
 }
 
 // Client is the interface for interacting with tmux.
@@ -260,7 +262,10 @@ func (c *ExecClient) PaneCurrentPath(windowID string) (string, error) {
 	return "", fmt.Errorf("no non-sidebar pane found in window %s", windowID)
 }
 
-// parseAllPanes parses the output of `tmux list-panes -a` with 9 fields.
+// parseAllPanes parses the output of `tmux list-panes -a` with 10 fields.
+// The trailing field is #{session_created} as a Unix epoch second; an
+// unparseable / missing value yields a zero time.Time so downstream code
+// (the "fresh session" highlight) silently treats it as "long ago".
 func parseAllPanes(out string) []PaneInfo {
 	if out == "" {
 		return nil
@@ -268,7 +273,7 @@ func parseAllPanes(out string) []PaneInfo {
 	var panes []PaneInfo
 	for _, line := range strings.Split(out, "\n") {
 		parts := strings.Split(line, tmuxDelim)
-		if len(parts) != 9 {
+		if len(parts) != 10 {
 			continue
 		}
 		winIdx, err := strconv.Atoi(parts[3])
@@ -284,6 +289,10 @@ func parseAllPanes(out string) []PaneInfo {
 		if len(paneID) > 1 && paneID[0] == '%' {
 			num, _ = strconv.Atoi(paneID[1:])
 		}
+		var created time.Time
+		if epoch, err := strconv.ParseInt(parts[9], 10, 64); err == nil && epoch > 0 {
+			created = time.Unix(epoch, 0)
+		}
 		panes = append(panes, PaneInfo{
 			SessionID:       parts[0],
 			SessionName:     parts[1],
@@ -295,6 +304,7 @@ func parseAllPanes(out string) []PaneInfo {
 			PaneNumber:      num,
 			WindowActive:    parts[7] == "1",
 			SessionAttached: parts[8] == "1",
+			SessionCreated:  created,
 		})
 	}
 	return panes
@@ -326,12 +336,16 @@ func (c *ExecClient) CapturePane(target string) (string, error) {
 
 // ListAll returns all session/window/pane information in a single tmux list-panes call.
 // The result includes WindowActive and SessionAttached flags to identify the currently
-// focused window without a separate display-message call.
+// focused window without a separate display-message call. SessionCreated is included
+// so the sidebar can highlight sessions created in the last few seconds (the
+// "fresh session" affordance that signals dispatch completion without status-line
+// notifications).
 func (c *ExecClient) ListAll() ([]PaneInfo, error) {
 	out, err := runTmux("list-panes", "-a", "-F",
 		"#{session_id}"+tmuxDelim+"#{session_name}"+tmuxDelim+"#{window_id}"+tmuxDelim+
 			"#{window_index}"+tmuxDelim+"#{window_name}"+tmuxDelim+"#{pane_id}"+tmuxDelim+
-			"#{pane_index}"+tmuxDelim+"#{window_active}"+tmuxDelim+"#{session_attached}")
+			"#{pane_index}"+tmuxDelim+"#{window_active}"+tmuxDelim+"#{session_attached}"+tmuxDelim+
+			"#{session_created}")
 	if err != nil {
 		return nil, err
 	}

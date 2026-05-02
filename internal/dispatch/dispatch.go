@@ -14,6 +14,7 @@
 package dispatch
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -149,7 +150,13 @@ type Result struct {
 
 // Launch performs the dispatch. The returned Result captures what was created
 // for callers that want to switch the client to it (the picker does this).
-func Launch(opts Options) (*Result, error) {
+//
+// namer derives a branch name from the prompt when opts.Branch is empty
+// and a worktree is being created. Pass nil to fall through directly to
+// BranchFromPrompt's deterministic slugify. Naming runs in this process
+// (the spawned `tmux-sidebar dispatch`), not in the popup picker, so
+// `claude -p` latency does not block the popup.
+func Launch(opts Options, namer Namer) (*Result, error) {
 	if err := validate(&opts); err != nil {
 		return nil, err
 	}
@@ -188,7 +195,15 @@ func Launch(opts Options) (*Result, error) {
 	switch {
 	case !opts.NoWorktree:
 		if opts.Branch == "" {
-			return nil, fmt.Errorf("branch is required when worktree is enabled")
+			// The popup picker leaves Branch empty in the normal flow so
+			// branch naming runs here (tmux run-shell -b background) and
+			// stays off the popup's critical path. Checkout-mode and
+			// other no-prompt callers must still supply Branch
+			// explicitly because there is no prompt to name from.
+			if opts.NoPrompt || strings.TrimSpace(opts.Prompt) == "" {
+				return nil, fmt.Errorf("branch is required when worktree is enabled and no prompt is given")
+			}
+			opts.Branch = DeriveBranch(context.Background(), namer, opts.Prompt)
 		}
 		path, err := CreateWorktree(repoPath, opts.Branch)
 		if err != nil {
@@ -252,8 +267,12 @@ func Launch(opts Options) (*Result, error) {
 		_ = os.Remove(opts.PromptFile)
 	}
 
-	_ = exec.Command("tmux", "display-message", "-d", "5000", fmt.Sprintf("dispatch: launched [%s]", sessionName)).Run()
-
+	// Success is intentionally silent: the new session shows up in the
+	// sidebar within the reload tick (≤10s, or instantly with the
+	// SIGUSR1 hook), which is the source of truth. A short-lived
+	// display-message would just duplicate that information for a few
+	// seconds and add noise to the status line. Failures still surface
+	// via display-message from main.go's runDispatch error handler.
 	return &Result{
 		SessionName: sessionName,
 		WindowIndex: windowIndex,

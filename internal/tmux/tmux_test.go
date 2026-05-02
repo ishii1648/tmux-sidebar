@@ -140,6 +140,47 @@ func TestParseWindows(t *testing.T) {
 	}
 }
 
+// ── ParseAllPanes ────────────────────────────────────────────────────────────
+
+func TestParseAllPanes_SessionCreated(t *testing.T) {
+	d := tmuxDelim
+	// 10-field row: session_id|session_name|window_id|window_index|window_name|pane_id|pane_index|window_active|session_attached|session_created
+	input := "$1" + d + "main" + d + "@1" + d + "0" + d + "edit" + d + "%1" + d + "0" + d + "1" + d + "1" + d + "1700000000"
+	got := parseAllPanes(input)
+	if len(got) != 1 {
+		t.Fatalf("len = %d want 1", len(got))
+	}
+	if got[0].SessionCreated.Unix() != 1700000000 {
+		t.Errorf("SessionCreated.Unix() = %d want 1700000000", got[0].SessionCreated.Unix())
+	}
+	if !got[0].WindowActive || !got[0].SessionAttached {
+		t.Errorf("flags lost: WindowActive=%v SessionAttached=%v", got[0].WindowActive, got[0].SessionAttached)
+	}
+}
+
+func TestParseAllPanes_MissingCreatedFalsifiesZero(t *testing.T) {
+	d := tmuxDelim
+	// session_created field present but unparseable falls through to zero value.
+	input := "$1" + d + "main" + d + "@1" + d + "0" + d + "edit" + d + "%1" + d + "0" + d + "0" + d + "0" + d + "garbage"
+	got := parseAllPanes(input)
+	if len(got) != 1 {
+		t.Fatalf("len = %d want 1", len(got))
+	}
+	if !got[0].SessionCreated.IsZero() {
+		t.Errorf("SessionCreated should be zero on parse error, got %v", got[0].SessionCreated)
+	}
+}
+
+func TestParseAllPanes_RejectsWrongFieldCount(t *testing.T) {
+	d := tmuxDelim
+	// 9 fields (old format) — rejected silently to surface the schema mismatch via an empty result.
+	input := "$1" + d + "main" + d + "@1" + d + "0" + d + "edit" + d + "%1" + d + "0" + d + "1" + d + "1"
+	got := parseAllPanes(input)
+	if len(got) != 0 {
+		t.Errorf("len = %d want 0 (9-field row should be skipped)", len(got))
+	}
+}
+
 // ── ParsePanes ───────────────────────────────────────────────────────────────
 
 func TestParsePanes(t *testing.T) {

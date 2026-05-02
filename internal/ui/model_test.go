@@ -687,6 +687,20 @@ func TestSearch_BackspaceDeletesChar(t *testing.T) {
 	}
 }
 
+// TestSearch_BackspaceMultiByteRune locks in rune-aware deletion: byte-slicing
+// would leave dangling UTF-8 continuation bytes that render as ◆.
+func TestSearch_BackspaceMultiByteRune(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
+	for _, r := range "あい" {
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.searchQuery != "あ" {
+		t.Errorf("after backspace: query = %q, want %q", m.searchQuery, "あ")
+	}
+}
+
 func TestSearch_CaseInsensitive(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 	m.Update(key('/'))
@@ -1857,5 +1871,45 @@ func TestSanitizeLabel(t *testing.T) {
 		if got := sanitizeLabel(tc.in); got != tc.want {
 			t.Errorf("sanitizeLabel(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestIsFreshSession(t *testing.T) {
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		created time.Time
+		want    bool
+	}{
+		{"just created", now.Add(-1 * time.Second), true},
+		{"at boundary (9.99s)", now.Add(-9*time.Second - 990*time.Millisecond), true},
+		{"past boundary (10s)", now.Add(-10 * time.Second), false},
+		{"long ago", now.Add(-time.Hour), false},
+		{"zero time treated as not fresh", time.Time{}, false},
+		{"future (clock skew) treated as fresh", now.Add(2 * time.Second), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			item := ListItem{Kind: ItemSession, SessionCreated: tc.created}
+			if got := isFreshSession(item, now); got != tc.want {
+				t.Errorf("isFreshSession(created=%v) = %v want %v", tc.created, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHasFreshSession(t *testing.T) {
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	fresh := ListItem{Kind: ItemSession, SessionCreated: now.Add(-2 * time.Second)}
+	stale := ListItem{Kind: ItemSession, SessionCreated: now.Add(-time.Hour)}
+	winFresh := ListItem{Kind: ItemWindow, SessionCreated: now.Add(-1 * time.Second)} // ignored — only ItemSession counts
+	if hasFreshSession([]ListItem{stale, winFresh}, now) {
+		t.Errorf("hasFreshSession should be false when no ItemSession is fresh")
+	}
+	if !hasFreshSession([]ListItem{stale, fresh}, now) {
+		t.Errorf("hasFreshSession should be true when at least one ItemSession is fresh")
+	}
+	if hasFreshSession(nil, now) {
+		t.Errorf("hasFreshSession(nil) should be false")
 	}
 }

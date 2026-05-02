@@ -157,8 +157,8 @@ func (m *Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(1)
 		return m, nil
 	case tea.KeyBackspace:
-		if len(m.query) > 0 {
-			m.query = m.query[:len(m.query)-1]
+		if r := []rune(m.query); len(r) > 0 {
+			m.query = string(r[:len(r)-1])
 			m.applyFilter()
 		}
 		return m, nil
@@ -191,8 +191,8 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		return m, m.execDispatch()
 	case tea.KeyBackspace:
-		if len(m.prompt) > 0 {
-			m.prompt = m.prompt[:len(m.prompt)-1]
+		if r := []rune(m.prompt); len(r) > 0 {
+			m.prompt = string(r[:len(r)-1])
 		}
 		return m, nil
 	case tea.KeySpace:
@@ -277,17 +277,23 @@ func (m *Model) execDispatch() tea.Cmd {
 	opts := dispatch.Options{
 		Repo:     r.Path,
 		Launcher: m.launcher,
-		// Picker always wants the calling client to follow into the new
-		// session. The spawned dispatch process resolves this via
-		// `tmux switch-client` after creating the session — also the fix
-		// for codex's `waitForAttachedClient` deadlock (ADR-065).
-		Switch: true,
+		// Switch is left off so the user's current pane / session is not
+		// hijacked when they fire a new dispatch. Success is signalled
+		// via `tmux display-message` from the dispatch subprocess; the
+		// user attaches manually (e.g. via `prefix s` or sidebar) when
+		// they're ready. Codex still calls waitForAttachedClient — it
+		// will block in the dispatch process until the user attaches or
+		// the 5-min timeout fires (matches dispatch.sh CLI behavior).
 	}
 	if checkout {
 		opts.Branch = branch
 		opts.NoPrompt = true
 	} else {
-		opts.Branch = dispatch.BranchFromPrompt(body)
+		// Leave opts.Branch empty so the spawned dispatch process picks
+		// the name (claude -p with slugify fallback). Doing it here
+		// would force the popup to wait several seconds for the LLM,
+		// which is the exact regression that the fire-and-forget
+		// design (run-shell -b) was introduced to avoid.
 		// Ship the prompt as a tempfile path. The spawned dispatch
 		// reads and removes it; serialising the literal text through
 		// the shell would mangle newlines and metacharacters.
@@ -405,16 +411,15 @@ func (m *Model) viewPrompt() string {
 
 	sb.WriteString(renderPromptInput(m.prompt))
 
-	// Branch derivation hint (faint, below the input).
+	// Show a hint only for `:<branch>` checkout mode — that branch name is
+	// exactly what dispatch will use, so it's worth previewing. The default
+	// flow's branch is decided by the spawned dispatch process (claude -p
+	// with slugify fallback), so any preview here would just be a guess
+	// that differs from the real result.
 	trimmed := strings.TrimSpace(m.prompt)
-	switch {
-	case trimmed == "":
-		// no hint when empty — keep the input area uncluttered
-	case isCheckout(trimmed):
+	if isCheckout(trimmed) {
 		branch, _, _ := dispatch.ParseBranchPrefix(trimmed)
 		sb.WriteString("\n  " + styleFaint.Render("checkout: "+branch+"  (no prompt sent)") + "\n")
-	default:
-		sb.WriteString("\n  " + styleFaint.Render("branch: "+dispatch.BranchFromPrompt(trimmed)) + "\n")
 	}
 
 	if m.errMsg != "" {

@@ -14,6 +14,11 @@ import (
 // DefaultIndexPath is the default location of the Claude Code session index.
 var DefaultIndexPath = filepath.Join(os.Getenv("HOME"), ".claude", "session-index.jsonl")
 
+// DefaultClaudeProjectsDir is the default root for Claude Code transcript files
+// (`<sessionID>.jsonl` under per-project directories). Used as a fallback when
+// the session index does not contain an entry for the requested session.
+var DefaultClaudeProjectsDir = filepath.Join(os.Getenv("HOME"), ".claude", "projects")
+
 // DefaultCodexSessionsDir is the default location of Codex session transcripts.
 var DefaultCodexSessionsDir = filepath.Join(os.Getenv("HOME"), ".codex", "sessions")
 
@@ -62,6 +67,13 @@ func FindTranscriptPath(sessionID string) (string, error) {
 	return findTranscriptPathFrom(DefaultIndexPath, sessionID)
 }
 
+// FindClaudeTranscriptPath walks DefaultClaudeProjectsDir for `<sessionID>.jsonl`
+// as a fallback when the session index does not have an entry for the session
+// (or its entry points at a path that no longer exists).
+func FindClaudeTranscriptPath(sessionID string) (string, error) {
+	return findClaudeTranscriptPathFrom(DefaultClaudeProjectsDir, sessionID)
+}
+
 // FindCodexTranscriptPath searches ~/.codex/sessions for the given Codex session ID.
 func FindCodexTranscriptPath(sessionID string) (string, error) {
 	return findCodexTranscriptPathFrom(DefaultCodexSessionsDir, sessionID)
@@ -89,6 +101,36 @@ func findTranscriptPathFrom(indexPath, sessionID string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func findClaudeTranscriptPathFrom(projectsDir, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	target := sessionID + ".jsonl"
+	var matches []string
+	err := filepath.WalkDir(projectsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		// Match basename exactly so subagent transcripts (e.g.
+		// `subagents/agent-*.jsonl`) are not picked up.
+		if d.Name() == target {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("walk claude projects: %w", err)
+	}
+	sort.Strings(matches)
+	if len(matches) == 0 {
+		return "", nil
+	}
+	return matches[len(matches)-1], nil
 }
 
 func findCodexTranscriptPathFrom(sessionsDir, sessionID string) (string, error) {
@@ -161,21 +203,37 @@ func ExtractInitialPromptForAgent(agent, sessionID string) (string, error) {
 		}
 		return ExtractCodexInitialPrompt(transcriptPath)
 	}
-	transcriptPath, err := FindTranscriptPath(sessionID)
+	transcriptPath, err := resolveClaudeTranscriptPath(sessionID)
 	if err != nil || transcriptPath == "" {
 		return "", err
 	}
 	return ExtractInitialPrompt(transcriptPath)
 }
 
+// resolveClaudeTranscriptPath returns a transcript path for sessionID, trying
+// the session index first and falling back to a walk of DefaultClaudeProjectsDir
+// when the index has no entry or the indexed path is missing.
+func resolveClaudeTranscriptPath(sessionID string) (string, error) {
+	indexPath, indexErr := FindTranscriptPath(sessionID)
+	if indexErr == nil && indexPath != "" {
+		if _, statErr := os.Stat(indexPath); statErr == nil {
+			return indexPath, nil
+		}
+	}
+	fallback, walkErr := FindClaudeTranscriptPath(sessionID)
+	if walkErr != nil {
+		return "", walkErr
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", indexErr
+}
+
 // ExtractInitialPrompt reads a transcript JSONL file and returns the first
 // user message content (the initial prompt). Returns empty string if no user
 // message is found.
 func ExtractInitialPrompt(transcriptPath string) (string, error) {
-	// The transcript path from session-index.jsonl may point to either:
-	// 1. A flat file: {session_id}.jsonl (older format)
-	// 2. A directory-based path that no longer exists as a flat file
-	// Try the given path first, then try the directory-based convention.
 	f, err := os.Open(transcriptPath)
 	if err != nil {
 		return "", fmt.Errorf("open transcript: %w", err)

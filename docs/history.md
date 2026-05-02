@@ -141,3 +141,27 @@ sidebar 自身は **常駐 pane (40 cols)** と **popup picker (80×24 程度)**
 - tmux native binding は削らない（sidebar dominant + native fallback）
 - tmw / dispatch / orchestrate のロジックは引き続きそれらの責務。sidebar は entry と post-process のみ
 - ADR-052 の「one state source, multiple views」は維持（pane mode と popup picker mode は同じ state を読む別 view）
+
+---
+
+## scope 拡張から取り下げた機能（mute / session_order / width config）
+
+control surface 拡張の初版 spec には「pin / mute / 並べ替えの永続化」と並べて
+`muted_sessions` / `session_order` / `width` config file を載せていたが、
+実装着手前の見直しで以下 3 つを spec から落とした。pinned_sessions（pin 永続化）と
+window swap (`Shift+J/K`) / move-window (`m`) は維持する。
+
+### 却下した項目と理由
+
+| 項目 | 却下理由 |
+|---|---|
+| `muted_sessions`（badge 抑制） | 「行は出すが badge だけ消す」ユースケースは agent 主体の運用では薄い。常駐 watcher / log tail を tmux で抱える運用が顕在化したら再検討。`hidden_sessions` で完全に隠せば足りるケースが大半 |
+| `session_order`（unpinned 群の手動並べ替え） | pinned_sessions で重要 session を持ち上げれば、残りは tmux 列挙順で十分。手動順序の維持コストが効用に見合わない（session 作成のたびに位置を意識する必要があり、記憶と乖離した瞬間に逆効果になる）。連動する `Alt+J`/`Alt+K` も削除 |
+| `width`（config file） | `TMUX_SIDEBAR_WIDTH` 環境変数と完全に重複。sidebar は tmux.conf 経由で起動するため、`setenv -g TMUX_SIDEBAR_WIDTH N` で inherit すれば足りる。設定の入口を 2 つ持つ理由がない |
+
+### 影響範囲
+
+- spec.md: `M` キー、`Alt+J/K`、Configuration files の 3 行、競合時の優先の muted 行を削除
+- design.md: `Config` 構造体の `MutedSessions` / `SessionOrder` / `Width` フィールド、session 並べ替えセクション、合成ロジックの muted/SessionOrder 言及、幅の `~/.config/tmux-sidebar/width` を削除
+- TODO.md: Phase 3 から mute / session_order を削除、Phase 5 の `--context` フォーマットと Phase 6 の muted 抑制を削除
+- README.md / setup.md: Configuration files 表と `~/.config/tmux-sidebar/width` の案内を削除

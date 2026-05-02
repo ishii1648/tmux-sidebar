@@ -82,7 +82,7 @@ set-hook -g client-resized 'run-shell "tmux-sidebar relayout"'
 >
 > `tmux-sidebar relayout` は `select-layout` で window レイアウト全体を再構築し、sidebar を固定幅に、残りを非 sidebar ペインに均等配分するため、特定のペインだけがドリフトすることがない。nested split を含むレイアウトや sidebar が leaf top-level でないレイアウトはサポート外で、その場合は従来どおり `resize-pane -x` で sidebar 幅だけ戻すフォールバックが走る。
 
-幅をカスタマイズする場合は `~/.config/tmux-sidebar/width` に列数を書き出すか、環境変数 `TMUX_SIDEBAR_WIDTH=N` を設定する。`relayout` はこの値を読むので、設定したら §1 の `after-new-window` / `after-new-session` の `-l 40` も同じ値に揃える。
+幅をカスタマイズする場合は環境変数 `TMUX_SIDEBAR_WIDTH=N` を設定する。`relayout` はこの値を読むので、設定したら §1 の `after-new-window` / `after-new-session` の `-l 40` も同じ値に揃える。
 
 ## 5. SIGUSR1 による即時更新通知（推奨）
 

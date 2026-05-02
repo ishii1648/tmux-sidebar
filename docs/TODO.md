@@ -44,16 +44,16 @@ session 装飾の永続化。
 
 ### config 拡張
 
-- [ ] `internal/config.Config` に `PinnedSessions` を追加
-- [ ] `~/.config/tmux-sidebar/pinned_sessions` を read/write
-- [ ] 1 行 1 entry、`#` でコメントの形式を踏襲
+- [x] `internal/config.Config` に `PinnedSessions` を追加
+- [x] `~/.config/tmux-sidebar/pinned_sessions` を read/write
+- [x] 1 行 1 entry、`#` でコメントの形式を踏襲
 
 ### pin toggle
 
-- [ ] `p` で pin toggle（pinned_sessions ファイル更新 + reload）
-- [ ] pinned session header に `📌` 表示
-- [ ] pinned 群と unpinned 群の境界に区切り線
-- [ ] hidden > pinned > 通常順 の優先関係をテスト
+- [x] `p` で pin toggle（pinned_sessions ファイル更新 + reload）
+- [x] pinned session header に `📌` 表示
+- [x] pinned 群と unpinned 群の境界に区切り線
+- [x] hidden > pinned > 通常順 の優先関係をテスト
 
 ---
 

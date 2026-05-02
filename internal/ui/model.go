@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,6 +65,9 @@ type ItemKind int
 const (
 	ItemSession ItemKind = iota
 	ItemWindow
+	// ItemDivider is the horizontal rule rendered between the pinned and
+	// unpinned session groups. Cursor logic skips it like a session header.
+	ItemDivider
 )
 
 // ListItem is a single rendered row in the sidebar list.
@@ -185,11 +189,14 @@ type Model struct {
 	promptCache      map[string]string  // agent:sessionID → initial prompt text (cached)
 	cursorPrompt     string             // initial prompt for the window currently under cursor
 	currentSessionID string             // tmux session ID of the pane running this process (e.g. "$3")
+	pinnedPath       string             // path to pinned_sessions for write-back on `p` toggle
 }
 
 // New creates a new Model. currentSessionID and currentWinID identify this
 // sidebar's own pane; they are determined once at startup and never change.
-func New(tc tmux.Client, sr state.Reader, width int, currentSessionID, currentWinID string, cfg config.Config, initialFocused bool) *Model {
+// pinnedPath is the destination of write-back when the user toggles a pin
+// (`p` key); pass config.PinnedConfigPath() in production.
+func New(tc tmux.Client, sr state.Reader, width int, currentSessionID, currentWinID string, cfg config.Config, pinnedPath string, initialFocused bool) *Model {
 	return &Model{
 		tmuxClient:       tc,
 		stateReader:      sr,
@@ -201,6 +208,7 @@ func New(tc tmux.Client, sr state.Reader, width int, currentSessionID, currentWi
 		focused:          initialFocused,
 		currentSessionID: currentSessionID,
 		currentWinID:     currentWinID,
+		pinnedPath:       pinnedPath,
 	}
 }
 
@@ -276,12 +284,28 @@ func (m *Model) loadData() tea.Cmd {
 			}
 		}
 
-		var items []ListItem
+		// Split sessions into pinned (config order) and unpinned (tmux order).
+		// Hidden sessions are dropped before the split so a session that is
+		// both hidden and pinned never appears.
+		var pinnedSIDs, unpinnedSIDs []string
 		for _, sid := range sessionOrder {
 			sname := sessionNames[sid]
 			if m.cfg.IsHiddenSession(sname) {
 				continue
 			}
+			if m.cfg.IsPinnedSession(sname) {
+				pinnedSIDs = append(pinnedSIDs, sid)
+			} else {
+				unpinnedSIDs = append(unpinnedSIDs, sid)
+			}
+		}
+		// Sort pinned sessions by their order in pinned_sessions, not by tmux
+		// enumeration. Stable sort on the int key preserves enumeration order
+		// for ties (shouldn't happen with unique names but cheap insurance).
+		sortPinnedByConfigOrder(pinnedSIDs, sessionNames, &m.cfg)
+
+		appendSession := func(items []ListItem, sid string) []ListItem {
+			sname := sessionNames[sid]
 			items = append(items, ListItem{
 				Kind:        ItemSession,
 				SessionName: sname,
@@ -302,6 +326,20 @@ func (m *Model) loadData() tea.Cmd {
 				}
 				items = append(items, item)
 			}
+			return items
+		}
+
+		var items []ListItem
+		for _, sid := range pinnedSIDs {
+			items = appendSession(items, sid)
+		}
+		// Divider only when both groups are non-empty — a lone group should
+		// not be visually offset.
+		if len(pinnedSIDs) > 0 && len(unpinnedSIDs) > 0 {
+			items = append(items, ListItem{Kind: ItemDivider})
+		}
+		for _, sid := range unpinnedSIDs {
+			items = appendSession(items, sid)
 		}
 
 		// Determine the currently active window for this sidebar's own session.
@@ -319,6 +357,23 @@ func (m *Model) loadData() tea.Cmd {
 
 		return dataMsg{items: items, winPaneNums: winPanes, activeWinID: activeWinID}
 	}
+}
+
+// sortPinnedByConfigOrder sorts session IDs in-place by the index of their
+// session name in cfg.PinnedSessions. Sessions whose name is not pinned end
+// up at the end (PinnedOrder returns -1; treat as +∞ for sorting).
+func sortPinnedByConfigOrder(sids []string, names map[string]string, cfg *config.Config) {
+	sort.SliceStable(sids, func(i, j int) bool {
+		oi := cfg.PinnedOrder(names[sids[i]])
+		oj := cfg.PinnedOrder(names[sids[j]])
+		if oi < 0 {
+			oi = int(^uint(0) >> 1)
+		}
+		if oj < 0 {
+			oj = int(^uint(0) >> 1)
+		}
+		return oi < oj
+	})
 }
 
 // loadStateOnly reads state files without spawning any tmux process.
@@ -672,6 +727,8 @@ func (m *Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 'D':
 			m.requestKillSession()
 			return m, nil
+		case 'p':
+			return m, m.togglePin()
 		}
 	}
 	return m, nil
@@ -732,6 +789,37 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// togglePin flips the pin state of the session that owns the cursor's window
+// and persists the new pinned_sessions file. Triggers a reload so the view
+// re-sorts immediately. Cursor stays anchored to the same window via
+// cursorWinID across the reload.
+func (m *Model) togglePin() tea.Cmd {
+	visible := m.visibleItems()
+	if m.cursor >= len(visible) {
+		return nil
+	}
+	item := visible[m.cursor]
+	if item.Kind != ItemWindow || item.SessionName == "" {
+		return nil
+	}
+	name := item.SessionName
+	updated := m.cfg.TogglePinned(name)
+	if m.pinnedPath != "" {
+		if err := config.WritePinnedSessions(m.pinnedPath, updated); err != nil {
+			m.message = "pin: " + err.Error()
+			// Roll back the in-memory change so view stays in sync with disk.
+			m.cfg.TogglePinned(name)
+			return nil
+		}
+	}
+	if m.cfg.IsPinnedSession(name) {
+		m.message = "pinned: " + name
+	} else {
+		m.message = "unpinned: " + name
+	}
+	return m.loadData()
 }
 
 // requestKillWindow stages a confirmation prompt for the window under the cursor.
@@ -1081,7 +1169,7 @@ func (m *Model) View() string {
 		sb.WriteString(styleCursor.Render("> ") + m.searchQuery + "▏\n")
 		sb.WriteString(styleFaint.Render(strings.Repeat("─", m.width)) + "\n")
 	} else {
-		sb.WriteString(styleFaint.Render("> /:search d:close D:kill") + "\n")
+		sb.WriteString(styleFaint.Render("> /:search d:close D:kill p:pin") + "\n")
 	}
 
 	// Session / window list
@@ -1099,7 +1187,13 @@ func (m *Model) View() string {
 		item := visible[i]
 		switch item.Kind {
 		case ItemSession:
-			sb.WriteString(styleSession.Render("▾ "+item.SessionName) + "\n")
+			label := "▾ " + item.SessionName
+			if m.cfg.IsPinnedSession(item.SessionName) {
+				label = "📌 " + item.SessionName
+			}
+			sb.WriteString(styleSession.Render(label) + "\n")
+		case ItemDivider:
+			sb.WriteString(styleFaint.Render(strings.Repeat("─", m.width)) + "\n")
 		case ItemWindow:
 			cursor := "  "
 			if i == m.cursor {
@@ -1212,7 +1306,7 @@ func footerHint(mode inputMode) string {
 	if mode == modeSearch {
 		return "Esc:cancel ^C:quit"
 	}
-	return "/:search d:close D:kill ^C:quit"
+	return "/:search d:close D:kill p:pin ^C:quit"
 }
 
 // confirmPromptText builds the y/N question shown in the footer. The wording

@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -9,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ishii1648/tmux-sidebar/internal/config"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 	"github.com/muesli/termenv"
@@ -1402,6 +1405,274 @@ func TestKillResultMsg_ErrorMessage(t *testing.T) {
 	m.Update(killResultMsg{err: fmt.Errorf("boom")})
 	if !strings.Contains(m.message, "boom") {
 		t.Errorf("message should include error text, got %q", m.message)
+	}
+}
+
+// ── pin (Phase 3) ───────────────────────────────────────────────────────────
+
+// pinPanes returns three sessions (work / infra / scratch) with one window
+// each, in tmux enumeration order. Used by pin tests so the order of work →
+// infra → scratch represents the default unpinned layout.
+func pinPanes() []tmux.PaneInfo {
+	return []tmux.PaneInfo{
+		pane("$1", "@1", true, true, 1),
+		pane("$2", "@2", true, true, 2),
+		pane("$3", "@3", true, true, 3),
+	}
+}
+
+// withSessionNames overrides the auto-generated session names ("sess$1" etc.)
+// from pane(...) so tests can assert against meaningful names.
+func withSessionNames(panes []tmux.PaneInfo, names map[string]string) []tmux.PaneInfo {
+	out := make([]tmux.PaneInfo, len(panes))
+	for i, p := range panes {
+		if n, ok := names[p.SessionID]; ok {
+			p.SessionName = n
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// loadModelWithPanes builds a Model wired with given panes and config and
+// invokes loadData() once so m.items reflects the desired layout.
+func loadModelWithPanes(panes []tmux.PaneInfo, cfg config.Config, pinnedPath string) *Model {
+	m := newLoadDataModel(panes, "$1")
+	m.cfg = cfg
+	m.pinnedPath = pinnedPath
+	m.focused = true
+	m.width = 40
+	msg := m.loadData()().(dataMsg)
+	m.items = msg.items
+	m.winPaneNums = msg.winPaneNums
+	m.activeWinID = msg.activeWinID
+	return m
+}
+
+func TestPin_LoadDataPlacesPinnedFirst(t *testing.T) {
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	cfg := config.Config{HiddenSessions: map[string]struct{}{}}
+	cfg.TogglePinned("scratch") // pin scratch
+	m := loadModelWithPanes(panes, cfg, "")
+
+	// Expect order: scratch (pinned) → divider → work → infra (tmux order)
+	var names []string
+	sawDivider := false
+	for _, item := range m.items {
+		switch item.Kind {
+		case ItemSession:
+			names = append(names, item.SessionName)
+		case ItemDivider:
+			sawDivider = true
+		}
+	}
+	want := []string{"scratch", "work", "infra"}
+	if len(names) != len(want) {
+		t.Fatalf("session order = %v, want %v", names, want)
+	}
+	for i, n := range want {
+		if names[i] != n {
+			t.Errorf("session[%d] = %q, want %q", i, names[i], n)
+		}
+	}
+	if !sawDivider {
+		t.Errorf("expected ItemDivider between pinned and unpinned")
+	}
+}
+
+func TestPin_NoDividerWhenAllPinnedOrAllUnpinned(t *testing.T) {
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	// All unpinned: no divider.
+	cfg := config.Config{HiddenSessions: map[string]struct{}{}}
+	m := loadModelWithPanes(panes, cfg, "")
+	for _, it := range m.items {
+		if it.Kind == ItemDivider {
+			t.Errorf("no divider expected when nothing is pinned")
+		}
+	}
+	// All pinned: no divider either.
+	cfg2 := config.Config{HiddenSessions: map[string]struct{}{}}
+	cfg2.TogglePinned("work")
+	cfg2.TogglePinned("infra")
+	cfg2.TogglePinned("scratch")
+	m2 := loadModelWithPanes(panes, cfg2, "")
+	for _, it := range m2.items {
+		if it.Kind == ItemDivider {
+			t.Errorf("no divider expected when everything is pinned")
+		}
+	}
+}
+
+func TestPin_PinnedOrderFollowsConfigOrder(t *testing.T) {
+	// Config order: scratch → work, but tmux enum order is work → infra → scratch.
+	// Pinned section must use config order (scratch first), not tmux order.
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	cfg := config.Config{HiddenSessions: map[string]struct{}{}}
+	cfg.TogglePinned("scratch")
+	cfg.TogglePinned("work")
+	m := loadModelWithPanes(panes, cfg, "")
+
+	var pinnedNames []string
+	for _, item := range m.items {
+		if item.Kind == ItemDivider {
+			break
+		}
+		if item.Kind == ItemSession {
+			pinnedNames = append(pinnedNames, item.SessionName)
+		}
+	}
+	want := []string{"scratch", "work"}
+	if len(pinnedNames) != len(want) {
+		t.Fatalf("pinned section = %v, want %v", pinnedNames, want)
+	}
+	for i, n := range want {
+		if pinnedNames[i] != n {
+			t.Errorf("pinned[%d] = %q, want %q", i, pinnedNames[i], n)
+		}
+	}
+}
+
+func TestPin_HiddenWinsOverPinned(t *testing.T) {
+	// "scratch" is both hidden and pinned — hidden must win, scratch is dropped.
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	cfg := config.Config{HiddenSessions: map[string]struct{}{"scratch": {}}}
+	cfg.TogglePinned("scratch")
+	m := loadModelWithPanes(panes, cfg, "")
+
+	for _, item := range m.items {
+		if item.Kind == ItemSession && item.SessionName == "scratch" {
+			t.Errorf("hidden session 'scratch' must not appear even when pinned")
+		}
+	}
+	// Also no divider — scratch was the only pinned item, and it's filtered out.
+	for _, item := range m.items {
+		if item.Kind == ItemDivider {
+			t.Errorf("divider should be absent when pinned set is fully hidden")
+		}
+	}
+}
+
+func TestPin_KeyTogglesPinAndPersists(t *testing.T) {
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	dir := t.TempDir()
+	pinnedPath := filepath.Join(dir, "pinned_sessions")
+	cfg := config.Config{HiddenSessions: map[string]struct{}{}}
+	m := loadModelWithPanes(panes, cfg, pinnedPath)
+
+	// Cursor must land on a window row; relocateCursor places it on activeWinID
+	// or the first window. Move cursor to first window explicitly for clarity.
+	m.cursor = 1 // first window (work)
+	m.cursorWinID = "@1"
+
+	// Toggle on
+	m.Update(key('p'))
+	if !m.cfg.IsPinnedSession("work") {
+		t.Errorf("after p: 'work' should be pinned")
+	}
+	data, err := os.ReadFile(pinnedPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "work\n") {
+		t.Errorf("file = %q, want to contain 'work\\n'", string(data))
+	}
+
+	// Toggle off
+	m.Update(key('p'))
+	if m.cfg.IsPinnedSession("work") {
+		t.Errorf("after second p: 'work' should be unpinned")
+	}
+	data2, _ := os.ReadFile(pinnedPath)
+	if strings.Contains(string(data2), "work") {
+		t.Errorf("file = %q, should no longer contain 'work'", string(data2))
+	}
+}
+
+func TestPin_KeyIgnoredOnNonWindowItems(t *testing.T) {
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	dir := t.TempDir()
+	pinnedPath := filepath.Join(dir, "pinned_sessions")
+	cfg := config.Config{HiddenSessions: map[string]struct{}{}}
+	m := loadModelWithPanes(panes, cfg, pinnedPath)
+
+	// Force cursor onto a session header (which is normally skipped). This
+	// validates togglePin's defensive bail-out.
+	m.cursor = 0
+	m.Update(key('p'))
+	if _, err := os.Stat(pinnedPath); err == nil {
+		t.Errorf("pinned_sessions must not be written when cursor is on a non-window item")
+	}
+}
+
+func TestView_PinnedSessionShowsEmoji(t *testing.T) {
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "work"},
+		{Kind: ItemWindow, SessionName: "work", Window: &tmux.Window{ID: "@1", Index: 0, Name: "main"}},
+	}
+	m := newTestModel(items, 1, true)
+	m.cfg = config.Config{HiddenSessions: map[string]struct{}{}}
+	m.cfg.TogglePinned("work")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "📌 work") {
+		t.Errorf("pinned session should be prefixed with 📌; view:\n%s", view)
+	}
+	if strings.Contains(view, "▾ work") {
+		t.Errorf("pinned session should not use ▾ prefix; view:\n%s", view)
+	}
+}
+
+func TestView_DividerRenderedBetweenGroups(t *testing.T) {
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "pinned-s"},
+		{Kind: ItemWindow, SessionName: "pinned-s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "p"}},
+		{Kind: ItemDivider},
+		{Kind: ItemSession, SessionName: "free-s"},
+		{Kind: ItemWindow, SessionName: "free-s", Window: &tmux.Window{ID: "@2", Index: 0, Name: "f"}},
+	}
+	m := newTestModel(items, 1, true)
+	m.cfg = config.Config{HiddenSessions: map[string]struct{}{}}
+	m.cfg.TogglePinned("pinned-s")
+	view := stripANSI(m.View())
+	// The divider should appear after the pinned section's window row.
+	pinnedIdx := strings.Index(view, "p")
+	dividerIdx := strings.Index(view, strings.Repeat("─", 40))
+	freeIdx := strings.Index(view, "free-s")
+	if pinnedIdx < 0 || dividerIdx < 0 || freeIdx < 0 {
+		t.Fatalf("missing landmarks: pinnedIdx=%d dividerIdx=%d freeIdx=%d\n%s", pinnedIdx, dividerIdx, freeIdx, view)
+	}
+	if !(pinnedIdx < dividerIdx && dividerIdx < freeIdx) {
+		t.Errorf("expected pinned-window < divider < free-session in view; got %d < %d < %d\n%s", pinnedIdx, dividerIdx, freeIdx, view)
+	}
+}
+
+func TestPin_CursorMoveSkipsDivider(t *testing.T) {
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "p"},
+		{Kind: ItemWindow, SessionName: "p", Window: &tmux.Window{ID: "@1", Index: 0, Name: "p1"}},
+		{Kind: ItemDivider},
+		{Kind: ItemSession, SessionName: "u"},
+		{Kind: ItemWindow, SessionName: "u", Window: &tmux.Window{ID: "@2", Index: 0, Name: "u1"}},
+	}
+	m := newTestModel(items, 1, true)
+	m.Update(key('j'))
+	if m.cursor != 4 {
+		t.Errorf("j must skip divider+session header; cursor = %d, want 4", m.cursor)
+	}
+	m.Update(key('k'))
+	if m.cursor != 1 {
+		t.Errorf("k must skip divider+session header upward; cursor = %d, want 1", m.cursor)
 	}
 }
 

@@ -93,14 +93,13 @@ destructive 操作（close 系）は **state file の `running` / `permission` /
 
 ### Pin
 
-| キー | 動作 |
-|---|---|
-| `p` | カーソル session の pin toggle |
+pin は `~/.config/tmux-sidebar/pinned_sessions` ファイルでのみ管理する（キー操作は提供しない）。
+pinned session は上部に持ち上げられ、`📌 <name>` で表示される。pinned 群と unpinned 群の境界には区切り線が入る。
+ファイルの記述順がそのまま表示順になる。詳細は [Configuration files](#configuration-files) と `docs/setup.md` 参照。
 
-`p` を押すとカーソル window の **所属 session** が pin/unpin される。pinned session は上部に持ち上げられ、`📌 <name>` で表示される。pinned 群と unpinned 群の境界には区切り線が入る。
-状態は `~/.config/tmux-sidebar/pinned_sessions` に書き戻され、再起動を跨いで保持される（後述 [Configuration files](#configuration-files)）。
+**pin は削除保護を兼ねる**: pinned session に対する `D`（session kill）はブロックされ、`pinned_sessions` から該当行を削除して unpin することを促すメッセージが footer に出る。`d`（window kill）は session 単位ではないため、pin の影響を受けない。
 
-**pin は削除保護を兼ねる**: pinned session に対する `D`（session kill）はブロックされ、先に `p` で unpin することを促すメッセージが footer に出る。`d`（window kill）は session 単位ではないため、pin の影響を受けない。
+ファイル変更は sidebar 内部の reload tick（最大 10 秒間隔）で自動的に反映される。即時反映したい場合は tmux hook 経由で `SIGUSR1` を送るか、`tmux-sidebar restart` で再起動する。
 
 ### その他
 

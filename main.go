@@ -137,7 +137,7 @@ Subcommands:
 		}
 	}
 
-	model := ui.New(tc, sr, width, currentSessionID, currentWinID, cfg, config.PinnedConfigPath(), initialFocused)
+	model := ui.New(tc, sr, width, currentSessionID, currentWinID, cfg, config.DefaultConfigPath(), initialFocused)
 
 	// Prevent tmux from greying out the sidebar pane when it loses focus.
 	// window-style is set at pane level so only this pane is affected; the

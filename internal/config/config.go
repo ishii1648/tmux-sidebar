@@ -142,26 +142,6 @@ func (c *Config) setPinned(names []string) {
 	}
 }
 
-// WritePinnedSessions writes names to path, one entry per line. Parent
-// directory is created on demand. Used by the 'p' toggle in the UI.
-func WritePinnedSessions(path string, names []string) error {
-	if path == "" {
-		return fmt.Errorf("config: empty pinned_sessions path")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("config: mkdir %s: %w", filepath.Dir(path), err)
-	}
-	var b strings.Builder
-	for _, n := range names {
-		b.WriteString(n)
-		b.WriteByte('\n')
-	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
-		return fmt.Errorf("config: write %s: %w", path, err)
-	}
-	return nil
-}
-
 // loadWidth reads the sidebar width from TMUX_SIDEBAR_WIDTH or
 // ~/.config/tmux-sidebar/width. Falls back to DefaultSidebarWidth when
 // unset, unparseable, or below MinSidebarWidth.
@@ -207,26 +187,3 @@ func (c *Config) PinnedOrder(name string) int {
 	return -1
 }
 
-// TogglePinned flips name's pin state in-memory and returns the new ordered
-// list to be persisted by callers via WritePinnedSessions.
-func (c *Config) TogglePinned(name string) []string {
-	if c.pinnedIndex == nil {
-		c.pinnedIndex = map[string]int{}
-	}
-	if _, ok := c.pinnedIndex[name]; ok {
-		// Unpin: drop name and rebuild the index.
-		next := make([]string, 0, len(c.PinnedSessions))
-		for _, n := range c.PinnedSessions {
-			if n != name {
-				next = append(next, n)
-			}
-		}
-		c.setPinned(next)
-	} else {
-		c.PinnedSessions = append(c.PinnedSessions, name)
-		c.pinnedIndex[name] = len(c.PinnedSessions) - 1
-	}
-	out := make([]string, len(c.PinnedSessions))
-	copy(out, c.PinnedSessions)
-	return out
-}

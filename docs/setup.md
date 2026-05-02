@@ -201,14 +201,8 @@ fi
 ### `pinned_sessions`
 
 pin した session には `📌 <name>` が付き、unpinned 群との境界に区切り線が入る。
-編集方法は **2 通り** あり、どちらも結果は同じファイルに反映される。
-
-1. **`p` キーで toggle**（推奨）
-   サイドバー focus 中、カーソル window が所属する session を即時 pin/unpin する。
-   sidebar が自動でファイルを書き戻し（行末追記 / 該当行削除）、即座に並びへ反映される。
-2. **エディタで直接編集**
-   ファイルを開き、上から並べたい順に session 名を書く。
-   tmux の session 列挙順とは独立しているため、運用優先度に合わせて並べ替えられる。
+編集はエディタで直接行う（pin/unpin の頻度は低く、キーバインドは提供しない）。
+ファイルを開いて上から並べたい順に session 名を書く。tmux の session 列挙順とは独立しているため、運用優先度に合わせて並べ替えられる。
 
 例:
 
@@ -231,12 +225,17 @@ scratch
 tmw-popup
 ```
 
+### 反映タイミング
+
+ファイル編集後の反映は sidebar 内部の reload tick（最大 10 秒間隔）で自動的に行われる。
+即時反映したい場合は §5 の SIGUSR1 hook が設定されていれば tmux 経由で発火させるか、`tmux-sidebar restart` でサイドバーを再起動する。
+
 ### kill との関係（削除保護）
 
-pin は **削除保護** も兼ねる。`D`（session kill）はカーソル window が所属する session が pinned のとき **ブロックされる**。footer に以下のメッセージが出るので、`p` で unpin してから改めて `D` を押す。
+pin は **削除保護** も兼ねる。`D`（session kill）はカーソル window が所属する session が pinned のとき **ブロックされる**。footer に以下のメッセージが出るので、`pinned_sessions` から該当行を削除してから改めて `D` を押す。
 
 ```
-pinned: press 'p' to unpin '<name>' before kill
+pinned: remove '<name>' from pinned_sessions before kill
 ```
 
 これにより:

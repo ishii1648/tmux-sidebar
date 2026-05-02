@@ -48,12 +48,13 @@ session 装飾の永続化。
 - [x] `~/.config/tmux-sidebar/pinned_sessions` を read/write
 - [x] 1 行 1 entry、`#` でコメントの形式を踏襲
 
-### pin toggle
+### 表示と保護
 
-- [x] `p` で pin toggle（pinned_sessions ファイル更新 + reload）
 - [x] pinned session header に `📌` 表示
 - [x] pinned 群と unpinned 群の境界に区切り線
 - [x] hidden > pinned > 通常順 の優先関係をテスト
+- [x] pinned session への `D`（session kill）はブロックする削除保護
+- [x] ファイル編集の自動反映（loadData 起点で config 再読込）
 
 ---
 

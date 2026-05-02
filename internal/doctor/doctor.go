@@ -567,6 +567,28 @@ func checkTmuxBindings(d *confDoc) []checkResult {
 	return results
 }
 
+// parseTmuxVersion extracts (major, minor) from `tmux -V` output. Examples:
+//
+//	"tmux 3.4"          → (3, 4, true)
+//	"tmux 3.2a"         → (3, 2, true)
+//	"tmux next-3.5"     → (3, 5, true)
+//	"tmux master"       → (0, 0, false)
+//
+// Returns ok=false when no major.minor pattern is found.
+func parseTmuxVersion(s string) (major, minor int, ok bool) {
+	re := regexp.MustCompile(`(\d+)\.(\d+)`)
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return 0, 0, false
+	}
+	maj, err1 := strconv.Atoi(m[1])
+	min, err2 := strconv.Atoi(m[2])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return maj, min, true
+}
+
 // extractFirstInt finds the integer following the given flag (e.g. "-l 40").
 func extractFirstInt(line, flag string) int {
 	re := regexp.MustCompile(regexp.QuoteMeta(flag) + `\s+(\d+)`)
@@ -634,7 +656,24 @@ func checkRuntime() []checkResult {
 	var results []checkResult
 
 	if out, err := exec.Command("tmux", "-V").Output(); err == nil {
-		results = append(results, checkResult{label: "tmux", sev: sevOK, detail: strings.TrimSpace(string(out))})
+		ver := strings.TrimSpace(string(out))
+		results = append(results, checkResult{label: "tmux", sev: sevOK, detail: ver})
+		// Popup picker (Phase 4) needs `display-popup`, introduced in tmux 3.2.
+		// Treat older versions as a warning rather than an error so the rest of
+		// the sidebar (which works on 3.0+) keeps functioning.
+		if maj, min, ok := parseTmuxVersion(ver); ok {
+			if maj < 3 || (maj == 3 && min < 2) {
+				results = append(results, checkResult{
+					label: "tmux popup support", sev: sevWarn,
+					detail: fmt.Sprintf("%d.%d found; popup picker (`N`) requires tmux 3.2+", maj, min),
+				})
+			} else {
+				results = append(results, checkResult{
+					label: "tmux popup support", sev: sevOK,
+					detail: "display-popup available",
+				})
+			}
+		}
 	} else {
 		results = append(results, checkResult{label: "tmux", sev: sevError, detail: "not found in PATH"})
 	}

@@ -123,19 +123,25 @@ ghq 配下の repo を fuzzy filter で選ぶ。
 すでに session として開いている repo は dim 表示し、`Enter` を押すと
 **新規作成せずその session に switch する**（重複作成防止）。
 
-### Step 2: mode 選択
+Step 1 では `Tab` で **launcher (claude / codex)** を切り替えられる。選んだ launcher は次のステップに引き継がれる。`Enter` で次のステップへ進む。
 
-| Mode | 内容 |
-|---|---|
-| `claude` | session 内に Claude Code を起動 |
-| `codex` | session 内に Codex CLI を起動 |
-| `dispatch` | dispatch skill 経由で agent を起動（dotfiles 側 protocol） |
-| `orchestrate` | orchestrate workflow を起動 |
+### Step 2: prompt 入力
 
-### Step 3: mode 別追加設定
+dispatch を発火するための prompt 入力欄が出る。レイアウトは:
 
-mode が要求する場合のみ表示（worktree branch 名、orchestrate chain 種別など）。
-詳細は tmw / 各 skill の指定に従う。
+```
+tab: モード切替  enter: 実行  `:<branch>` で既存 remote branch を checkout
+claude / codex  <repo>
+─────────
+> ▏
+```
+
+- 上の launcher 表示は active（bold + 緑）と inactive（faint）で示される。`Tab` で claude ↔ codex を切り替えられる
+- `Enter` で git worktree 作成 + tmux session 生成 + prompt 投入が実行される
+- prompt の先頭行から branch 名を `feat/<slug>` 形式で自動生成し、入力中にプレビュー表示する
+- 複数行の prompt は **bracketed paste で貼り付け** て入れる（手キー入力での改行は不可、Enter は確定）。CR / CRLF は LF に正規化される。先頭行が branch 名生成に使われ、全文がそのまま launcher に渡る
+- `:<branch>` プレフィックスで先頭行を始めると **branch 接続モード**になる: 指定 branch が local にあればそれを、remote のみなら fetch してから、どこにも無ければ `origin/<default>` から新規作成して worktree を作る。prompt は launcher に渡されず idle で起動する
+- `Esc` で Step 1 に戻る
 
 ### 完了時
 
@@ -196,7 +202,8 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 | サブコマンド | 動作 |
 |---|---|
 | (なし) | sidebar pane mode を起動 |
-| `new` | popup picker mode を起動（通常は sidebar から `N` で間接起動） |
+| `new` | picker TUI を起動。popup として表示するかは呼び出し側（sidebar の `N`、tmux.conf bind-key）が `tmux display-popup -E ...` で決める |
+| `dispatch <repo> [prompt]` | git worktree + tmux session を作成して launcher (claude / codex) を起動する CLI（`/dispatch` skill の engine と共通） |
 | `toggle` | 現在 window の sidebar を toggle |
 | `close` | 現在 window の sidebar を閉じる |
 | `focus-or-open` | sidebar があれば focus、なければ作成 |

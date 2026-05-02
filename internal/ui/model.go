@@ -141,6 +141,18 @@ type killResultMsg struct {
 	err       error
 }
 
+// popupClosedMsg is sent after the new-session popup picker exits. The pane
+// mode reloads tmux state on receipt so the (possibly newly created) session
+// shows up.
+type popupClosedMsg struct {
+	err error
+}
+
+// popupLauncher is the function pane mode invokes to spawn the popup. It is a
+// package variable so tests can swap in a no-op without spawning tmux.
+// Default is launchPopupViaTmux.
+var popupLauncher = launchPopupViaTmux
+
 // Styles used for rendering. Colors use AdaptiveColor so the sidebar works on
 // both light and dark terminal backgrounds.
 var (
@@ -660,6 +672,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadData()
 
+	case popupClosedMsg:
+		if msg.err != nil {
+			m.message = "popup: " + msg.err.Error()
+		}
+		return m, m.loadData()
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -746,6 +764,8 @@ func (m *Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 'D':
 			m.requestKillSession()
 			return m, nil
+		case 'N':
+			return m, m.launchPopupPicker()
 		}
 	}
 	return m, nil
@@ -877,6 +897,97 @@ func (m *Model) killWindowCmd(item ListItem) tea.Cmd {
 		}
 		return killResultMsg{gravePath: gravePath}
 	}
+}
+
+// launchPopupPicker writes the current sessions/pinned snapshot to a temp
+// context file and spawns `tmux display-popup -E tmux-sidebar new
+// --context=<file>`. The bubbletea Cmd blocks until the popup closes, then
+// emits popupClosedMsg so Update can reload state and pick up the new
+// session. The temp file is removed on completion.
+func (m *Model) launchPopupPicker() tea.Cmd {
+	// Build context: open sessions + pinned list + sidebar's own session id.
+	seen := map[string]struct{}{}
+	var sessions []popupSessionInfo
+	for _, it := range m.items {
+		if it.Kind != ItemSession {
+			continue
+		}
+		if _, ok := seen[it.SessionName]; ok {
+			continue
+		}
+		seen[it.SessionName] = struct{}{}
+		sessions = append(sessions, popupSessionInfo{Name: it.SessionName})
+	}
+	var pinned []string
+	pinned = append(pinned, m.cfg.PinnedSessions...)
+	sidebarSID := m.currentSessionID
+
+	return func() tea.Msg {
+		path, err := writePopupContext(sessions, pinned, sidebarSID)
+		if err != nil {
+			return popupClosedMsg{err: err}
+		}
+		defer os.Remove(path)
+		err = popupLauncher(path)
+		return popupClosedMsg{err: err}
+	}
+}
+
+// popupSessionInfo mirrors picker.SessionInfo but is duplicated locally so
+// the ui package does not need to depend on internal/picker (which imports
+// bubbletea + repo).
+type popupSessionInfo struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// writePopupContext encodes the picker context to a temp file and returns its
+// path. JSON shape matches picker.Context.
+func writePopupContext(sessions []popupSessionInfo, pinned []string, sidebarSID string) (string, error) {
+	type contextJSON struct {
+		Sessions         []popupSessionInfo `json:"sessions"`
+		Pinned           []string           `json:"pinned"`
+		SidebarSessionID string             `json:"sidebar_session_id"`
+	}
+	data, err := json.Marshal(contextJSON{
+		Sessions:         sessions,
+		Pinned:           pinned,
+		SidebarSessionID: sidebarSID,
+	})
+	if err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp("", "tmux-sidebar-ctx-*.json")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// launchPopupViaTmux spawns `tmux display-popup -E -w 80 -h 24
+// 'tmux-sidebar new --context=<file>'`. -E makes tmux wait for and propagate
+// the child's exit code, so the returned error reflects the popup-side
+// failure. Popup geometry is owned by the call site (the subcommand itself
+// does no popup framing); pane mode is the call site for the `N` key, so
+// the geometry lives here.
+func launchPopupViaTmux(ctxPath string) error {
+	binary, err := os.Executable()
+	if err != nil {
+		binary = "tmux-sidebar"
+	}
+	cmd := fmt.Sprintf("%s new --context=%s", shellQuote(binary), shellQuote(ctxPath))
+	return exec.Command("tmux", "display-popup", "-E", "-w", "80", "-h", "24", cmd).Run()
+}
+
+// shellQuote single-quotes s and escapes embedded single quotes. Sufficient
+// for argv strings passed to `tmux display-popup`, which feeds them through
+// `$SHELL -c`.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // killSessionCmd captures the active pane of the session and then kills it.
@@ -1182,7 +1293,7 @@ func (m *Model) View() string {
 		sb.WriteString(styleCursor.Render("> ") + m.searchQuery + "▏\n")
 		sb.WriteString(styleFaint.Render(strings.Repeat("─", m.width)) + "\n")
 	} else {
-		sb.WriteString(styleFaint.Render("> /:search d:close D:kill") + "\n")
+		sb.WriteString(styleFaint.Render("> /:search d:close D:kill N:new") + "\n")
 	}
 
 	// Session / window list
@@ -1319,7 +1430,7 @@ func footerHint(mode inputMode) string {
 	if mode == modeSearch {
 		return "Esc:cancel ^C:quit"
 	}
-	return "/:search d:close D:kill ^C:quit"
+	return "/:search d:close D:kill N:new ^C:quit"
 }
 
 // confirmPromptText builds the y/N question shown in the footer. The wording

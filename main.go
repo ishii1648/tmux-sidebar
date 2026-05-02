@@ -12,7 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fsnotify/fsnotify"
 	"github.com/ishii1648/tmux-sidebar/internal/config"
+	"github.com/ishii1648/tmux-sidebar/internal/dispatch"
 	"github.com/ishii1648/tmux-sidebar/internal/doctor"
+	"github.com/ishii1648/tmux-sidebar/internal/picker"
+	"github.com/ishii1648/tmux-sidebar/internal/repo"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 	"github.com/ishii1648/tmux-sidebar/internal/ui"
@@ -33,6 +36,9 @@ func main() {
 
 Subcommands:
   (none)                    Start the TUI sidebar
+  new [--context=<file>]    Popup picker for new session (usually invoked via N)
+  dispatch <repo> [prompt] [flags]
+                            Create a worktree + tmux session and start a launcher
   close                     Close sidebar if open
   toggle                    Open sidebar if closed, close if open
   focus-or-open             Focus sidebar if open, open if closed
@@ -91,6 +97,18 @@ Subcommands:
 		case "upgrade":
 			if err := upgrade.Run(version); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar upgrade: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "new":
+			if err := runNew(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar new: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "dispatch":
+			if err := runDispatch(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar dispatch: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -519,4 +537,150 @@ func sidebarWidth() int {
 		return config.DefaultSidebarWidth
 	}
 	return cfg.Width
+}
+
+// runNew is the entry point for `tmux-sidebar new [--context=<file>]`. It
+// runs the picker bubbletea program in the current terminal. Popup framing
+// is *not* the subcommand's responsibility — callers (sidebar pane mode,
+// tmux.conf bind-key) decide whether to invoke this via `tmux display-popup
+// -E ...`, a split-window, or a plain shell. Decoupling popup orchestration
+// from the picker keeps the subcommand predictable and the popup geometry
+// configurable from the call site.
+func runNew(args []string) error {
+	contextPath := ""
+	for _, a := range args {
+		if strings.HasPrefix(a, "--context=") {
+			contextPath = strings.TrimPrefix(a, "--context=")
+		}
+	}
+
+	ctx, err := picker.ReadContext(contextPath)
+	if err != nil {
+		return err
+	}
+	repos, err := repo.List()
+	if err != nil {
+		return err
+	}
+	if len(repos) == 0 {
+		return fmt.Errorf("no repositories found under ghq")
+	}
+
+	model := picker.New(ctx, repos, picker.ExecRunner{})
+	// No alt-screen: the popup itself owns its terminal canvas; alt-screen
+	// inside a popup leaves stale escape sequences when display-popup tears
+	// it down.
+	p := tea.NewProgram(model)
+	_, err = p.Run()
+	return err
+}
+
+// runDispatch is the entry point for `tmux-sidebar dispatch <repo> [prompt]`.
+// CLI-compatible with dotfiles' dispatch.sh launch subcommand so the existing
+// skill / popup launcher can be migrated to call this binary instead.
+func runDispatch(args []string) error {
+	opts, err := parseDispatchArgs(args)
+	if err != nil {
+		return err
+	}
+	res, err := dispatch.Launch(opts)
+	if err != nil {
+		return err
+	}
+	// Structured output mirrors dispatch.sh so the Claude skill / scripts
+	// that grep for these keys keep working.
+	fmt.Println("STATUS: LAUNCHED")
+	fmt.Println("SESSION:", res.SessionName)
+	fmt.Println("WINDOW:", res.WindowIndex)
+	fmt.Println("PANE_ID:", res.PaneID)
+	fmt.Println("REPO:", res.RepoPath)
+	fmt.Println("WORK_DIR:", res.WorkDir)
+	if res.Branch != "" {
+		fmt.Println("BRANCH:", res.Branch)
+	}
+	return nil
+}
+
+// parseDispatchArgs converts the argv tail of `tmux-sidebar dispatch ...`
+// into dispatch.Options. Flag handling matches dispatch.sh:
+//   - first positional argument is repo, second is prompt
+//   - --launcher / --session / --window / --branch / --prompt-file take a value
+//   - --no-worktree / --no-prompt / --in-session are bare flags
+//
+// --in-session sets Session to the current tmux session and SessionExplicit
+// to true (matching the SKILL.md abstraction layered on top of dispatch.sh).
+// When prompt is unset and a Prompt argument was generated from PromptFile
+// the caller is responsible for ensuring at least one is set; validation
+// happens inside dispatch.Launch.
+func parseDispatchArgs(args []string) (dispatch.Options, error) {
+	opts := dispatch.Options{Launcher: dispatch.LauncherClaude}
+	inSession := false
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "--launcher":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--launcher requires a value")
+			}
+			opts.Launcher = dispatch.Launcher(args[i+1])
+			i += 2
+		case a == "--session":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--session requires a value")
+			}
+			opts.Session = args[i+1]
+			opts.SessionExplicit = true
+			i += 2
+		case a == "--window":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--window requires a value")
+			}
+			opts.Window = args[i+1]
+			i += 2
+		case a == "--branch":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--branch requires a value")
+			}
+			opts.Branch = args[i+1]
+			i += 2
+		case a == "--prompt-file":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--prompt-file requires a value")
+			}
+			opts.PromptFile = args[i+1]
+			i += 2
+		case a == "--no-worktree":
+			opts.NoWorktree = true
+			i++
+		case a == "--no-prompt":
+			opts.NoPrompt = true
+			i++
+		case a == "--in-session":
+			inSession = true
+			i++
+		case a == "--switch":
+			opts.Switch = true
+			i++
+		case strings.HasPrefix(a, "--"):
+			return opts, fmt.Errorf("unknown flag: %s", a)
+		default:
+			switch {
+			case opts.Repo == "":
+				opts.Repo = a
+			case opts.Prompt == "" && opts.PromptFile == "":
+				opts.Prompt = a
+			}
+			i++
+		}
+	}
+	if inSession {
+		current, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
+		if err != nil {
+			return opts, fmt.Errorf("--in-session: cannot query current tmux session: %w", err)
+		}
+		opts.Session = strings.TrimSpace(string(current))
+		opts.SessionExplicit = true
+	}
+	return opts, nil
 }

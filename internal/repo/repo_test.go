@@ -1,0 +1,84 @@
+package repo
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestParseList(t *testing.T) {
+	out := "/Users/sho/ghq/github.com/foo/bar\n/Users/sho/ghq/github.com/baz/qux\n\n"
+	got := parseList(out)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Name != "github.com/foo/bar" || got[0].Basename != "bar" {
+		t.Errorf("got[0] = %+v", got[0])
+	}
+	if got[1].Path != "/Users/sho/ghq/github.com/baz/qux" {
+		t.Errorf("got[1].Path = %q", got[1].Path)
+	}
+}
+
+func TestParseListExcludesWorktrees(t *testing.T) {
+	out := strings.Join([]string{
+		"/Users/sho/ghq/github.com/foo/bar",
+		"/Users/sho/ghq/github.com/foo/bar@feat-x",      // worktree
+		"/Users/sho/ghq/github.com/foo/bar@feat-y",      // worktree
+		"/Users/sho/ghq/github.com/baz/qux",             // main
+		"/Users/sho/ghq/github.com/baz/qux@hotfix-1",    // worktree
+	}, "\n")
+	got := parseList(out)
+	if len(got) != 2 {
+		t.Fatalf("len = %d (entries = %+v), want 2 main repos", len(got), got)
+	}
+	if got[0].Basename != "bar" || got[1].Basename != "qux" {
+		t.Errorf("basenames = [%q, %q], want [bar, qux]", got[0].Basename, got[1].Basename)
+	}
+}
+
+func TestFuzzyMatch(t *testing.T) {
+	cases := []struct {
+		target, query string
+		want          bool
+	}{
+		{"github.com/ishii1648/tmux-sidebar", "tms", true},
+		{"github.com/ishii1648/tmux-sidebar", "TMUX", true},
+		{"github.com/ishii1648/tmux-sidebar", "xyz", false},
+		{"foo", "", true},
+		{"foo", "foobar", false},
+		{"github.com/foo/bar", "g/f/b", true},
+	}
+	for _, c := range cases {
+		if got := FuzzyMatch(c.target, c.query); got != c.want {
+			t.Errorf("FuzzyMatch(%q,%q) = %v want %v", c.target, c.query, got, c.want)
+		}
+	}
+}
+
+func TestFilter(t *testing.T) {
+	repos := []Repo{
+		{Name: "github.com/foo/bar", Basename: "bar"},
+		{Name: "github.com/foo/baz", Basename: "baz"},
+		{Name: "gitlab.com/qux/bar", Basename: "bar"},
+	}
+	got := Filter(repos, "fooba")
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	all := Filter(repos, "")
+	if len(all) != 3 {
+		t.Fatalf("empty query len = %d", len(all))
+	}
+}
+
+func TestSortByBasename(t *testing.T) {
+	repos := []Repo{
+		{Name: "z", Basename: "bar"},
+		{Name: "a", Basename: "foo"},
+		{Name: "b", Basename: "bar"},
+	}
+	SortByBasename(repos)
+	if repos[0].Name != "b" || repos[1].Name != "z" || repos[2].Name != "a" {
+		t.Errorf("sorted = %+v", repos)
+	}
+}

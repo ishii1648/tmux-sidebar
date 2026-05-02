@@ -75,6 +75,9 @@ type Client interface {
 	KillSession(sessionName string) error
 	// KillWindow kills the specified tmux window.
 	KillWindow(sessionName string, windowIndex int) error
+	// CapturePane captures the visible content of the active pane in the given target.
+	// target may be a session ("name"), a window ("name:index"), or a pane id.
+	CapturePane(target string) (string, error)
 }
 
 // ExecClient implements Client by running tmux subcommands via exec.Command.
@@ -308,6 +311,17 @@ func (c *ExecClient) KillWindow(sessionName string, windowIndex int) error {
 	target := fmt.Sprintf("%s:%d", sessionName, windowIndex)
 	_, err := runTmux("kill-window", "-t", target)
 	return err
+}
+
+// CapturePane captures the visible content of the active pane in target and
+// returns it as a string. -p prints to stdout; -J joins wrapped lines so the
+// dump reads like the user saw it.
+func (c *ExecClient) CapturePane(target string) (string, error) {
+	out, err := runTmux("capture-pane", "-p", "-J", "-t", target)
+	if err != nil {
+		return "", err
+	}
+	return out, nil
 }
 
 // ListAll returns all session/window/pane information in a single tmux list-panes call.

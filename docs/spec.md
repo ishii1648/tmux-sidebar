@@ -10,8 +10,8 @@
 tmux-sidebar は tmux の **cross-context 軸（session / window）** を司る常駐 control surface である。
 左端 sidebar pane に全 session/window を一覧表示し、cursor 選択 + 単打鍵で
 switch / close / pin などのライフサイクル操作を発行する。
-新規 session 生成は sidebar から起動される popup picker で行い、
-ghq repo 選択 + agent mode 選択をワンフローで完結する。
+新規 session 生成は別バイナリの popup picker (`tmux-sidebar new`) で行い、
+ghq repo 選択 + agent mode 選択をワンフローで完結する（tmux.conf の bind-key 経由で起動する）。
 
 pane 内部の操作（split-window, resize, zoom, copy-mode 等）と
 server 境界（attach, detach, new-server）は対象外であり、tmux native の責務に残す。
@@ -23,7 +23,7 @@ server 境界（attach, detach, new-server）は対象外であり、tmux native
 | **pane mode** | 常駐 navigation + lifecycle 操作 | 既定 40 cols × 端末高 |
 | **popup picker mode** | 新規 session wizard、その他の多段選択 | tmux popup（既定 80 × 24） |
 
-両者は同一バイナリ。pane mode が popup picker を起動し、終了後に状態を取り込む。
+両者は同一バイナリ。pane mode と popup picker mode は独立したエントリポイント（pane mode は引数なし起動、picker mode は `tmux-sidebar new`）で、tmux 経由でのみ状態を共有する。
 
 ## 入力モデル
 
@@ -55,6 +55,7 @@ infra
 - pinned session は `📌` を付与し、unpinned 群との境界に区切り線
 - 現在の tmux window は背景色で highlight
 - sidebar pane が focus されている場合は title が `● Sessions`、focus されていない場合は `○ Sessions`
+- **作成直後 10 秒以内** の session は session ヘッダ行 (`▾ <name>`) と所属 window 行が緑系の前景色で強調表示される。dispatch 完了の合図として display-message に依存しない可視化（時間経過で自然に通常スタイルに戻る）
 
 ## 操作（normal mode）
 
@@ -81,7 +82,6 @@ infra
 |---|---|---|
 | `d` | カーソル window を close | running agent 検出時は強い confirm |
 | `D` | カーソル session を close | 複数 window 影響のため必ず confirm |
-| `N` | popup picker mode で新規 session 作成 | 後述 |
 
 destructive 操作（close 系）は **state file の `running` / `permission` / `ask` 状態を根拠に confirm 強度を変える**。
 
@@ -114,8 +114,7 @@ pinned session は上部に持ち上げられ、`📌 <name>` で表示される
 
 ## Popup picker mode
 
-`N` 押下で sidebar process が tmux popup を起動し、popup 内で同一バイナリの
-picker mode が走る。
+`tmux-sidebar new` で picker TUI が起動する。tmux.conf 側で `tmux display-popup -E -w 80 -h 24 'tmux-sidebar new'` を bind-key に割り当てて popup として呼び出すことを想定する（[setup.md](setup.md#10-popup-pickern-の前提任意) 参照）。サイドバー pane mode 自体には起動キーを設けない。
 
 ### Step 1: repo 選択
 
@@ -123,24 +122,30 @@ ghq 配下の repo を fuzzy filter で選ぶ。
 すでに session として開いている repo は dim 表示し、`Enter` を押すと
 **新規作成せずその session に switch する**（重複作成防止）。
 
-### Step 2: mode 選択
+Step 1 では `Tab` で **launcher (claude / codex)** を切り替えられる。選んだ launcher は次のステップに引き継がれる。`Enter` で次のステップへ進む。
 
-| Mode | 内容 |
-|---|---|
-| `claude` | session 内に Claude Code を起動 |
-| `codex` | session 内に Codex CLI を起動 |
-| `dispatch` | dispatch skill 経由で agent を起動（dotfiles 側 protocol） |
-| `orchestrate` | orchestrate workflow を起動 |
+### Step 2: prompt 入力
 
-### Step 3: mode 別追加設定
+dispatch を発火するための prompt 入力欄が出る。レイアウトは:
 
-mode が要求する場合のみ表示（worktree branch 名、orchestrate chain 種別など）。
-詳細は tmw / 各 skill の指定に従う。
+```
+tab: モード切替  enter: 実行  `:<branch>` で既存 remote branch を checkout
+claude / codex  <repo>
+─────────
+> ▏
+```
+
+- 上の launcher 表示は active（bold + 緑）と inactive（faint）で示される。`Tab` で claude ↔ codex を切り替えられる
+- `Enter` で git worktree 作成 + tmux session 生成 + prompt 投入が実行される
+- branch 名は **dispatch 側（popup ではなく background process）** が prompt 内容から決定する。`claude -p` で短い `<type>/<slug>` を生成し、`claude` 不在 / 認証切れ / timeout / 不正な出力時は決定論的な `feat/<slug>` slugify にフォールバックする。実際の branch 名は新 session が sidebar に出現したタイミングで確認できる。popup 入力中はプレビューを出さない（実値と異なる「予想 slug」を見せると誤導になるため）。例外として `:<branch>` checkout モードのときだけ、入力した branch 名そのものを `checkout:` プレビューとして faint 表示する
+- 複数行の prompt は **bracketed paste で貼り付け** て入れる、もしくは **Ctrl+J / Shift+Enter / Alt+Enter** で改行を挿入する（Shift+Enter / Alt+Enter は kitty キーボードプロトコル等で plain Enter と区別できる terminal でのみ動く。区別できない terminal では plain Enter として扱われ確定する）。CR / CRLF は LF に正規化される。先頭行が slugify フォールバック用に使われ、全文がそのまま launcher に渡る（LLM 命名は全文を見る）
+- `Enter` で dispatch を **背景で起動** して popup は即閉じる（`tmux run-shell -b 'tmux-sidebar dispatch ...'`）。worktree 作成 + tmux session 生成 + launcher 起動 + LLM 命名はユーザを待たせない。**作業中の client は新 session に自動移動しない**。成功時の通知は出さず、新 session が sidebar に出現する（reload tick 最大 10 秒、または SIGUSR1 hook で即時）のがそのまま完了サインになる。attach するかは `prefix s` / sidebar からユーザが任意のタイミングで決める。失敗時のみ `tmux display-message` で `tmux-sidebar dispatch: <err>` が status line に出る
+- `:<branch>` プレフィックスで先頭行を始めると **branch 接続モード**になる: 指定 branch が local にあればそれを、remote のみなら fetch してから、どこにも無ければ `origin/<default>` から新規作成して worktree を作る。prompt は launcher に渡されず idle で起動する
+- `Esc` で Step 1 に戻る
 
 ### 完了時
 
-popup を閉じ、tmw / agent 起動コマンドを実行する。
-sidebar pane は自発的に reload し、新 session にカーソル移動する。
+popup を閉じ、dispatch を背景で起動する（前項参照）。新 session が生成されると sidebar の reload tick（最大 10 秒、または SIGUSR1 hook で即時）でリストに現れる。
 
 ## Preview
 
@@ -183,6 +188,20 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 - 表示される pinned session は **`pinned_sessions` の行順** で並ぶ（tmux 列挙順より優先）
 - pinned 群と unpinned 群の境界に区切り線。両群とも非空のときだけ描画する（全件 pinned / 全件 unpinned のときは出さない）
 
+## Required external tools
+
+dispatch / popup picker のフローはローカルの CLI を直接呼び出す。以下が PATH に存在し、必要に応じて認証済みであることを前提とする。
+
+| ツール | 用途 | 必須度 |
+|---|---|---|
+| `tmux` 3.2+ | popup / pane / session 制御全般 | 必須 |
+| `git` | worktree / branch 操作 | 必須 |
+| `ghq` | repo 一覧 (`ghq list -p`) | 必須 |
+| `claude` ([Claude Code CLI](https://github.com/anthropics/claude-code)) | popup picker の Step 2 で `--launcher claude` を選んだ時の launcher、および dispatch 側の LLM branch 命名（`claude -p`） | popup picker を使うなら必須。命名のみ用途なら未認証でもフォールバックは動くが体験が落ちる |
+| `codex` ([Codex CLI](https://github.com/openai/codex)) | popup picker の Step 2 で `--launcher codex` を選んだ時の launcher | codex を使うなら必須 |
+
+`claude` / `codex` のどちらか片方しか使わない場合は、もう一方を入れる必要はない。LLM 命名は `claude` だけを使う（codex の `exec` サブコマンドは命名用途には使わない設計）。
+
 ## Environment variables
 
 | 変数 | 説明 |
@@ -196,7 +215,8 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 | サブコマンド | 動作 |
 |---|---|
 | (なし) | sidebar pane mode を起動 |
-| `new` | popup picker mode を起動（通常は sidebar から `N` で間接起動） |
+| `new` | picker TUI を起動。popup として表示するかは呼び出し側（tmux.conf bind-key）が `tmux display-popup -E ...` で決める |
+| `dispatch <repo> [prompt]` | git worktree + tmux session を作成して launcher (claude / codex) を起動する CLI（`/dispatch` skill の engine と共通） |
 | `toggle` | 現在 window の sidebar を toggle |
 | `close` | 現在 window の sidebar を閉じる |
 | `focus-or-open` | sidebar があれば focus、なければ作成 |

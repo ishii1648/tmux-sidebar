@@ -3,10 +3,10 @@
 tmux の **cross-context 軸（session / window）** を司る常駐 control surface。
 左端 sidebar pane に全 session/window と agent (Claude Code / Codex CLI) の状態を一覧表示し、
 キーボードで switch / close / pin などのライフサイクル操作を発行する。
-新規 session 生成は sidebar 起動の popup picker（repo + agent mode 選択）で完結する。
+新規 session 生成は別エントリポイントの popup picker (`tmux-sidebar new`、tmux.conf bind-key 経由で起動) で repo + launcher + prompt をワンフローで決められる。
 
-> **Note**: 現時点で出荷済みの機能は「全 session/window 一覧 + 状態バッジ + Enter 移動 + 検索」まで。
-> 上記の lifecycle 操作 / popup picker は実装中。詳細は [docs/spec.md](docs/spec.md)（目標仕様）と [docs/TODO.md](docs/TODO.md)（実装計画）を参照。
+> **Note**: lifecycle 操作（`d`/`D`）と popup picker (`tmux-sidebar new`) も含めて実装済み。
+> 詳細は [docs/spec.md](docs/spec.md) と [docs/TODO.md](docs/TODO.md) を参照。
 
 ```
 ┌──────────────────────┬──────────────────────────────────────────┐
@@ -24,24 +24,30 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 
 ## Features
 
-### 出荷済み
-
 - 全セッション・ウィンドウを階層表示（agent がいないウィンドウも含む）
 - agent (Claude Code / Codex CLI) の状態バッジ: 行頭に agent タグ (`[c]` / `[x]`)、続けて状態絵文字 (`🔄Nm` / `💬`)
+- vim 風の modal 入力: `normal` ではカーソル移動と単打コマンド、`/` で `search` モードへ
 - `j` / `k` / `↑` / `↓` でカーソル移動、`Enter` で対象ウィンドウへジャンプ
-- 任意の文字を入力するとインクリメンタル検索フィルタが効く（`Esc` でクリア）
+- `d` / `D` で window / session を close（agent state に応じた confirm 強度、kill 直前に capture-pane を graveyard に保存）
+- `tmux-sidebar new`（tmux.conf bind-key 経由で popup として起動）で repo + launcher + prompt のワンフロー作成。Step 1 で ghq repo を fuzzy 選択（`Tab` で claude ↔ codex 切替）、Step 2 で prompt を入力すると git worktree + tmux session 生成 + launcher 起動 + prompt 投入まで一括で行う
+- pin（`~/.config/tmux-sidebar/pinned_sessions`）でセッションを上部に持ち上げ、`D` の削除保護を兼ねる
 - `after-new-window` フックで新しいウィンドウに自動生成
 - 選択ウィンドウの agent transcript から initial prompt を下部にプレビュー
 - Git ブランチ / PR 番号の表示
 
-### 実装中（roadmap）
+詳細は [docs/spec.md](docs/spec.md) を参照。
 
-- vim 風 modal 入力（`/` で検索モード、normal モードで単打コマンド）
-- window/session の close (`d`/`D`)
-- pin の永続化（`p`）
-- `N` で popup picker mode 起動 → ghq repo + agent mode (`claude` / `codex` / `dispatch` / `orchestrate`) 選択
+## Required tools
 
-詳細は [docs/spec.md](docs/spec.md) と [docs/TODO.md](docs/TODO.md) を参照。
+| ツール | 用途 |
+|---|---|
+| `tmux` 3.2+ | popup / pane / session 制御 |
+| `git` | worktree / branch 操作 |
+| `ghq` | repo 一覧 |
+| [`claude`](https://github.com/anthropics/claude-code) | `--launcher claude` の launcher、および popup 経由 dispatch の LLM branch 命名 |
+| [`codex`](https://github.com/openai/codex) | `--launcher codex` の launcher |
+
+`claude` / `codex` は片方でも動作する。`claude` 不在時は branch 名が決定論的 slugify にフォールバックする。詳細は [docs/spec.md#required-external-tools](docs/spec.md#required-external-tools) を参照。
 
 ## Installation
 
@@ -65,56 +71,51 @@ mv tmux-sidebar ~/.local/bin/
 - [§6. toggle キーバインド（任意）](docs/setup.md#6-toggle-キーバインド任意)
 - [§7. サイドバーへのフォーカスキーバインド（任意）](docs/setup.md#7-サイドバーへのフォーカスキーバインド任意)
 - [§8. Agent (Claude Code / Codex CLI) の状態ファイル（任意）](docs/setup.md#8-agent-claude-code--codex-cli-の状態ファイル任意)
+- [§9. セッションの固定 (Pin) と非表示 (Hidden)（任意）](docs/setup.md#9-セッションの固定-pin-と非表示-hidden任意)
+- [§10. Popup picker（`tmux-sidebar new`）の前提（任意）](docs/setup.md#10-popup-pickertmux-sidebar-new-の前提任意)
 
 ## Subcommands
 
-| サブコマンド | 説明 | 状態 |
-|---|---|---|
-| (なし) | TUI サイドバー（pane mode）を起動 | 出荷済み |
-| `new [--context=<file>]` | popup picker mode を起動（通常は sidebar の `N` から間接実行） | 実装中 |
-| `close` | サイドバーを閉じる | 出荷済み |
-| `toggle` | サイドバーの表示/非表示を切り替え | 出荷済み |
-| `focus-or-open` | サイドバーがあればフォーカス、なければ作成 | 出荷済み |
-| `cleanup-if-only-sidebar` | sidebar のみ残ったウィンドウを削除 | 出荷済み |
-| `restart` | 全 tmux ウィンドウのサイドバーペインを kill して再生成（バイナリ更新後に使う） | 出荷済み |
-| `doctor [--yes]` | tmux 設定をチェック（`--yes` で自動修正） | 出荷済み |
-| `upgrade` | GitHub Releases から最新バイナリをダウンロードしてインストール | 出荷済み |
-| `version` | バージョンを表示 | 出荷済み |
+| サブコマンド | 説明 |
+|---|---|
+| (なし) | TUI サイドバー（pane mode）を起動 |
+| `new` | picker TUI を起動。popup として表示するには tmux.conf の bind-key で `tmux display-popup -E ...` でラップする（[setup.md §10](docs/setup.md#10-popup-pickertmux-sidebar-new-の前提任意) 参照、tmux 3.2+ が必要） |
+| `dispatch <repo> [prompt] [flags]` | git worktree + tmux session を作成して launcher (claude / codex) を起動。dispatch.sh CLI と互換（`--launcher`, `--branch`, `--no-worktree`, `--no-prompt`, `--prompt-file`, `--in-session` ほか） |
+| `close` | サイドバーを閉じる |
+| `toggle` | サイドバーの表示/非表示を切り替え |
+| `focus-or-open` | サイドバーがあればフォーカス、なければ作成 |
+| `cleanup-if-only-sidebar` | sidebar のみ残ったウィンドウを削除 |
+| `restart` | 全 tmux ウィンドウのサイドバーペインを kill して再生成（バイナリ更新後に使う） |
+| `doctor [--yes]` | tmux 設定をチェック（`--yes` で自動修正） |
+| `upgrade` | GitHub Releases から最新バイナリをダウンロードしてインストール |
+| `version` | バージョンを表示 |
 
 ## Keyboard shortcuts
 
-### 出荷済み
+入力モデルは `normal` / `search` の 2 モードに分かれます。`/` で `search` モードに入り、`Esc` で `normal` モードに戻ります。
 
-フッターには `Esc:clear ^C:quit` が表示されます。
-
-| キー | 動作 |
-|------|------|
-| `j` / `↓` | 次のウィンドウ行へ（検索クエリが空のときのみ。検索中は文字入力扱い） |
-| `k` / `↑` | 前のウィンドウ行へ（検索クエリが空のときのみ） |
-| `Enter` | 選択ウィンドウへ移動 |
-| 任意の文字入力 | インクリメンタル検索フィルタ（セッション名・ウィンドウ名に対する大文字小文字非依存の部分一致） |
-| `Backspace` | 検索クエリを 1 文字削除 |
-| `Esc` | 検索クエリをクリア |
-| `Ctrl+C` | 終了 |
-
-### 実装後の目標仕様
-
-入力モデルは `normal` / `search` の 2 モードに分かれます。
-
-| モード | 動作 |
-|---|---|
-| `normal` | 単打キーで commands 発行（switch / close / pin など） |
-| `search` | `/` で進入、`Esc` で normal へ戻る |
-
-normal モードの主なキー:
+### Normal モード
 
 | カテゴリ | キー | 動作 |
 |---|---|---|
-| 移動 | `j`/`k`, `Tab`/`Shift+Tab` | 行移動、フィルタ切替 |
-| 切替 | `Enter` | 選択 window へ移動 |
-| Lifecycle | `d` / `D` | window/session の close（state に応じた confirm 強度） |
-| Lifecycle | `N` | popup picker で新規 session |
-| 装飾 | `p` | pin toggle |
+| 移動 | `j` / `↓` | 次のウィンドウ行へ |
+| 移動 | `k` / `↑` | 前のウィンドウ行へ |
+| 切替 | `Enter` | 選択ウィンドウへ移動（`switch-client` + `select-window`） |
+| 検索 | `/` | search モードへ進入 |
+| Lifecycle | `d` | カーソル window を close（agent state に応じた confirm 強度、kill 前に capture-pane を graveyard に保存） |
+| Lifecycle | `D` | カーソル session を close（pinned session はブロック） |
+| 終了 | `Ctrl+C` | サイドバーを終了 |
+
+新規 session 作成は `tmux-sidebar new`（tmux.conf bind-key 経由で popup 起動。詳細は [setup.md §10](docs/setup.md#10-popup-pickertmux-sidebar-new-の前提任意)）。
+
+### Search モード
+
+| キー | 動作 |
+|------|------|
+| 任意の文字入力 | インクリメンタル検索（セッション名・ウィンドウ名の大文字小文字非依存の部分一致） |
+| `Backspace` | 1 文字削除 |
+| `Enter` | 選択結果のウィンドウへ移動 |
+| `Esc` | クエリをクリアして normal モードへ戻る |
 
 詳細は [docs/spec.md](docs/spec.md) を参照。
 
@@ -150,10 +151,10 @@ normal モードの主なキー:
 
 すべて `~/.config/tmux-sidebar/` 配下、1行1エントリ、`#` でコメント。
 
-| ファイル | 内容 | 状態 |
-|---|---|---|
-| `hidden_sessions` | 表示しないセッション名 | 出荷済み |
-| `pinned_sessions` | pin するセッション名（行順 = 表示順） | 実装中 |
+| ファイル | 内容 |
+|---|---|
+| `hidden_sessions` | 表示しないセッション名 |
+| `pinned_sessions` | pin するセッション名（行順 = 表示順、`D` の削除保護を兼ねる） |
 
 ### hidden_sessions
 

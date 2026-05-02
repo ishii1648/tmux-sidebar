@@ -644,6 +644,30 @@ func TestCheckClaudeSettings_FlagsLegacy(t *testing.T) {
 	}
 }
 
+// ── tmux version parsing ─────────────────────────────────────────────────────
+
+func TestParseTmuxVersion(t *testing.T) {
+	cases := []struct {
+		in        string
+		maj, min  int
+		ok        bool
+	}{
+		{"tmux 3.4", 3, 4, true},
+		{"tmux 3.2a", 3, 2, true},
+		{"tmux next-3.5", 3, 5, true},
+		{"tmux 2.9", 2, 9, true},
+		{"tmux master", 0, 0, false},
+		{"", 0, 0, false},
+	}
+	for _, c := range cases {
+		maj, min, ok := parseTmuxVersion(c.in)
+		if maj != c.maj || min != c.min || ok != c.ok {
+			t.Errorf("parseTmuxVersion(%q) = (%d, %d, %v), want (%d, %d, %v)",
+				c.in, maj, min, ok, c.maj, c.min, c.ok)
+		}
+	}
+}
+
 // ── helper ────────────────────────────────────────────────────────────────────
 
 func jsonString(s string) string {

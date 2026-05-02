@@ -72,11 +72,19 @@ const (
 
 // ListItem is a single rendered row in the sidebar list.
 type ListItem struct {
-	Kind        ItemKind
-	SessionName string
-	Window      *tmux.Window     // non-nil when Kind == ItemWindow
-	PaneState   *state.PaneState // non-nil when a Claude pane exists in this window
+	Kind           ItemKind
+	SessionName    string
+	SessionCreated time.Time        // session creation time; zero when unknown
+	Window         *tmux.Window     // non-nil when Kind == ItemWindow
+	PaneState      *state.PaneState // non-nil when a Claude pane exists in this window
 }
+
+// freshSessionWindow is how long a session is highlighted as "newly
+// created" in the sidebar after its creation time. The fresh affordance
+// replaces the dispatch success notification: instead of a short-lived
+// status-line message, the new session gets a colored row in the
+// sidebar that fades back to normal after this duration.
+const freshSessionWindow = 10 * time.Second
 
 // gitInfo holds cached git/PR information for a window.
 type gitInfo struct {
@@ -103,6 +111,14 @@ type TmuxChangedMsg struct{}
 
 // minuteTickMsg is sent by the 1-minute ticker to refresh running-badge elapsed time.
 type minuteTickMsg time.Time
+
+// freshTickMsg fires roughly once per second while at least one visible
+// session is within the fresh-session window. Its only job is to trigger
+// a re-render so the green highlight clears once the session crosses
+// freshSessionWindow even if no other event would otherwise refresh the
+// view. The tick re-schedules itself only while a fresh session remains
+// — sidebar idle time has zero cost once the window has elapsed.
+type freshTickMsg time.Time
 
 // dataMsg carries refreshed tmux/state data along with the freshly re-read
 // config so user edits to pinned_sessions / hidden_sessions propagate without
@@ -154,7 +170,9 @@ var (
 
 	styleCursor     = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	styleSession    = lipgloss.NewStyle().Foreground(colMuted)
+	styleSessionNew = lipgloss.NewStyle().Foreground(colRunning).Bold(true)
 	styleWindow     = lipgloss.NewStyle().PaddingLeft(1)
+	styleWindowNew  = lipgloss.NewStyle().Foreground(colRunning).PaddingLeft(1)
 	styleBadgeRun   = lipgloss.NewStyle().Foreground(colRunning)
 	styleBadgePerm  = lipgloss.NewStyle().Foreground(colPending)
 	styleBadgeAsk   = lipgloss.NewStyle().Foreground(colWaiting)
@@ -193,6 +211,7 @@ type Model struct {
 	cursorPrompt     string             // initial prompt for the window currently under cursor
 	currentSessionID string             // tmux session ID of the pane running this process (e.g. "$3")
 	hiddenPath       string             // path to hidden_sessions; pinned_sessions is resolved from the same dir
+	freshTicking     bool               // true while the 1Hz fresh-session tick is armed; prevents stacking ticks
 }
 
 // New creates a new Model. currentSessionID and currentWinID identify this
@@ -241,6 +260,34 @@ func gitTickCmd() tea.Cmd {
 	})
 }
 
+func freshTickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return freshTickMsg(t)
+	})
+}
+
+// isFreshSession reports whether item belongs to a session whose creation
+// time is within freshSessionWindow of now. Zero SessionCreated (e.g. the
+// divider, or sessions where tmux didn't supply a creation time) reads as
+// not-fresh so older sessions never highlight by accident.
+func isFreshSession(item ListItem, now time.Time) bool {
+	if item.SessionCreated.IsZero() {
+		return false
+	}
+	return now.Sub(item.SessionCreated) < freshSessionWindow
+}
+
+// hasFreshSession reports whether any item in items is currently fresh.
+// Used to decide whether the 1Hz fresh-tick should keep firing.
+func hasFreshSession(items []ListItem, now time.Time) bool {
+	for _, it := range items {
+		if it.Kind == ItemSession && isFreshSession(it, now) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Model) loadData() tea.Cmd {
 	hiddenPath := m.hiddenPath
 	cfgFallback := m.cfg
@@ -266,15 +313,17 @@ func (m *Model) loadData() tea.Cmd {
 			stateMap = map[int]state.PaneState{}
 		}
 
-		// Collect session order and names (first occurrence wins)
+		// Collect session order, names, and creation time (first occurrence wins)
 		var sessionOrder []string
 		sessionSeen := map[string]bool{}
 		sessionNames := map[string]string{}
+		sessionCreated := map[string]time.Time{}
 		for _, p := range allPanes {
 			if !sessionSeen[p.SessionID] {
 				sessionSeen[p.SessionID] = true
 				sessionOrder = append(sessionOrder, p.SessionID)
 				sessionNames[p.SessionID] = p.SessionName
+				sessionCreated[p.SessionID] = p.SessionCreated
 			}
 		}
 
@@ -324,16 +373,19 @@ func (m *Model) loadData() tea.Cmd {
 
 		appendSession := func(items []ListItem, sid string) []ListItem {
 			sname := sessionNames[sid]
+			created := sessionCreated[sid]
 			items = append(items, ListItem{
-				Kind:        ItemSession,
-				SessionName: sname,
+				Kind:           ItemSession,
+				SessionName:    sname,
+				SessionCreated: created,
 			})
 			for _, wid := range winOrder[sid] {
 				w := winInfo[wid]
 				item := ListItem{
-					Kind:        ItemWindow,
-					SessionName: sname,
-					Window:      &w,
+					Kind:           ItemWindow,
+					SessionName:    sname,
+					SessionCreated: created,
+					Window:         &w,
 				}
 				for _, num := range winPanes[wid] {
 					if ps, ok := stateMap[num]; ok {
@@ -609,7 +661,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// items are added/removed and indices shift.
 		m.relocateCursor()
 		m.adjustScroll()
-		return m, m.updateCursorPrompt()
+		cmds := []tea.Cmd{m.updateCursorPrompt()}
+		// Kick the 1Hz fresh-tick when a freshly created session is in
+		// the data so the highlight reliably fades within ~1s of the
+		// freshSessionWindow expiring. The tick self-extinguishes once
+		// no fresh session remains.
+		if !m.freshTicking && hasFreshSession(m.items, time.Now()) {
+			m.freshTicking = true
+			cmds = append(cmds, freshTickCmd())
+		}
+		return m, tea.Batch(cmds...)
+
+	case freshTickMsg:
+		// Re-evaluate whether any session is still fresh. If yes,
+		// re-arm; otherwise let the tick die so idle sidebars don't pay
+		// the 1Hz cost.
+		if hasFreshSession(m.items, time.Time(msg)) {
+			return m, freshTickCmd()
+		}
+		m.freshTicking = false
+		return m, nil
 
 	case stateOnlyMsg:
 		// Update PaneState on each window item using the cached pane-number map.
@@ -761,8 +832,8 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		return m, m.switchSelected()
 	case tea.KeyBackspace:
-		if len(m.searchQuery) > 0 {
-			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+		if r := []rune(m.searchQuery); len(r) > 0 {
+			m.searchQuery = string(r[:len(r)-1])
 			m.resetCursorToFirstWindow()
 		}
 		return m, nil
@@ -1196,6 +1267,9 @@ func (m *Model) View() string {
 	if startIdx > endIdx {
 		startIdx = endIdx
 	}
+	// now is captured once per render so a session that crosses
+	// freshSessionWindow mid-loop renders consistently within that frame.
+	now := time.Now()
 	for i := startIdx; i < endIdx; i++ {
 		item := visible[i]
 		switch item.Kind {
@@ -1204,7 +1278,11 @@ func (m *Model) View() string {
 			if m.cfg.IsPinnedSession(item.SessionName) {
 				label = "📌 " + item.SessionName
 			}
-			sb.WriteString(styleSession.Render(label) + "\n")
+			if isFreshSession(item, now) {
+				sb.WriteString(styleSessionNew.Render(label) + "\n")
+			} else {
+				sb.WriteString(styleSession.Render(label) + "\n")
+			}
 		case ItemDivider:
 			sb.WriteString(styleFaint.Render(strings.Repeat("─", m.width)) + "\n")
 		case ItemWindow:
@@ -1244,7 +1322,11 @@ func (m *Model) View() string {
 				name = runewidth.Truncate(name, available, "")
 			}
 			label := prefix + name
-			left := cursor + styleWindow.Render(label)
+			winStyle := styleWindow
+			if isFreshSession(item, now) {
+				winStyle = styleWindowNew
+			}
+			left := cursor + winStyle.Render(label)
 			pad := m.width - lipgloss.Width(left) - suffixW
 			if pad < minGap {
 				pad = minGap

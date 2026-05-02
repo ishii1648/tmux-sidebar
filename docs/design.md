@@ -17,17 +17,18 @@ tmux-sidebar binary
 ```
 
 両者は bubbletea を使った Go TUI で、UI コンポーネント・色・キーバインドの一部を共有する。
-pane mode が picker を起動し、終了後に状態を取り込む（後述の IPC）。
+pane mode と picker mode は独立したエントリポイント（pane mode は引数なし起動、picker mode は `tmux-sidebar new`）で、tmux 経由（`list-sessions` 等）でのみ状態を共有する。
 
 | 層 | 主な責務 |
 |---|---|
 | `main.go` | CLI dispatch（pane / picker / その他 subcommand）、Bubble Tea 起動、tmux pane metadata 設定、fsnotify/SIGUSR1 の注入 |
-| `internal/ui` | TUI model、modal 入力、表示、commands 発行、Git/PR/prompt preview |
-| `internal/picker` | popup picker mode の TUI（repo 選択 → mode 選択 → 設定） |
+| `internal/ui` | pane mode の TUI model、modal 入力、表示、commands 発行、Git/PR/prompt preview |
+| `internal/picker` | popup picker mode の TUI（repo 選択 → prompt 入力 → dispatch 起動） |
 | `internal/tmux` | tmux コマンド実行、session/window/pane 情報取得、mutate 操作（kill）|
 | `internal/state` | `/tmp/agent-pane-state` 形式の読み取り |
 | `internal/config` | hidden/pinned の読み込みと書き込み、幅の解決 |
 | `internal/repo` | ghq 配下 repo 列挙、fuzzy filter |
+| `internal/dispatch` | git worktree 作成 + tmux session 生成 + launcher 起動の deterministic engine（dispatch.sh の Go 移植） |
 | `internal/doctor` | tmux/Claude/Codex 設定診断 |
 
 ---
@@ -87,6 +88,7 @@ state ファイルは pane number をキーにしているため、window → pa
 | tmux hook からの `SIGUSR1` | tmux 一覧 + 状態ファイル読み直す |
 | 1 分 tick | running elapsed 表示更新 |
 | 10 秒 tick | Git/PR 更新、active window fallback |
+| 1 秒 tick (条件付き) | freshSessionWindow 内の session が存在する間だけ走り、表示の色付けを時間経過で剥がす。残らなくなったら自動停止 |
 | sidebar 自発の mutate 後 | 即 reload（楽観更新 + 後追い確認） |
 
 mutate を sidebar が発行する場合、コマンド成功後すぐに `loadData()` を呼んで view を更新する。
@@ -175,52 +177,79 @@ walk root のデフォルトは `session.DefaultClaudeProjectsDir` /
 
 ### 起動
 
-pane mode から `N` 押下で:
+`tmux-sidebar new` subcommand 自体は popup framing を **持たない**。呼び出し側が `tmux display-popup -E` でラップするかどうかを決める。
+
+tmux.conf 側の bind-key で起動:
 
 ```
-tmux display-popup -E -w 80 -h 24 -E 'tmux-sidebar new --context=<file>'
+bind-key N display-popup -E -w 80 -h 24 'tmux-sidebar new'
 ```
 
-`--context=<file>` は temp file path で、現在の session 一覧 / pinned / sidebar の
-sessionID を JSON で渡す。picker mode はこれを読んで重複検出 / dim 表示に使う。
+popup の幅・高さは call site で決める（subcommand のハードコードではない）。`tmux-sidebar new` を popup で囲まずに直接実行すると、その場のターミナルで picker TUI が走る（デバッグ・E2E・非 tmux 環境用）。
+
+pane mode 側から `N` 等で popup を起こす経路は持たない（[history.md 参照](./history.md)）。pane mode と picker mode はどちらも同一バイナリだが、別エントリポイント (`tmux-sidebar` / `tmux-sidebar new`) として独立しており、状態は tmux 自身を介してしか共有しない。
+
+### 重複検出
+
+picker は `runNew` 起動時に `tmux.NewExecClient().ListSessions()` を呼んで「現在開いている session 名のリスト」を取得し、`picker.New(repos, openSessionNames, runner)` の引数として渡す。すでに同名 session が存在する repo は dim 表示し、`Enter` 押下時に新規作成ではなく既存 session への `switch-client` を発行する（`Runner.SwitchClient`）。tmux が起動していないなど ListSessions が失敗した場合は空リストで継続し、重複検出だけが skip される。
 
 ### picker の状態機械
 
 ```
-[repo 選択] --(Enter)--> [mode 選択] --(Enter)--> [mode 別設定 (任意)] --(Enter)--> [実行]
-       ↑                       ↑                          ↑
-       Esc で前 step、最初の step で Esc → 取消（exit）
+[repo 選択] --(Enter)--> [prompt 入力] --(Enter)--> [dispatch 起動]
+       ↑                       ↑
+       Esc で取消（exit）       Esc で repo 選択へ戻る
 ```
 
 ### 実行
 
-picker mode は最終的に tmw / agent 起動コマンドを `os/exec` で実行し、
-成功時は exit code 0、失敗時は stderr に reason を出して非ゼロ終了する。
-
-pane mode 側は popup の終了を `display-popup -E` の return で受ける（`-E` は popup の child の
-終了を待ち、exit code を伝播する）。終了後 pane mode は `loadData()` を発火し、
-新 session を検出してカーソルを移動させる。
-
-### 重複検出
-
-picker の repo 一覧で、すでに同名 session が存在する repo は dim 表示する。
-`Enter` 押下時、新規作成ではなく `tmw` をスキップして既存 session への switch を発行する。
+picker mode は dispatch を背景プロセス (`tmux run-shell -b 'tmux-sidebar dispatch ...'`) として fire-and-forget で起動し、popup を即閉じる（[picker mode の実行ステップ](#picker-mode-の実行ステップ) 節参照）。dispatch 完了の通知は出さず、新 session が sidebar の reload tick (≤10s、SIGUSR1 で即時) に乗って出現することそのものが完了サインになる。失敗時のみ dispatch 側の `runDispatch` エラーハンドラが `tmux display-message` で通知する。
 
 ---
 
-## tmw / dispatch / orchestrate との分担
+## picker mode の実行ステップ
+
+picker mode は 2-step で固定する（dispatch_launcher.fish と同じ構成）。
+
+| Step | UI | 操作 |
+|---|---|---|
+| 1: repo 選択 | ghq repo の fuzzy filter list、ヘッダーに current launcher 表示 | `Tab` で claude↔codex toggle、`Enter` で次へ（既存 session ありなら switch して終了） |
+| 2: prompt 入力 | `claude / codex  <repo>` ヘッダー + `> ` 入力欄 | `Tab` で launcher 再 toggle、`Enter` で dispatch 実行、`Esc` で Step 1 に戻る |
 
 | 責務 | 担当 |
 |---|---|
 | ghq repo 列挙 | `internal/repo`（ghq の出力を直接呼ぶ） |
-| repo 表示・filter UI | tmux-sidebar picker mode |
-| worktree 判定 / session 作成 | tmw（`tmw <repo>` をそのまま呼ぶ） |
-| agent 起動（claude/codex） | tmw / dotfiles 側 hook |
-| dispatch / orchestrate 実行 | dispatch / orchestrate skill |
+| repo 表示・filter UI | `internal/picker`（picker mode TUI） |
+| 既存 session 検出 + switch | `picker.Runner.SwitchClient` |
+| dispatch 実行（worktree + session + launcher + prompt） | `picker.Runner.SpawnDispatch` → `tmux run-shell -b 'tmux-sidebar dispatch ...'` を fire-and-forget で起動 → `internal/dispatch.Launch`（別プロセス）|
 
-picker mode は **UI 層に専念** し、決定後は tmw / skill にコマンドを委譲する。
+picker は dispatch 完了を **待たない**。`SpawnDispatch` が tmux server 内に dispatch process を投げた瞬間に popup を閉じる。worktree 作成や git fetch、tmux session 生成といった重い処理（数秒）はユーザを待たせず、完了時の Switch で client が新 session に切り替わる。dispatch 中のエラーは spawn された `tmux-sidebar dispatch` 側で `tmux display-message` を呼んで通知する（main.go の runDispatch エラーハンドラが担当、stderr が `tmux run-shell -b` で破棄される対策）。
 
-popup tmw は廃止せず、tmux 側 keybind で残す（sidebar 未起動時 / 互換用）。
+mode 選択 step（claude/codex/dispatch を radio で選ぶ）は持たない。「素の claude / codex 起動」mode は廃止し、picker からは常に dispatch（worktree + prompt）経由で session を作る。素起動が欲しい場合は CLI 直叩き（`tmux-sidebar dispatch <repo> --no-prompt --launcher claude`）か tmux native の `prefix+c` を使う。
+
+dotfiles 側の `prefix+S` (dispatch_launcher.fish) と popup tmw キーバインドは互換のため残す（sidebar 未起動時 / fish ユーザの慣れたフロー用）。
+
+## dispatch engine の責務分担
+
+`internal/dispatch` は dotfiles の `dispatch.sh launch` を Go で再実装した deterministic engine。dispatch には 2 つの利用経路があり、両方が同じ engine を呼ぶことで挙動が一致する:
+
+| 経路 | UI 層 | engine |
+|---|---|---|
+| `/dispatch` slash command（Claude session 内） | LLM が引数解釈・branch 名生成・in-session 判断 | `dispatch.sh` → 将来的に `tmux-sidebar dispatch` |
+| `prefix+S` (dispatch_launcher.fish) | fish + fzf による repo 選択 + prompt 入力 | 同上 |
+| `tmux-sidebar new` (tmux.conf bind-key 経由の picker mode) | bubbletea による repo 選択 + prompt 入力 | `internal/dispatch.Launch` を直接呼ぶ（`tmux run-shell -b` で背景起動） |
+
+責務の境界:
+- LLM / UI が決めるもの: repo, prompt, in-session か新規 session か, branch 名の **明示指定**（`:<branch>` の checkout 指定）
+- engine が決めるもの: branch 名の **暗黙生成**（`Branch == ""` のとき `DeriveBranch` が `claude -p` → slugify フォールバックで決定）、ghq 短縮名解決, worktree 命名規則 (`<main>@<branch-dirname>`), 既存 branch checkout / 新規 branch 作成, `.claude/settings.local.json` コピー, tmux session 名衝突回避, codex の attached client 待ち, prompt-file injection
+
+branch 名生成を engine 側に置く理由は popup の fire-and-forget を維持するため。`claude -p` のレイテンシ（~1-5s）を popup process に乗せると Phase 4 で得た「Enter から < 300ms で popup が閉じる」体験が壊れるので、`tmux run-shell -b` で spawn された dispatch process が background で命名する。`Namer` は `dispatch.Launch(opts, namer)` の引数として渡され、`Options` には serializable な値しか入れない方針を保つ（`ToArgs()` の対象から外す）。
+
+LLM 出力は `^(feat|fix|chore)/[a-z0-9][a-z0-9-]{1,24}$` で shape 検証する（ハルシネーション・前置き混入対策）。不合格時は `BranchFromPrompt` の決定論的 slugify にフォールバックする無音の二段構え。`claude` CLI 不在 / 認証切れ / timeout でも同じく slugify に落ちるので、launcher を codex 単独で使うユーザでも壊れない。
+
+`tmux-sidebar dispatch <repo> [prompt] [flags]` は dispatch.sh とフラグ互換 (`--launcher`, `--session`, `--window`, `--branch`, `--no-worktree`, `--no-prompt`, `--prompt-file`, `--in-session`)。構造化出力 (`STATUS:` / `SESSION:` / `WINDOW:` / `PANE_ID:` / `REPO:` / `WORK_DIR:` / `BRANCH:`) も同形式。
+
+追加フラグ `--switch` (デフォルト false) を持つ。これは `dispatch.Options.Switch` を立てる薄いフラグで、`createTmuxTarget` 直後に `tmux switch-client -t <session>` を発火する。dispatch.sh は `tmux run-shell -b` 越しに background 実行されてユーザが手動で attach する設計なので switch を持たない。tmux-sidebar の picker も **Switch を立てない**: ユーザが今やっている作業から強制的に新 session に飛ばされるのは押し付けが強すぎる。成功時の通知も意図的に出さず、新 session が sidebar に出現することそのものを完了サインにする（display-message での「launched」表示は数秒で消えるうえ sidebar が真のソースなので情報が二重になり、status line のノイズだけ増えるため）。失敗時のみ main.go の runDispatch エラーハンドラから display-message で通知する。codex の `waitForAttachedClient` は手動 attach までの最大 5 分間、dispatch サブプロセス内で polling して待つ（dispatch.sh CLI と同じ挙動）; ユーザが時間内に attach しなければ codex は OSC 11 背景色問題を抱えたまま起動するが、致命的ではない。`--switch` フラグは CLI 経由の自動化スクリプト等で「明示的に飛びたい」用途のために残してある。
 
 ---
 
@@ -252,7 +281,7 @@ pane の識別には tmux pane option `@pane_role=sidebar` を使う。
 | サブコマンド | 設計上の役割 |
 |---|---|
 | (なし) | pane mode 起動 |
-| `new [--context=<file>]` | popup picker mode 起動（pane mode から間接実行） |
+| `new` | popup picker mode 起動（tmux.conf bind-key + `display-popup -E` でラップして呼び出す） |
 | `toggle` | 現在 window の sidebar pane を kill、なければ作成 |
 | `focus-or-open` | sidebar があれば focus、なければ作成して focus |
 | `close` | 現在 window の sidebar を閉じる |

@@ -2,7 +2,7 @@
 
 tmux の **cross-context 軸（session / window）** を司る常駐 control surface。
 左端 sidebar pane に全 session/window と agent (Claude Code / Codex CLI) の状態を一覧表示し、
-キーボードで switch / close / rename / pin / move などのライフサイクル操作を発行する。
+キーボードで switch / close / pin / move などのライフサイクル操作を発行する。
 新規 session 生成は sidebar 起動の popup picker（repo + agent mode 選択）で完結する。
 
 > **Note**: 現時点で出荷済みの機能は「全 session/window 一覧 + 状態バッジ + Enter 移動 + 検索」まで。
@@ -37,7 +37,7 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 ### 実装中（roadmap）
 
 - vim 風 modal 入力（`/` で検索モード、normal モードで単打コマンド）
-- window/session の close (`d`/`D`) と inline rename (`R`/`Shift+R`)
+- window/session の close (`d`/`D`)
 - pin / 並べ替えの永続化（`p` / `Shift+J/K` / `m`）
 - `N` で popup picker mode 起動 → ghq repo + agent mode (`claude` / `codex` / `dispatch` / `orchestrate`) 選択
 - multi-select + bulk close
@@ -106,7 +106,7 @@ mv tmux-sidebar ~/.local/bin/
 
 | モード | 動作 |
 |---|---|
-| `normal` | 単打キーで commands 発行（switch / close / rename / pin など） |
+| `normal` | 単打キーで commands 発行（switch / close / pin など） |
 | `search` | `/` で進入、`Esc` で normal へ戻る |
 
 normal モードの主なキー:
@@ -116,7 +116,6 @@ normal モードの主なキー:
 | 移動 | `j`/`k`, `gg`/`G`, `Tab`/`Shift+Tab` | 行移動、先頭/末尾、フィルタ切替 |
 | 切替 | `Enter` | 選択 window へ移動 |
 | Lifecycle | `d` / `D` | window/session の close（state に応じた confirm 強度） |
-| Lifecycle | `R` / `Shift+R` | window/session の inline rename |
 | Lifecycle | `n` / `N` | カーソル session 内に新規 window / popup picker で新規 session |
 | 並べ替え | `Shift+J`/`Shift+K` | 同 session 内 swap |
 | 並べ替え | `m` | mark → drop で別 session へ move |

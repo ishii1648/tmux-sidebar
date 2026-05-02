@@ -165,3 +165,25 @@ window swap (`Shift+J/K`) / move-window (`m`) は維持する。
 - design.md: `Config` 構造体の `MutedSessions` / `SessionOrder` / `Width` フィールド、session 並べ替えセクション、合成ロジックの muted/SessionOrder 言及、幅の `~/.config/tmux-sidebar/width` を削除
 - TODO.md: Phase 3 から mute / session_order を削除、Phase 5 の `--context` フォーマットと Phase 6 の muted 抑制を削除
 - README.md / setup.md: Configuration files 表と `~/.config/tmux-sidebar/width` の案内を削除
+
+---
+
+## inline rename（`R` / `Shift+R`）の取り下げ
+
+control surface 拡張の初版 spec で Phase 2 に含めていた window/session の inline rename
+（`R` / `Shift+R` で `bubbles/textinput` を行内展開）を、実装着手前の見直しで取り下げた。
+
+### 却下理由
+
+- tmux の `automatic-rename on`（デフォルト）で window 名は実行中コマンドに自動更新される。手動 rename が必要なケースは限定的
+- この sidebar は `pane_N_path` 由来の git branch / PR 番号を表示する設計のため、window 名に頼らなくても識別できる。agent 主体の運用では window 名を編集する文化が薄い
+- session 名は tmw 経由で `<owner>_<repo>` 形式に機械生成される。手動 rename したくなるのは命名規則の不備の signal で、UI で対処するより命名規則で吸収すべき
+- tmux native の `prefix+,`（window rename）/ `prefix+$`（session rename）が既に動く。「sidebar dominant + native fallback」原則の下、native で済む操作を sidebar に持ち込む価値は薄い
+- 実装コスト（`bubbles/textinput` 行内展開、modal sub-state、編集中の他コマンド無効化、e2e）が close より明確に重い割に、得られる体感差が小さい
+
+### 影響範囲
+
+- spec.md: 概要文 / normal mode 説明 / Lifecycle 表から rename 言及を削除
+- design.md: `internal/tmux` 責務、modal sub-state 列挙、mutate 翻訳表の R/Shift+R、`## inline rename UI` セクション全体を削除
+- TODO.md: Phase 2 の rename サブセクションを削除し、「採用しない・延期する項目」表に inline rename を理由付きで追加
+- README.md: 概要文 / 実装中 lifecycle 列挙 / Lifecycle 表 / normal mode 説明から rename 言及を削除

@@ -9,7 +9,7 @@
 
 tmux-sidebar は tmux の **cross-context 軸（session / window）** を司る常駐 control surface である。
 左端 sidebar pane に全 session/window を一覧表示し、cursor 選択 + 単打鍵で
-switch / close / rename / pin / move などのライフサイクル操作を発行する。
+switch / close / pin / move などのライフサイクル操作を発行する。
 新規 session 生成は sidebar から起動される popup picker で行い、
 ghq repo 選択 + agent mode 選択をワンフローで完結する。
 
@@ -31,7 +31,7 @@ vim 風の modal。
 
 | モード | 動作 |
 |---|---|
-| **normal** | 単打キーで commands 発行（switch, close, rename, pin など） |
+| **normal** | 単打キーで commands 発行（switch, close, pin など） |
 | **search** | `/` で進入。任意文字でインクリメンタル検索。`Esc` で normal へ戻る |
 
 ## 表示
@@ -84,8 +84,6 @@ pinned session は上部に区切り線で隔てて並べる。
 |---|---|---|
 | `d` | カーソル window を close | running agent 検出時は強い confirm |
 | `D` | カーソル session を close | 複数 window 影響のため必ず confirm |
-| `R` | window を inline rename | `Enter` で確定、`Esc` で取消 |
-| `Shift+R` | session を inline rename | 同上 |
 | `n` | カーソル session 内に新規 window 作成 | session の current path を引き継ぐ |
 | `N` | popup picker mode で新規 session 作成 | 後述 |
 

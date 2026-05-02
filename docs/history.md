@@ -496,3 +496,40 @@ dispatch_launcher.fish の `read -p` は paste で複数行を受け付ける（
 - **手キー入力での改行サポート（Shift+Enter / Ctrl+J で newline 挿入）**: terminal によって detection が不安定。dispatch_launcher.fish も持っていないので非対称になる
 - **bubbles/textarea component の導入**: 依存追加に対する得が薄い（multi-line paste しか使わない）。自前 split + render で十分
 - **paste 中の `\r` を文字としてそのまま保持**: `firstLine` が破綻し、render 時に terminal の CR 解釈で表示が崩れる（cursor が column 0 に戻って後続が前を上書き）。実際に検証で破綻を確認済み
+
+---
+
+## キーボードでの改行 + dispatch 非同期化（Phase 4 追加）
+
+multi-line paste を入れた直後、ユーザから 2 件のフィードバック:
+
+1. Shift+Enter を押すと dispatch が誤発火する（terminal によっては Shift+Enter が plain Enter として届くため、prompt の途中で submit してしまう）
+2. Enter 押下後 → session 作成までのラグが「ハングしているのか正常動作中なのか」分からない
+
+### Shift+Enter / Alt+Enter / Ctrl+J で newline 挿入
+
+`isNewlineKey` が以下を識別して `\n` を prompt に挿入する:
+
+- `KeyCtrlJ`: terminal 非依存。LF (0x0a) は Enter (CR, 0x0d) と別のキー扱いなので確実に区別できる
+- `msg.String() == "shift+enter"` / `"alt+enter"`: bubbletea v1 でも terminal が **kitty keyboard protocol** 等で modifier 付きエンターを識別できるシーケンスとして送る場合だけ届く。Ghostty + tmux passthrough が有効な環境では効く
+
+採用しなかった代替:
+- **bubbletea v2 へのアップグレード**: API 互換性が取れない範囲が大きい。Shift+Enter のためだけに移行する価値が薄い
+- **Shift+Enter サポートを諦めて paste のみ**: ユーザの自然な expectation（多くのチャット UI が Shift+Enter で改行）に逆行する。Ctrl+J が確実なフォールバックとして用意されているなら、Shift+Enter は best-effort で動けばよい
+
+### dispatch を非同期化 + spinner status
+
+dispatch の処理は worktree 作成（fetch + add）と tmux session 生成で 2-5 秒かかる。同期 Dispatch だと bubbletea の Update が return しないので画面が固まり、ユーザは「ハングしたかも」と感じる。
+
+修正:
+
+- `execDispatch` が `tea.Batch(dispatchCmd, spinnerTick())` を返す。`dispatchCmd` は goroutine で `runner.Dispatch` を回し、完了後に `dispatchResultMsg` を送る
+- `Model.dispatching bool` / `dispatchTarget string` / `spinFrame int` を追加
+- `viewPrompt` は dispatching=true の間、入力欄と branch preview の代わりに `⠋ dispatching <repo>...` を spinner 付きで表示
+- `spinnerTickMsg` を 100ms 間隔で受け取り、frame を進めて次の tick を schedule。dispatching=false になったら自然に tick chain が止まる（goroutine リーク無し）
+- 処理中の キー入力は `handlePromptKey` の先頭で drop する（Enter 連打で重複 dispatch を防ぐ）
+- `dispatchResultMsg` 受信時に dispatching=false にし、err なら errMsg、成功なら quitting + statusMsg
+
+採用しなかった代替:
+- **spinner 無しで static "dispatching..." だけ表示**: 動作確認的には十分だが、「動き」がないと不安が残る。100ms tick の cost は無視できる小ささ
+- **bubbles/spinner component の導入**: 依存追加に対する得が薄い。10 文字の Unicode frame array で十分

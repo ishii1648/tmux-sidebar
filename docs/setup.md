@@ -281,7 +281,11 @@ pin は **削除保護** も兼ねる。pinned session の消滅につながる 
    - `Enter`: open 中 repo → その session に switch して終了。それ以外 → Step 2 へ
 2. **Step 2: prompt 入力**
    - 入力した prompt の先頭行から `feat/<slug>` 形式で branch 名を自動生成（入力中にプレビュー表示）
-   - 複数行の prompt は **bracketed paste で貼り付け** ると入る（手キー入力での改行は不可。Enter は確定）。CR / CRLF は LF に正規化されるので、ターミナルが LF を CR に変換する場合でも見た目通り動く
+   - 複数行の prompt の入れ方:
+     - **bracketed paste で貼り付け**（CR / CRLF は LF に正規化されるので、terminal が LF を CR に変換する場合でも見た目通り動く）
+     - **Ctrl+J** で newline 挿入（terminal 非依存、確実に動く）
+     - **Shift+Enter / Alt+Enter** で newline 挿入（kitty キーボードプロトコル等で識別できる terminal のみ。識別できない場合は plain Enter として確定される）
+   - `Enter` で dispatch 実行 → worktree 作成 + tmux session 生成中は spinner + 「dispatching <repo>...」の status が表示される（処理中はキー入力が無視される）
    - `Tab` で launcher 再切替
    - `:<branch>` プレフィックスで先頭行を始めると **branch 接続モード**になる:
      - branch が **local に存在** → そのまま worktree にチェックアウト

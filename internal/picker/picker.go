@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,6 +28,25 @@ const (
 	stepRepo   step = iota // pick a repo + toggle launcher with Tab
 	stepPrompt             // enter the dispatch prompt
 )
+
+// dispatchResultMsg carries the outcome of an async Runner.Dispatch call.
+// dispatching is reset to false on receipt; on success the picker exits
+// with statusMsg, on error the message stays visible for the user to see.
+type dispatchResultMsg struct {
+	name string
+	err  error
+}
+
+// spinnerTickMsg drives the spinner animation while dispatching.
+type spinnerTickMsg struct{}
+
+const spinnerInterval = 100 * time.Millisecond
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func spinnerTick() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
 
 // Runner abstracts the tmux / dispatch invocations the picker performs.
 // Tests substitute a fake; production wires ExecRunner.
@@ -55,8 +75,9 @@ type Model struct {
 	launcher dispatch.Launcher // current launcher selection (claude / codex)
 
 	// prompt is the in-progress prompt body when step==stepPrompt.
-	// Single line for now; multi-line support can be added later (the
-	// launcher already accepts newlines via the prompt file).
+	// Multi-line is supported via paste (LF preserved) and via
+	// shift+enter / alt+enter / ctrl+j when the terminal differentiates
+	// them from plain Enter.
 	prompt string
 
 	width  int
@@ -66,6 +87,13 @@ type Model struct {
 	statusMsg string // shown after a successful exec while quitting
 	quitting  bool
 	runner    Runner
+
+	// dispatching is true between Enter on Step 2 and the dispatchResultMsg
+	// returning. While true the prompt keys are ignored and the view shows
+	// a spinner so users know the picker is working, not hung.
+	dispatching    bool
+	dispatchTarget string // repo basename being dispatched; shown in the spinner line
+	spinFrame      int
 }
 
 // New creates a Model. repos is the discovered ghq list (caller fetches
@@ -99,6 +127,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+	case dispatchResultMsg:
+		m.dispatching = false
+		if msg.err != nil {
+			m.errMsg = "dispatch failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.statusMsg = "dispatched into " + msg.name
+		m.quitting = true
+		return m, tea.Quit
+	case spinnerTickMsg:
+		// Advance the spinner frame and schedule the next tick — but only
+		// while still dispatching. On completion the tick chain dies on
+		// its own (no Cmd returned), so we don't leak goroutines.
+		if m.dispatching {
+			m.spinFrame = (m.spinFrame + 1) % len(spinnerFrames)
+			return m, spinnerTick()
+		}
 	}
 	return m, nil
 }
@@ -165,6 +210,22 @@ func (m *Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// While a dispatch is in flight, drop input — the spinner is showing
+	// progress, and accidental Enter/Esc/etc. could either re-fire the
+	// dispatch or leave the model in an inconsistent state.
+	if m.dispatching {
+		return m, nil
+	}
+	// Multi-line shortcuts: shift+enter / alt+enter / ctrl+j insert a
+	// literal newline rather than firing dispatch. Detection requires the
+	// terminal to differentiate these from plain Enter (kitty keyboard
+	// protocol or similar). On terminals that don't, shift+enter still
+	// arrives as KeyEnter and submits — the user can then fall back to
+	// paste for multi-line input.
+	if isNewlineKey(msg) {
+		m.prompt += "\n"
+		return m, nil
+	}
 	switch msg.Type {
 	case tea.KeyEscape:
 		m.step = stepRepo
@@ -208,6 +269,24 @@ func normalizeNewlines(s string) string {
 	return s
 }
 
+// isNewlineKey reports whether msg should insert a literal `\n` instead of
+// submitting. Three forms are recognised so users can pick whichever their
+// terminal sends as a distinguishable key:
+//   - Ctrl+J (LF, KeyCtrlJ): always distinct from Enter
+//   - Shift+Enter, Alt+Enter: differentiated only when the terminal
+//     emits a kitty/CSI-u keyboard protocol sequence; otherwise they
+//     collapse to Enter
+func isNewlineKey(msg tea.KeyMsg) bool {
+	if msg.Type == tea.KeyCtrlJ {
+		return true
+	}
+	switch msg.String() {
+	case "shift+enter", "alt+enter":
+		return true
+	}
+	return false
+}
+
 // toggleLauncher cycles the launcher between claude and codex. Bound to Tab
 // on both steps so the user can change their mind after seeing repo / prompt
 // context without backtracking through the wizard.
@@ -220,7 +299,10 @@ func (m *Model) toggleLauncher() {
 }
 
 // execDispatch parses branch / checkout-mode out of the prompt buffer and
-// invokes the runner's Dispatch with the current launcher selection.
+// fires the runner's Dispatch in a goroutine. Returns a tea.Cmd that ends
+// in dispatchResultMsg, plus a tea.Cmd that drives the spinner so the user
+// has visible feedback while git worktree / tmux session creation runs
+// (which takes several seconds for fresh worktrees).
 func (m *Model) execDispatch() tea.Cmd {
 	if len(m.filtered) == 0 {
 		m.errMsg = "no repo selected"
@@ -250,14 +332,15 @@ func (m *Model) execDispatch() tea.Cmd {
 		opts.Branch = dispatch.BranchFromPrompt(body)
 		opts.Prompt = body
 	}
-	name, err := m.runner.Dispatch(opts)
-	if err != nil {
-		m.errMsg = "dispatch failed: " + err.Error()
-		return nil
+	m.dispatching = true
+	m.dispatchTarget = r.Basename
+	m.spinFrame = 0
+	runner := m.runner
+	dispatchCmd := func() tea.Msg {
+		name, err := runner.Dispatch(opts)
+		return dispatchResultMsg{name: name, err: err}
 	}
-	m.statusMsg = "dispatched into " + name
-	m.quitting = true
-	return tea.Quit
+	return tea.Batch(dispatchCmd, spinnerTick())
 }
 
 // applyFilter recomputes m.filtered from m.query and clamps the cursor.
@@ -352,6 +435,17 @@ func (m *Model) viewPrompt() string {
 	sb.WriteString("  " + renderLauncherChoice(m.launcher) + "  " + repoName + "\n")
 	sb.WriteString(styleFaint.Render("  "+strings.Repeat("─", clamp(m.width, 30, 80))) + "\n")
 	sb.WriteString("\n")
+
+	if m.dispatching {
+		// Replace the input + branch preview with a status line while the
+		// async Dispatch runs. The spinner gives users a "still working"
+		// signal — fresh worktree creation can take several seconds and a
+		// frozen-looking screen would otherwise feel like a hang.
+		spin := spinnerFrames[m.spinFrame%len(spinnerFrames)]
+		sb.WriteString("  " + styleStatus.Render(spin+" dispatching "+m.dispatchTarget+"...") + "\n")
+		return sb.String()
+	}
+
 	sb.WriteString(renderPromptInput(m.prompt))
 
 	// Branch derivation hint (faint, below the input).
@@ -438,6 +532,9 @@ var (
 	// styleActive highlights the selected launcher in the toggle pair
 	// (dispatch_launcher.fish uses bold bright-green for the same role).
 	styleActive = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
+	// styleStatus is used for the spinner line during dispatch — yellow
+	// to signal "in progress" without competing with red error styling.
+	styleStatus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 )
 
 func clamp(v, lo, hi int) int {

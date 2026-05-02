@@ -139,7 +139,8 @@ claude / codex  <repo>
 - 上の launcher 表示は active（bold + 緑）と inactive（faint）で示される。`Tab` で claude ↔ codex を切り替えられる
 - `Enter` で git worktree 作成 + tmux session 生成 + prompt 投入が実行される
 - prompt の先頭行から branch 名を `feat/<slug>` 形式で自動生成し、入力中にプレビュー表示する
-- 複数行の prompt は **bracketed paste で貼り付け** て入れる（手キー入力での改行は不可、Enter は確定）。CR / CRLF は LF に正規化される。先頭行が branch 名生成に使われ、全文がそのまま launcher に渡る
+- 複数行の prompt は **bracketed paste で貼り付け** て入れる、もしくは **Ctrl+J / Shift+Enter / Alt+Enter** で改行を挿入する（Shift+Enter / Alt+Enter は kitty キーボードプロトコル等で plain Enter と区別できる terminal でのみ動く。区別できない terminal では plain Enter として扱われ確定する）。CR / CRLF は LF に正規化される。先頭行が branch 名生成に使われ、全文がそのまま launcher に渡る
+- `Enter` で dispatch 発火後、worktree 作成 + tmux session 生成が完了するまで spinner と「dispatching <repo>...」の status を表示する。処理中はキー入力が無視される
 - `:<branch>` プレフィックスで先頭行を始めると **branch 接続モード**になる: 指定 branch が local にあればそれを、remote のみなら fetch してから、どこにも無ければ `origin/<default>` から新規作成して worktree を作る。prompt は launcher に渡されず idle で起動する
 - `Esc` で Step 1 に戻る
 

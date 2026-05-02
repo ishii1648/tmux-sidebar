@@ -533,3 +533,49 @@ dispatch の処理は worktree 作成（fetch + add）と tmux session 生成で
 採用しなかった代替:
 - **spinner 無しで static "dispatching..." だけ表示**: 動作確認的には十分だが、「動き」がないと不安が残る。100ms tick の cost は無視できる小ささ
 - **bubbles/spinner component の導入**: 依存追加に対する得が薄い。10 文字の Unicode frame array で十分
+
+---
+
+## picker を fire-and-forget 化（popup 即閉じ + dispatch は run-shell -b）（Phase 4 追加）
+
+dispatch を非同期化 + spinner status を入れた直後、ユーザから「TUI のなかに status 表示してしまうと tmux session 起動までユーザは同期的に待たされることになるよね？」という指摘を受けた。これは正しい。
+
+問題の本質:
+- picker は popup process 内で動いている
+- `dispatch.Launch` を goroutine で呼んでも、popup 自体が `dispatchResultMsg` を待つ
+- 結果として popup が dispatch 完了まで開いたまま = ユーザは閉じる操作以外できない
+- spinner で「動いてる感」を出してもユーザの待ち時間そのものは縮まらない
+
+dispatch_launcher.fish を改めて読み直すと、これは `tmux run-shell -b` で **完全に分離** している:
+
+```fish
+tmux run-shell -b "bash ~/.claude/skills/dispatch/dispatch.sh launch ..."
+```
+
+popup 側 (fish process) は `run-shell -b` 一発で fire-and-forget して即終了。dispatch.sh 側は tmux server が管理する別プロセスとして worktree 作成・session 起動・send-keys を行う。エラーは dispatch.sh 側の `die` が `tmux display-message -d 5000` で通知。
+
+修正:
+
+- `Runner.Dispatch(opts) (string, error)` を `Runner.SpawnDispatch(opts) error` に置き換え
+- `ExecRunner.SpawnDispatch` は `tmux run-shell -b 'tmux-sidebar dispatch <args>'` を発火して即 return
+- picker.execDispatch は SpawnDispatch を呼んで成功したら `tea.Quit` を返すだけ。dispatch 完了は待たない
+- `Options.ToArgs() []string` を新設して、Options を `tmux-sidebar dispatch` の argv tail に変換
+- `WriteTempPrompt(string) (string, error)` を新設して、prompt 本文を tempfile に書く（spawn される CLI の `--prompt-file` で渡す。シェル経由で literal を渡すと改行・metacharacter が壊れるため）
+- main.go の `case "dispatch":` エラー処理に `tmux display-message` を追加。`tmux run-shell -b` で stderr が破棄されてもユーザに見えるようにする
+- spinner / dispatching state / dispatchResultMsg / spinnerTickMsg を全部削除（同期化が unfeasible になったので不要）
+
+採用しなかった代替:
+- **picker process 内で goroutine + popup を delay close**: bubbletea のライフサイクル外で popup を閉じる確実な手段がない。picker process が exit しないと popup は開いたまま
+- **`exec.Command(...).Start() + Process.Release()` で直接 fork**: tmux に管理されないので、ssh disconnect 等の signal が dispatch process に届くと死ぬ。`tmux run-shell -b` は tmux server プロセスの子になるので、ユーザのシェルが閉じても生存する
+
+利点:
+- popup は Enter 押下から < 300ms で閉じる（実機で確認）
+- worktree 作成や git fetch（数秒）は完全に非同期。ユーザは popup を閉じた直後から他の操作ができる
+- dispatch 完了時の `Switch=true` で新 session に自動 attach される（ADR-065 codex 待機も attach 後なので問題なく動く）
+- dispatch_launcher.fish と挙動・実装パターンが一致 → 将来 dotfiles 側を thin wrapper 化したときに違和感がない
+
+副次的な変更:
+- ExecRunner から `Dispatch` を削除し `SpawnDispatch` を追加（in-process Launch は CLI 経由でのみ呼ばれる形に）
+- `dispatch.Options.Prompt` フィールドは picker 経路では使われなくなった（PromptFile 経由）。CLI 直叩きのときだけ使われる
+- picker_test の `TestPickerDispatchFlowClaude` 等は PromptFile に書かれた内容を読んで assert する形に変更
+- `TestPickerKeysIgnoredWhileDispatching` は dispatching state ごと削除されたので不要に。代わりに `TestPickerSpawnErrorShownNotQuit` で SpawnDispatch エラー時の挙動を pin down

@@ -80,6 +80,63 @@ type Options struct {
 	Switch bool
 }
 
+// ToArgs returns the argv tail for `tmux-sidebar dispatch` that, when
+// re-parsed, reconstructs an equivalent Options. Used by callers that
+// fire-and-forget dispatch through `tmux run-shell -b` (the picker does
+// this so its popup can close immediately while the worktree creation
+// and tmux session setup run in the tmux-managed background).
+//
+// Prompt (literal text) is intentionally not serialised — pass it via
+// PromptFile after writing to a tempfile with WriteTempPrompt instead,
+// which avoids shell-quoting newlines and metacharacters.
+func (o Options) ToArgs() []string {
+	args := []string{o.Repo}
+	if o.Launcher != "" {
+		args = append(args, "--launcher", string(o.Launcher))
+	}
+	if o.Branch != "" {
+		args = append(args, "--branch", o.Branch)
+	}
+	if o.Window != "" {
+		args = append(args, "--window", o.Window)
+	}
+	if o.Session != "" {
+		args = append(args, "--session", o.Session)
+	}
+	if o.PromptFile != "" {
+		args = append(args, "--prompt-file", o.PromptFile)
+	}
+	if o.NoWorktree {
+		args = append(args, "--no-worktree")
+	}
+	if o.NoPrompt {
+		args = append(args, "--no-prompt")
+	}
+	if o.Switch {
+		args = append(args, "--switch")
+	}
+	return args
+}
+
+// WriteTempPrompt writes prompt to a fresh tempfile under os.TempDir() and
+// returns the path. Used by the picker before fire-and-forget dispatch:
+// the spawned `tmux-sidebar dispatch --prompt-file <path>` reads this file
+// and removes it after the launcher starts.
+//
+// Failures are returned to the caller so an error can surface in the
+// picker UI before the popup closes.
+func WriteTempPrompt(prompt string) (string, error) {
+	f, err := os.CreateTemp("", "tmux-sidebar-prompt-*")
+	if err != nil {
+		return "", fmt.Errorf("create prompt file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(prompt); err != nil {
+		return "", fmt.Errorf("write prompt file: %w", err)
+	}
+	return f.Name(), nil
+}
+
 // Result is the structured output of a successful Launch.
 type Result struct {
 	SessionName string

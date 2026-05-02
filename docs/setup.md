@@ -285,7 +285,7 @@ pin は **削除保護** も兼ねる。pinned session の消滅につながる 
      - **bracketed paste で貼り付け**（CR / CRLF は LF に正規化されるので、terminal が LF を CR に変換する場合でも見た目通り動く）
      - **Ctrl+J** で newline 挿入（terminal 非依存、確実に動く）
      - **Shift+Enter / Alt+Enter** で newline 挿入（kitty キーボードプロトコル等で識別できる terminal のみ。識別できない場合は plain Enter として確定される）
-   - `Enter` で dispatch 実行 → worktree 作成 + tmux session 生成中は spinner + 「dispatching <repo>...」の status が表示される（処理中はキー入力が無視される）
+   - `Enter` で dispatch を **背景で fire-and-forget 起動** し、popup は即閉じる。worktree 作成 + tmux session 生成 + launcher 起動は `tmux run-shell -b 'tmux-sidebar dispatch ...'` 経由で tmux server 管理下のプロセスとして動き、完了時に Switch でユーザの client が新 session に自動切替される。エラーは `tmux display-message` で通知される
    - `Tab` で launcher 再切替
    - `:<branch>` プレフィックスで先頭行を始めると **branch 接続モード**になる:
      - branch が **local に存在** → そのまま worktree にチェックアウト

@@ -2,6 +2,7 @@ package picker
 
 import (
 	"errors"
+	"os"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,7 +15,6 @@ type fakeRunner struct {
 	calls        []string
 	switchErr    error
 	dispatchErr  error
-	dispatchName string // session name returned from Dispatch
 	dispatchOpts dispatch.Options
 }
 
@@ -22,16 +22,10 @@ func (f *fakeRunner) SwitchClient(name string) error {
 	f.calls = append(f.calls, "switch-client "+name)
 	return f.switchErr
 }
-func (f *fakeRunner) Dispatch(opts dispatch.Options) (string, error) {
-	f.calls = append(f.calls, "dispatch "+opts.Repo+" branch="+opts.Branch+" launcher="+string(opts.Launcher))
+func (f *fakeRunner) SpawnDispatch(opts dispatch.Options) error {
+	f.calls = append(f.calls, "spawn-dispatch "+opts.Repo+" branch="+opts.Branch+" launcher="+string(opts.Launcher))
 	f.dispatchOpts = opts
-	if f.dispatchErr != nil {
-		return "", f.dispatchErr
-	}
-	if f.dispatchName == "" {
-		return "fake-session", nil
-	}
-	return f.dispatchName, nil
+	return f.dispatchErr
 }
 
 func sampleRepos() []repo.Repo {
@@ -75,11 +69,10 @@ func TestPickerNewRepoAdvancesToPromptStep(t *testing.T) {
 }
 
 func TestPickerDispatchFlowClaude(t *testing.T) {
-	runner := &fakeRunner{dispatchName: "bar@feat-add-thing"}
+	runner := &fakeRunner{}
 	m := New(Context{}, sampleRepos(), runner)
 	// Step 1: Enter on "bar" → prompt step (claude is the default launcher)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
-	// Type "add thing"
 	for _, r := range []rune("add") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -87,18 +80,13 @@ func TestPickerDispatchFlowClaude(t *testing.T) {
 	for _, r := range []rune("thing") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	var cmd tea.Cmd
-	m, cmd = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if !m.dispatching {
-		t.Fatalf("expected dispatching=true between Enter and result")
-	}
-	m = finishDispatch(t, m, cmd)
+	m, cmd := updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	if !m.quitting {
-		t.Fatalf("expected quit after dispatch")
+		t.Fatalf("expected picker to quit immediately after spawn-dispatch")
 	}
-	if m.dispatching {
-		t.Errorf("dispatching should be reset to false on result")
+	if cmd == nil {
+		t.Fatal("expected tea.Quit cmd")
 	}
 	if runner.dispatchOpts.Repo != "/r/bar" {
 		t.Errorf("Repo = %q", runner.dispatchOpts.Repo)
@@ -109,11 +97,24 @@ func TestPickerDispatchFlowClaude(t *testing.T) {
 	if runner.dispatchOpts.Branch != "feat/add-thing" {
 		t.Errorf("Branch = %q", runner.dispatchOpts.Branch)
 	}
-	if runner.dispatchOpts.Prompt != "add thing" {
-		t.Errorf("Prompt = %q", runner.dispatchOpts.Prompt)
-	}
 	if !runner.dispatchOpts.Switch {
 		t.Errorf("Switch should be true (picker controls switch ordering)")
+	}
+	// Prompt is shipped via PromptFile (not the literal Prompt field) so
+	// shell quoting in run-shell -b can't mangle newlines / specials.
+	if runner.dispatchOpts.PromptFile == "" {
+		t.Fatalf("PromptFile should be set; opts = %+v", runner.dispatchOpts)
+	}
+	t.Cleanup(func() { os.Remove(runner.dispatchOpts.PromptFile) })
+	body, err := os.ReadFile(runner.dispatchOpts.PromptFile)
+	if err != nil {
+		t.Fatalf("read prompt file: %v", err)
+	}
+	if string(body) != "add thing" {
+		t.Errorf("prompt file body = %q want \"add thing\"", body)
+	}
+	if runner.dispatchOpts.Prompt != "" {
+		t.Errorf("Prompt should be empty (passed via file): %q", runner.dispatchOpts.Prompt)
 	}
 }
 
@@ -143,30 +144,30 @@ func TestPickerTabTogglesLauncherStepPrompt(t *testing.T) {
 	for _, r := range []rune("hi") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	var cmd tea.Cmd
-	m, cmd = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m = finishDispatch(t, m, cmd)
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if runner.dispatchOpts.Launcher != dispatch.LauncherCodex {
 		t.Errorf("dispatched launcher = %q want codex", runner.dispatchOpts.Launcher)
 	}
+	t.Cleanup(func() { os.Remove(runner.dispatchOpts.PromptFile) })
 }
 
 func TestPickerCheckoutMode(t *testing.T) {
-	runner := &fakeRunner{dispatchName: "bar@existing"}
+	runner := &fakeRunner{}
 	m := New(Context{}, sampleRepos(), runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
 	for _, r := range []rune(":existing-branch") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	var cmd tea.Cmd
-	m, cmd = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m = finishDispatch(t, m, cmd)
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	if runner.dispatchOpts.Branch != "existing-branch" {
 		t.Errorf("Branch = %q want existing-branch", runner.dispatchOpts.Branch)
 	}
 	if !runner.dispatchOpts.NoPrompt {
 		t.Errorf("NoPrompt should be true for checkout mode")
+	}
+	if runner.dispatchOpts.PromptFile != "" {
+		t.Errorf("PromptFile should be empty in checkout mode: %q", runner.dispatchOpts.PromptFile)
 	}
 }
 
@@ -195,33 +196,26 @@ func TestPickerNewlineKeysInsertNewline(t *testing.T) {
 			if m.prompt != "first\nsecond" {
 				t.Errorf("prompt = %q want \"first\\nsecond\"", m.prompt)
 			}
-			if m.dispatching || m.quitting {
-				t.Errorf("newline key must not start dispatch (dispatching=%v quitting=%v)", m.dispatching, m.quitting)
+			if m.quitting {
+				t.Errorf("newline key must not start dispatch (quitting=%v)", m.quitting)
 			}
 		})
 	}
 }
 
-func TestPickerKeysIgnoredWhileDispatching(t *testing.T) {
-	runner := &fakeRunner{dispatchName: "bar@x"}
+func TestPickerSpawnErrorShownNotQuit(t *testing.T) {
+	runner := &fakeRunner{dispatchErr: errors.New("run-shell boom")}
 	m := New(Context{}, sampleRepos(), runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt
-	for _, r := range []rune("hi") {
+	for _, r := range []rune("x") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // start dispatch
-	if !m.dispatching {
-		t.Fatal("expected dispatching=true")
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.quitting {
+		t.Fatal("should not quit when SpawnDispatch fails")
 	}
-	// Keystrokes during dispatch must be ignored — no double-fire, no
-	// state mutation.
-	before := m.prompt
-	m, cmd2 := updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	if m.prompt != before {
-		t.Errorf("prompt mutated during dispatch: %q → %q", before, m.prompt)
-	}
-	if cmd2 != nil {
-		t.Errorf("expected nil cmd while dispatching, got non-nil")
+	if m.errMsg == "" {
+		t.Fatal("expected error message")
 	}
 }
 
@@ -277,7 +271,7 @@ func TestPickerSwitchErrorShownNotQuit(t *testing.T) {
 }
 
 func TestPickerPasteNormalizesNewlines(t *testing.T) {
-	runner := &fakeRunner{dispatchName: "bar@feat-line-one"}
+	runner := &fakeRunner{}
 	m := New(Context{}, sampleRepos(), runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
 	// Simulate a bracketed-paste of multi-line content where the terminal
@@ -291,14 +285,17 @@ func TestPickerPasteNormalizesNewlines(t *testing.T) {
 	if got := m.prompt; got != "line one\nline two\nline three" {
 		t.Errorf("prompt = %q want \"line one\\nline two\\nline three\"", got)
 	}
-	var cmd tea.Cmd
-	m, cmd = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m = finishDispatch(t, m, cmd)
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if runner.dispatchOpts.Branch != "feat/line-one" {
 		t.Errorf("Branch = %q want feat/line-one (first line slug)", runner.dispatchOpts.Branch)
 	}
-	if runner.dispatchOpts.Prompt != "line one\nline two\nline three" {
-		t.Errorf("Prompt = %q (newlines must reach launcher)", runner.dispatchOpts.Prompt)
+	t.Cleanup(func() { os.Remove(runner.dispatchOpts.PromptFile) })
+	body, err := os.ReadFile(runner.dispatchOpts.PromptFile)
+	if err != nil {
+		t.Fatalf("read prompt file: %v", err)
+	}
+	if string(body) != "line one\nline two\nline three" {
+		t.Errorf("prompt file = %q (newlines must reach launcher)", body)
 	}
 }
 
@@ -336,40 +333,6 @@ func TestFuzzyFilterAndCursorReset(t *testing.T) {
 func updateAsModel(m *Model, msg tea.Msg) (*Model, tea.Cmd) {
 	out, cmd := m.Update(msg)
 	return out.(*Model), cmd
-}
-
-// finishDispatch unwraps the tea.Batch returned by execDispatch, runs the
-// dispatch leaf to obtain a dispatchResultMsg, and feeds it back through
-// Update so the picker advances to the post-dispatch quitting state.
-//
-// execDispatch returns Batch(dispatchCmd, spinnerTick); we ignore the
-// spinner branch and only run the dispatch.
-func finishDispatch(t *testing.T, m *Model, cmd tea.Cmd) *Model {
-	t.Helper()
-	if cmd == nil {
-		t.Fatal("expected a tea.Cmd from Enter on prompt step")
-	}
-	msg := cmd()
-	batch, ok := msg.(tea.BatchMsg)
-	if !ok {
-		// Not all paths go through Batch (e.g. validation error returns
-		// nil cmd, handled above). If we got a single dispatchResultMsg,
-		// just feed it through.
-		out, _ := m.Update(msg)
-		return out.(*Model)
-	}
-	for _, sub := range batch {
-		if sub == nil {
-			continue
-		}
-		inner := sub()
-		if r, isResult := inner.(dispatchResultMsg); isResult {
-			out, _ := m.Update(r)
-			return out.(*Model)
-		}
-	}
-	t.Fatal("dispatchResultMsg was not produced by the batch")
-	return m
 }
 
 func equalSlice(a, b []string) bool {

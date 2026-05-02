@@ -109,6 +109,12 @@ Subcommands:
 		case "dispatch":
 			if err := runDispatch(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar dispatch: %v\n", err)
+				// Best effort: surface via tmux display-message so the
+				// user still sees the error even when stderr is swallowed
+				// (notably under `tmux run-shell -b`, used by the picker
+				// to fire dispatch in the background).
+				_ = exec.Command("tmux", "display-message", "-d", "5000",
+					"tmux-sidebar dispatch: "+err.Error()).Run()
 				os.Exit(1)
 			}
 			return

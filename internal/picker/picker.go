@@ -11,9 +11,9 @@ package picker
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -29,36 +29,21 @@ const (
 	stepPrompt             // enter the dispatch prompt
 )
 
-// dispatchResultMsg carries the outcome of an async Runner.Dispatch call.
-// dispatching is reset to false on receipt; on success the picker exits
-// with statusMsg, on error the message stays visible for the user to see.
-type dispatchResultMsg struct {
-	name string
-	err  error
-}
-
-// spinnerTickMsg drives the spinner animation while dispatching.
-type spinnerTickMsg struct{}
-
-const spinnerInterval = 100 * time.Millisecond
-
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-func spinnerTick() tea.Cmd {
-	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{} })
-}
-
 // Runner abstracts the tmux / dispatch invocations the picker performs.
 // Tests substitute a fake; production wires ExecRunner.
 type Runner interface {
 	// SwitchClient moves the calling tmux client to the named session.
-	// Used both for "repo already open → switch instead of dispatch" on
-	// Step 1 and for jumping to the freshly dispatched session on Step 2.
+	// Used on Step 1 when the chosen repo already has a session — the
+	// picker switches to it directly without going through dispatch.
 	SwitchClient(name string) error
-	// Dispatch creates a worktree + tmux session and starts the configured
-	// launcher with the given prompt. Returns the new session name on
-	// success so the caller can switch to it.
-	Dispatch(opts dispatch.Options) (string, error)
+	// SpawnDispatch fires `tmux-sidebar dispatch <opts>` in the
+	// background via `tmux run-shell -b`, mirroring how
+	// dispatch_launcher.fish hands work off to dispatch.sh. The picker
+	// quits immediately after this returns so the popup does not block
+	// the user while git worktree creation and tmux session setup run.
+	// Errors during the spawned dispatch surface via tmux
+	// display-message from the dispatch process itself.
+	SpawnDispatch(opts dispatch.Options) error
 }
 
 // Model is the picker's Bubble Tea model.
@@ -87,13 +72,6 @@ type Model struct {
 	statusMsg string // shown after a successful exec while quitting
 	quitting  bool
 	runner    Runner
-
-	// dispatching is true between Enter on Step 2 and the dispatchResultMsg
-	// returning. While true the prompt keys are ignored and the view shows
-	// a spinner so users know the picker is working, not hung.
-	dispatching    bool
-	dispatchTarget string // repo basename being dispatched; shown in the spinner line
-	spinFrame      int
 }
 
 // New creates a Model. repos is the discovered ghq list (caller fetches
@@ -127,23 +105,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-	case dispatchResultMsg:
-		m.dispatching = false
-		if msg.err != nil {
-			m.errMsg = "dispatch failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.statusMsg = "dispatched into " + msg.name
-		m.quitting = true
-		return m, tea.Quit
-	case spinnerTickMsg:
-		// Advance the spinner frame and schedule the next tick — but only
-		// while still dispatching. On completion the tick chain dies on
-		// its own (no Cmd returned), so we don't leak goroutines.
-		if m.dispatching {
-			m.spinFrame = (m.spinFrame + 1) % len(spinnerFrames)
-			return m, spinnerTick()
-		}
 	}
 	return m, nil
 }
@@ -210,12 +171,6 @@ func (m *Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// While a dispatch is in flight, drop input — the spinner is showing
-	// progress, and accidental Enter/Esc/etc. could either re-fire the
-	// dispatch or leave the model in an inconsistent state.
-	if m.dispatching {
-		return m, nil
-	}
 	// Multi-line shortcuts: shift+enter / alt+enter / ctrl+j insert a
 	// literal newline rather than firing dispatch. Detection requires the
 	// terminal to differentiate these from plain Enter (kitty keyboard
@@ -298,11 +253,15 @@ func (m *Model) toggleLauncher() {
 	}
 }
 
-// execDispatch parses branch / checkout-mode out of the prompt buffer and
-// fires the runner's Dispatch in a goroutine. Returns a tea.Cmd that ends
-// in dispatchResultMsg, plus a tea.Cmd that drives the spinner so the user
-// has visible feedback while git worktree / tmux session creation runs
-// (which takes several seconds for fresh worktrees).
+// execDispatch validates the prompt, materialises it (or the
+// `:<branch>` checkout flag) into dispatch.Options, then hands the work
+// off to runner.SpawnDispatch which fires `tmux-sidebar dispatch` via
+// `tmux run-shell -b`. Once the spawn returns, the picker quits — the
+// popup closes immediately and the worktree / session setup runs as a
+// tmux-managed background process. Errors during the spawn (e.g. the
+// run-shell call itself failing) are shown in the picker before quit;
+// errors inside the spawned dispatch surface via tmux display-message
+// from the dispatch process.
 func (m *Model) execDispatch() tea.Cmd {
 	if len(m.filtered) == 0 {
 		m.errMsg = "no repo selected"
@@ -318,29 +277,37 @@ func (m *Model) execDispatch() tea.Cmd {
 	opts := dispatch.Options{
 		Repo:     r.Path,
 		Launcher: m.launcher,
-		// Picker controls the switch ordering: switching the client up
-		// front lets codex's OSC 11 query resolve (ADR-065) before the
-		// launcher even starts, instead of deadlocking the post-create
-		// wait loop for 5 minutes.
+		// Picker always wants the calling client to follow into the new
+		// session. The spawned dispatch process resolves this via
+		// `tmux switch-client` after creating the session — also the fix
+		// for codex's `waitForAttachedClient` deadlock (ADR-065).
 		Switch: true,
 	}
-	switch {
-	case checkout:
+	if checkout {
 		opts.Branch = branch
 		opts.NoPrompt = true
-	default:
+	} else {
 		opts.Branch = dispatch.BranchFromPrompt(body)
-		opts.Prompt = body
+		// Ship the prompt as a tempfile path. The spawned dispatch
+		// reads and removes it; serialising the literal text through
+		// the shell would mangle newlines and metacharacters.
+		path, err := dispatch.WriteTempPrompt(body)
+		if err != nil {
+			m.errMsg = "prompt: " + err.Error()
+			return nil
+		}
+		opts.PromptFile = path
 	}
-	m.dispatching = true
-	m.dispatchTarget = r.Basename
-	m.spinFrame = 0
-	runner := m.runner
-	dispatchCmd := func() tea.Msg {
-		name, err := runner.Dispatch(opts)
-		return dispatchResultMsg{name: name, err: err}
+	if err := m.runner.SpawnDispatch(opts); err != nil {
+		if opts.PromptFile != "" {
+			_ = os.Remove(opts.PromptFile)
+		}
+		m.errMsg = "spawn failed: " + err.Error()
+		return nil
 	}
-	return tea.Batch(dispatchCmd, spinnerTick())
+	m.statusMsg = "dispatching " + r.Basename + "..."
+	m.quitting = true
+	return tea.Quit
 }
 
 // applyFilter recomputes m.filtered from m.query and clamps the cursor.
@@ -436,16 +403,6 @@ func (m *Model) viewPrompt() string {
 	sb.WriteString(styleFaint.Render("  "+strings.Repeat("─", clamp(m.width, 30, 80))) + "\n")
 	sb.WriteString("\n")
 
-	if m.dispatching {
-		// Replace the input + branch preview with a status line while the
-		// async Dispatch runs. The spinner gives users a "still working"
-		// signal — fresh worktree creation can take several seconds and a
-		// frozen-looking screen would otherwise feel like a hang.
-		spin := spinnerFrames[m.spinFrame%len(spinnerFrames)]
-		sb.WriteString("  " + styleStatus.Render(spin+" dispatching "+m.dispatchTarget+"...") + "\n")
-		return sb.String()
-	}
-
 	sb.WriteString(renderPromptInput(m.prompt))
 
 	// Branch derivation hint (faint, below the input).
@@ -532,9 +489,6 @@ var (
 	// styleActive highlights the selected launcher in the toggle pair
 	// (dispatch_launcher.fish uses bold bright-green for the same role).
 	styleActive = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))
-	// styleStatus is used for the spinner line during dispatch — yellow
-	// to signal "in progress" without competing with red error styling.
-	styleStatus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 )
 
 func clamp(v, lo, hi int) int {
@@ -561,13 +515,34 @@ func (ExecRunner) SwitchClient(name string) error {
 	return nil
 }
 
-// Dispatch invokes internal/dispatch.Launch in-process. We don't fork
-// `tmux-sidebar dispatch` because the picker is the same binary; calling
-// the Go function directly is faster and surfaces structured errors.
-func (ExecRunner) Dispatch(opts dispatch.Options) (string, error) {
-	res, err := dispatch.Launch(opts)
-	if err != nil {
-		return "", err
+// SpawnDispatch fires `tmux-sidebar dispatch <opts>` via `tmux run-shell
+// -b`, mirroring how dispatch_launcher.fish hands work to dispatch.sh.
+// The benefit over an in-process call is that the picker popup can close
+// the moment this returns — git worktree creation and tmux session
+// startup (which can take several seconds) run as a tmux-managed
+// background process and stay alive after the popup exits. Dispatch
+// errors that occur after the spawn are reported by the dispatch
+// process itself via tmux display-message.
+func (ExecRunner) SpawnDispatch(opts dispatch.Options) error {
+	bin, err := os.Executable()
+	if err != nil || bin == "" {
+		bin = "tmux-sidebar"
 	}
-	return res.SessionName, nil
+	parts := []string{shellQuote(bin), "dispatch"}
+	for _, a := range opts.ToArgs() {
+		parts = append(parts, shellQuote(a))
+	}
+	cmdLine := strings.Join(parts, " ")
+	out, err := exec.Command("tmux", "run-shell", "-b", cmdLine).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux run-shell: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// shellQuote single-quotes s, escaping embedded single quotes. Used to
+// build the run-shell command line so paths/options with spaces or
+// metacharacters reach the dispatch subcommand intact.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

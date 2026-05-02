@@ -65,8 +65,6 @@ pinned session は上部に区切り線で隔てて並べる。
 |---|---|
 | `j` / `↓` | 次の window 行へ |
 | `k` / `↑` | 前の window 行へ |
-| `gg` | 先頭の window 行へ |
-| `G` | 末尾の window 行へ |
 | `Enter` | 選択 window へ移動（`switch-client` + `select-window`） |
 | `Tab` / `Shift+Tab` | filter 切替（All / Waiting） |
 
@@ -105,17 +103,8 @@ destructive 操作（close 系）は **state file の `running` / `permission` /
 | キー | 動作 |
 |---|---|
 | `Space`（session header 上） | session 配下を折りたたみ / 展開 |
-| `Space`（window 上） | multi-select toggle |
 
 折りたたみ状態はセッションごとに保持されるが、永続化はしない（プロセス再起動でリセット）。
-
-### 多重選択 + バルク
-
-| キー | 動作 |
-|---|---|
-| `Space` | カーソル window を multi-select toggle |
-| `Esc` | 選択解除 |
-| `d`（選択あり） | 選択 window を一括 close（confirm） |
 
 ### その他
 

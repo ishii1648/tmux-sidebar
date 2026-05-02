@@ -40,7 +40,6 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 - window/session の close (`d`/`D`)
 - pin の永続化（`p`）
 - `N` で popup picker mode 起動 → ghq repo + agent mode (`claude` / `codex` / `dispatch` / `orchestrate`) 選択
-- multi-select + bulk close
 - unread permission/ask の履歴バッジ
 - カーソル window の capture-pane プレビュー
 
@@ -113,12 +112,11 @@ normal モードの主なキー:
 
 | カテゴリ | キー | 動作 |
 |---|---|---|
-| 移動 | `j`/`k`, `gg`/`G`, `Tab`/`Shift+Tab` | 行移動、先頭/末尾、フィルタ切替 |
+| 移動 | `j`/`k`, `Tab`/`Shift+Tab` | 行移動、フィルタ切替 |
 | 切替 | `Enter` | 選択 window へ移動 |
 | Lifecycle | `d` / `D` | window/session の close（state に応じた confirm 強度） |
 | Lifecycle | `N` | popup picker で新規 session |
 | 装飾 | `p` | pin toggle |
-| 多重選択 | `Space`, `d`（選択あり） | multi-select toggle、bulk close |
 
 詳細は [docs/spec.md](docs/spec.md) を参照。
 

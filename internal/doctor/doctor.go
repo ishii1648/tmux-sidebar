@@ -71,28 +71,56 @@ type hookFix struct {
 	command string
 }
 
-// stateRunningCmd / stateIdleCmd return inline shell snippets matching
-// ADR-063 Phase A: pane_N has 2 lines (status + agent kind) and pane_N_started
-// / pane_N_path / pane_N_session_id sidecar files are written.
-func stateRunningCmd() string {
-	return `num=$(echo "$TMUX_PANE" | tr -d '%'); dir=` + state.DefaultStateDir +
-		`; mkdir -p "$dir"; printf 'running\nclaude\n' > "$dir/pane_${num}"; ` +
-		`date +%s > "$dir/pane_${num}_started"; ` +
-		`[ -f "$dir/pane_${num}_path" ] || pwd > "$dir/pane_${num}_path"; ` +
-		`if [ -n "$CLAUDE_SESSION_ID" ]; then echo "$CLAUDE_SESSION_ID" > "$dir/pane_${num}_session_id"; fi`
+// stateRunningCmd / stateIdleCmd return the `tmux-sidebar hook` invocations
+// doctor installs into the Claude Code settings file. The subcommand is in
+// the same binary so the writer/reader contract for /tmp/agent-pane-state
+// stays in lockstep across upgrades. Pre-subcommand inline-shell hooks
+// (detectable via inlineShellHookSig) are purged on auto-fix.
+//
+// Codex-side commands include `--kind codex`; see requiredCodexHooks.
+func stateRunningCmd() string { return "tmux-sidebar hook running" }
+func stateIdleCmd() string    { return "tmux-sidebar hook idle" }
+
+// inlineShellHookSig identifies hook commands that pre-date the
+// `tmux-sidebar hook` subcommand: doctor previously inlined a shell snippet
+// containing both `pane_${num}` and a printf invocation. Such commands are
+// purged on auto-fix so we don't end up with two writers competing for the
+// same pane_N file.
+func inlineShellHookSig(cmd string) bool {
+	return strings.Contains(cmd, "pane_${num}") && strings.Contains(cmd, "printf")
 }
 
-func stateIdleCmd() string {
-	return `num=$(echo "$TMUX_PANE" | tr -d '%'); dir=` + state.DefaultStateDir +
-		`; mkdir -p "$dir"; printf 'idle\nclaude\n' > "$dir/pane_${num}"`
-}
-
-// requiredHooks lists the Claude Code settings.json hooks doctor maintains.
-// Mirrors README §8: PreToolUse=running, PostToolUse=idle, Stop=idle.
-var requiredHooks = []hookFix{
+// requiredClaudeHooks lists the Claude Code settings.json hooks doctor
+// maintains. Mirrors setup.md §8: PreToolUse=running, PostToolUse=idle,
+// Stop=idle.
+var requiredClaudeHooks = []hookFix{
 	{event: "PreToolUse", command: stateRunningCmd()},
 	{event: "PostToolUse", command: stateIdleCmd()},
 	{event: "Stop", command: stateIdleCmd()},
+}
+
+// requiredCodexHooks: same events / semantics as Claude, but the subcommand
+// gets `--kind codex` so pane_N's agent line is written correctly.
+var requiredCodexHooks = []hookFix{
+	{event: "PreToolUse", command: "tmux-sidebar hook running --kind codex"},
+	{event: "PostToolUse", command: "tmux-sidebar hook idle --kind codex"},
+	{event: "Stop", command: "tmux-sidebar hook idle --kind codex"},
+}
+
+// agentTarget bundles a settings file location with the hooks doctor expects
+// inside it. The same checks (event missing / legacy state dir / inline shell
+// snippet) apply to both Claude Code and Codex CLI because both read the
+// shape `{"hooks": {<event>: [{matcher, hooks: [{type, command}]}]}}`.
+type agentTarget struct {
+	kind          string
+	titlePrefix   string
+	pathFn        func() (string, error)
+	requiredHooks []hookFix
+}
+
+var agentTargets = []agentTarget{
+	{kind: "claude", titlePrefix: "Claude Code settings.json", pathFn: claudeSettingsPath, requiredHooks: requiredClaudeHooks},
+	{kind: "codex", titlePrefix: "Codex CLI hooks.json", pathFn: codexSettingsPath, requiredHooks: requiredCodexHooks},
 }
 
 // legacyStateDir is the pre-ADR-063 path doctor used to write to. We detect
@@ -101,12 +129,24 @@ const legacyStateDir = "/tmp/claude-pane-state"
 
 // ── settings.json helpers ────────────────────────────────────────────────────
 
-func settingsPath() (string, error) {
+func claudeSettingsPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
 	return filepath.Join(home, ".claude", "settings.json"), nil
+}
+
+// codexSettingsPath returns the user-level Codex hooks config. Codex also
+// reads ~/.codex/config.toml ([hooks] inline) and project-local
+// .codex/hooks.json (when trusted), but doctor only manages the user-level
+// JSON form to keep auto-fix scope narrow.
+func codexSettingsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".codex", "hooks.json"), nil
 }
 
 func readRawSettings(path string) (map[string]json.RawMessage, error) {
@@ -191,6 +231,9 @@ func upsertHookGroup(existing json.RawMessage, command string) json.RawMessage {
 		var keep []hookEntryJSON
 		for _, h := range g.Hooks {
 			if strings.Contains(h.Command, legacyStateDir) {
+				continue
+			}
+			if inlineShellHookSig(h.Command) {
 				continue
 			}
 			keep = append(keep, h)
@@ -430,10 +473,14 @@ var requiredTmuxHooks = []tmuxHookCheck{
 
 // ── diagnosis: settings.json ──────────────────────────────────────────────────
 
-func checkClaudeSettings() (results []checkResult, fixes []hookFix) {
-	path, err := settingsPath()
+// checkAgentSettings inspects one agent's settings file (Claude or Codex)
+// and emits per-event check results, plus a list of fixes the auto-applier
+// can install. Both agents share the same JSON shape, so the same logic
+// applies; only the path and required-command set differ.
+func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hookFix) {
+	path, err := target.pathFn()
 	if err != nil {
-		results = append(results, checkResult{label: "settings.json", sev: sevError, detail: err.Error()})
+		results = append(results, checkResult{label: "settings", sev: sevError, detail: err.Error()})
 		return
 	}
 
@@ -444,34 +491,59 @@ func checkClaudeSettings() (results []checkResult, fixes []hookFix) {
 
 	raw, err := readRawSettings(path)
 	if err != nil {
-		results = append(results, checkResult{label: "settings.json", sev: sevError, detail: err.Error()})
+		results = append(results, checkResult{label: "settings", sev: sevError, detail: err.Error()})
 		return
 	}
 	hooks := getHooksMap(raw)
 
-	for _, fix := range requiredHooks {
+	for _, fix := range target.requiredHooks {
 		switch {
 		case !fileExists:
-			results = append(results, checkResult{label: fix.event, sev: sevWarn, detail: "settings.json not found"})
+			results = append(results, checkResult{label: fix.event, sev: sevWarn, detail: "settings file not found"})
 			fixes = append(fixes, fix)
 		case !hookEventPresent(hooks, fix.event):
 			results = append(results, checkResult{label: fix.event, sev: sevWarn, detail: "hook not configured"})
 			fixes = append(fixes, fix)
 		default:
 			legacy := false
+			inlineShell := false
+			subcommandKindMismatch := false
 			for _, c := range extractHookCommands(hooks, fix.event) {
 				if strings.Contains(c, legacyStateDir) {
 					legacy = true
 					break
 				}
+				if inlineShellHookSig(c) {
+					inlineShell = true
+				}
+				// Detect a subcommand call that targets the wrong agent kind
+				// (e.g. Codex settings carrying `tmux-sidebar hook running`
+				// without --kind codex). Doctor treats this as upgradable so
+				// pane_N's agent line ends up correct.
+				if strings.Contains(c, "tmux-sidebar hook") && !strings.Contains(c, fix.command) {
+					subcommandKindMismatch = true
+				}
 			}
-			if legacy {
+			switch {
+			case legacy:
 				results = append(results, checkResult{
 					label: fix.event, sev: sevWarn,
 					detail: "writes to legacy " + legacyStateDir + " — ADR-063 Phase A moved this to " + state.DefaultStateDir,
 				})
 				fixes = append(fixes, fix)
-			} else {
+			case inlineShell:
+				results = append(results, checkResult{
+					label: fix.event, sev: sevWarn,
+					detail: "uses inline shell snippet — upgrade to `tmux-sidebar hook` subcommand",
+				})
+				fixes = append(fixes, fix)
+			case subcommandKindMismatch:
+				results = append(results, checkResult{
+					label: fix.event, sev: sevWarn,
+					detail: "subcommand kind mismatch — should be `" + fix.command + "`",
+				})
+				fixes = append(fixes, fix)
+			default:
 				results = append(results, checkResult{label: fix.event, sev: sevOK, detail: "hook configured"})
 			}
 		}
@@ -482,7 +554,7 @@ func checkClaudeSettings() (results []checkResult, fixes []hookFix) {
 // checkLegacyClaudeHooks emits an info line when a stale UserPromptSubmit hook
 // (left over from doctor versions before PreToolUse was canonical) is detected.
 func checkLegacyClaudeHooks() []checkResult {
-	path, err := settingsPath()
+	path, err := claudeSettingsPath()
 	if err != nil {
 		return nil
 	}
@@ -766,12 +838,7 @@ func backupFile(path string) (string, error) {
 	return bak, nil
 }
 
-func applySettingsFixes(fixes []hookFix) error {
-	path, err := settingsPath()
-	if err != nil {
-		return err
-	}
-
+func applySettingsFixes(path string, fixes []hookFix) error {
 	bak, err := backupFile(path)
 	if err != nil {
 		return fmt.Errorf("backup: %w", err)
@@ -819,8 +886,17 @@ type checkSection struct {
 	results []checkResult
 }
 
+// pendingFix associates a per-target settings file path with the hook fixes
+// queued for that path, so applySettingsFixes can be dispatched once per
+// agent backend in Run().
+type pendingFix struct {
+	target agentTarget
+	path   string
+	fixes  []hookFix
+}
+
 // Run executes the doctor diagnostic.
-// If autoApply is true, missing settings.json hooks are added without prompting.
+// If autoApply is true, missing hooks are added without prompting.
 func Run(autoApply bool) error {
 	fmt.Println("tmux-sidebar doctor")
 	fmt.Println(strings.Repeat("─", 40))
@@ -828,13 +904,26 @@ func Run(autoApply bool) error {
 
 	runtime := checkSection{title: "Runtime", results: checkRuntime()}
 
-	settingsResults, fixes := checkClaudeSettings()
-	settingsResults = append(settingsResults, checkLegacyClaudeHooks()...)
-	settingsTitle := "Claude Code settings.json"
-	if p, err := settingsPath(); err == nil {
-		settingsTitle = "Claude Code settings.json (" + p + ")"
+	sections := []checkSection{runtime}
+	var pending []pendingFix
+	for _, target := range agentTargets {
+		results, fixes := checkAgentSettings(target)
+		title := target.titlePrefix
+		if p, err := target.pathFn(); err == nil {
+			title = target.titlePrefix + " (" + p + ")"
+		}
+		// Claude-only legacy event detection (UserPromptSubmit cleanup).
+		if target.kind == "claude" {
+			results = append(results, checkLegacyClaudeHooks()...)
+		}
+		sections = append(sections, checkSection{title: title, results: results})
+		if len(fixes) > 0 {
+			path, err := target.pathFn()
+			if err == nil {
+				pending = append(pending, pendingFix{target: target, path: path, fixes: fixes})
+			}
+		}
 	}
-	settings := checkSection{title: settingsTitle, results: settingsResults}
 
 	doc := loadTmuxConf()
 	tmuxResults := []checkResult{}
@@ -846,9 +935,7 @@ func Run(autoApply bool) error {
 	if doc.found {
 		tmuxTitle = "tmux.conf (" + doc.path + ")"
 	}
-	tmuxSection := checkSection{title: tmuxTitle, results: tmuxResults}
-
-	sections := []checkSection{runtime, settings, tmuxSection}
+	sections = append(sections, checkSection{title: tmuxTitle, results: tmuxResults})
 
 	var errCount, warnCount int
 	for _, s := range sections {
@@ -865,34 +952,45 @@ func Run(autoApply bool) error {
 		fmt.Println()
 	}
 
-	if len(fixes) == 0 {
+	if len(pending) == 0 {
 		switch {
 		case errCount == 0 && warnCount == 0:
 			fmt.Println(styleOK.Render("All checks passed."))
 		case errCount > 0:
-			fmt.Printf("%s, %s — settings.json is up to date. Address tmux.conf manually using the hints above.\n",
+			fmt.Printf("%s, %s — agent settings up to date. Address tmux.conf manually using the hints above.\n",
 				styleError.Render(fmt.Sprintf("%d error(s)", errCount)),
 				styleWarn.Render(fmt.Sprintf("%d warning(s)", warnCount)))
 		default:
-			fmt.Printf("%s — settings.json is up to date. Address tmux.conf manually using the hints above.\n",
+			fmt.Printf("%s — agent settings up to date. Address tmux.conf manually using the hints above.\n",
 				styleWarn.Render(fmt.Sprintf("%d warning(s)", warnCount)))
 		}
 		return nil
 	}
 
-	fmt.Printf("%d settings.json hook(s) to add or upgrade:\n", len(fixes))
-	for _, fix := range fixes {
-		fmt.Printf("  + %s\n", fix.event)
+	totalFixes := 0
+	for _, p := range pending {
+		totalFixes += len(p.fixes)
+	}
+	fmt.Printf("%d agent hook(s) to add or upgrade:\n", totalFixes)
+	for _, p := range pending {
+		for _, fix := range p.fixes {
+			fmt.Printf("  + [%s] %s\n", p.target.kind, fix.event)
+		}
 	}
 	fmt.Println()
 
 	if !autoApply {
-		fmt.Print("Apply changes to settings.json? [y/N]: ")
+		fmt.Print("Apply changes to agent settings files? [y/N]: ")
 		scanner := bufio.NewScanner(os.Stdin)
 		if !scanner.Scan() || strings.ToLower(strings.TrimSpace(scanner.Text())) != "y" {
 			fmt.Println("Aborted.")
 			return nil
 		}
 	}
-	return applySettingsFixes(fixes)
+	for _, p := range pending {
+		if err := applySettingsFixes(p.path, p.fixes); err != nil {
+			return fmt.Errorf("[%s] %w", p.target.kind, err)
+		}
+	}
+	return nil
 }

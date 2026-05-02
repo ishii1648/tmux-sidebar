@@ -727,3 +727,73 @@ dispatch 完了通知として display-message を撤廃した結果、「dispat
 
 - 既存ユーザの tmux.conf にサイドバー側の `N` 想定で bind を書いていない人は、§10 の bind-key 例を追加しないと popup picker を使えなくなる。リリースノートで明示する必要がある
 - dotfiles の `dispatch_launcher.fish` が `tmux-sidebar dispatch` の thin wrapper に置き換わる長期移行は変わらず別タスク
+
+---
+
+## agent-pane-state の書き出しを `tmux-sidebar hook` サブコマンドに集約（2026-05-03）
+
+### それまでの方針
+
+agent (Claude Code / Codex CLI) が状態ファイルを書き出す経路は、setup.md と doctor の auto-fix の両方で **inline shell snippet を `.claude/settings.json` に埋める** ことで提供していた。具体的には `num=$(echo "$TMUX_PANE" | tr -d '%'); dir=/tmp/agent-pane-state; mkdir -p "$dir"; printf 'running\nclaude\n' > "$dir/pane_${num}"; date +%s > ...; if [ -n "$CLAUDE_SESSION_ID" ]; then ...; fi` のような行を `command` フィールドに直書きしていた。
+
+### 反転の動機
+
+レビューで「agent-pane-state writer の責務を呼び出し側 (=ユーザの settings.json + doctor) に押し付けている」「呼び出し側の責務は hook 設定で済むようにすべき」と指摘を受けた。具体的に問題視された点:
+
+1. **仕様の二重持ち**: `pane_N` の 2 行構造、sidecar files (`pane_N_started` / `pane_N_path` / `pane_N_session_id`) の意味は `internal/state.FSReader` が source of truth だが、書き出し側は doc / doctor 内の shell 文字列が独立に同じ仕様を再実装していた。reader を変更しても writer が追従せず silently 壊れる経路ができていた
+2. **Claude Code hook 入力規約の取りこぼし**: Claude Code は hook に stdin JSON で `session_id` / `cwd` を渡す規約だが、shell snippet は `$CLAUDE_SESSION_ID` env var を読んでいた。これは規約と一致せず、`session_id` が取れていないケースが想定された
+3. **他の subcommand との不整合**: `dispatch` / `doctor` / `restart` 等は既にバイナリに統合されているのに、hook handler だけ doc の shell snippet なのは設計上ちぐはぐ
+4. **Codex CLI への流用が雑**: setup.md は「Codex も同じスクリプトを呼ぶか kind だけ書き換えた専用版を呼び出す」と曖昧な指示で、ユーザ側で AGENT_KIND env var を扱う必要があった
+
+### 採用した方式
+
+- `internal/hook` パッケージを新設し、状態ファイル書き出しロジックを `Write(Options{...})` として実装
+  - stdin を best-effort で JSON パースして `session_id` / `cwd` を抽出（パース失敗・空 stdin は無視して env var / `os.Getwd()` にフォールバック）
+  - `pane_N_path` は最初の running 遷移時のみ書く write-once セマンティクス
+  - 1 MiB の `io.LimitReader` で病的 payload を遮断
+- `tmux-sidebar hook <status> [--kind claude|codex]` を main.go に追加
+  - `<status>` は `running` / `idle` / `permission` / `ask`
+  - `--kind` 既定値は `claude`、Codex 用は `--kind codex` を明示
+- `internal/doctor` の `stateRunningCmd()` / `stateIdleCmd()` を `tmux-sidebar hook running` / `tmux-sidebar hook idle` に変更
+- 旧 inline shell snippet を識別する `inlineShellHookSig` ヘルパを追加し、`upsertHookGroup` の purge 対象に追加。`checkClaudeSettings` の diagnosis でも「inline shell snippet → upgrade to subcommand」と表示
+- setup.md §8 を rewrite。shell script のサンプルは削除し、settings.json 例 1 つに圧縮
+
+### 採用しなかった代替
+
+- **inline shell snippet を維持しつつ stdin JSON を `jq` で抜くだけ修正**: `jq` 依存が増える + 仕様が doc / doctor の 2 箇所に独立して残る問題が解決しない
+- **subcommand 化はしつつ `command` フィールドは shell 経由で組み立てる**: hook configuration を「1 行の subcommand 呼び出し」に保ちたいので shell 経由は冗長。`tmux-sidebar hook running` 一発で済む方が doc も短い
+- **stdin JSON 必須にする**: Codex CLI が将来同じ JSON 規約を採るとは限らず、stdin が空でも動く best-effort のほうが robust
+- **`--kind` を env var (`AGENT_KIND`) で受ける**: 引数として明示する方が settings.json の読みやすさが上がる。env var は隠れた依存を増やす
+
+### 追補: Codex CLI も同じ subcommand で扱えると判明した（2026-05-03）
+
+レビューで「§8 を推奨化 + Claude / Codex 個別の設定例 + doctor チェックを追加すべき」と指摘を受け、Codex CLI 側の hook 規約を確認したところ、Codex も Claude Code と **ほぼ同型** だと分かった:
+
+- 同じ event 名（`PreToolUse` / `PostToolUse` / `Stop`、ほか `SessionStart` / `PermissionRequest` / `UserPromptSubmit`）
+- 同じ JSON shape（`{"hooks": {<event>: [{"matcher": ..., "hooks": [{"type": "command", "command": "..."}]}]}}`）
+- 同じ stdin payload（`session_id` / `transcript_path` / `cwd` / `hook_event_name` / `model` を共通フィールドとして含む）
+- 設定ファイルパスのみ差異（`~/.codex/hooks.json` または `~/.codex/config.toml` の inline `[hooks]`）
+
+そのため `tmux-sidebar hook` サブコマンド本体は **再利用そのまま**、`--kind codex` を付ける運用ガイドを setup.md に追加し、doctor を path/required-command 別の `agentTarget` にリファクタして両 backend を並列にチェックするように変更した。
+
+採用しなかった代替:
+- **Codex 側の hook 機構を未確認のまま「将来対応」のスタブだけ書く**: 想像で書いた設定例は誤情報になりやすい。Codex 公式 docs で event 命名と JSON shape が一致することを確認したうえで具体例を載せた
+- **Codex 用に専用 subcommand (`hook-codex`) を作る**: 仕様が同型なので分ける利得がない。`--kind` flag で十分
+- **`~/.codex/config.toml` の inline `[hooks]` も doctor で扱う**: TOML パースを doctor に持ち込むコストに見合わない。user-level JSON (`~/.codex/hooks.json`) のみ管理。TOML に書いている既存ユーザは setup.md の例を参照して JSON 側に移行してもらう
+
+doctor の追加検査:
+- 設定ファイル不在 / event 不足 → WARN + auto-fix 対象
+- 旧 inline shell snippet → WARN + 置換
+- legacy state dir (`/tmp/claude-pane-state`) 参照 → WARN + 置換
+- subcommand kind 不一致（Codex の settings に `tmux-sidebar hook running` のみで `--kind codex` が無いケース）→ WARN + 置換
+
+### 影響範囲
+
+- 新規: `internal/hook/hook.go` + `internal/hook/hook_test.go`
+- 修正: `main.go`（`hook` subcommand とヘルプ）、`internal/doctor/doctor.go`（`stateRunningCmd` / `stateIdleCmd`、`upsertHookGroup` の purge 条件、`checkClaudeSettings` の diagnosis）、`internal/doctor/doctor_test.go`（subcommand 形式に書き換え）
+- ドキュメント: `docs/setup.md` §8 全面書き換え、`docs/design.md` の責務一覧と subcommand 表に追記、`docs/history.md` に当エントリ
+
+### 残課題
+
+- 既存ユーザの settings.json に inline shell snippet が残っている場合、`tmux-sidebar doctor --yes` を 1 回走らせて subcommand 形式に置き換える必要がある。リリースノートで案内する
+- Codex CLI が将来 hook 機構を提供したとき、stdin JSON のシェイプが Claude Code と異なる場合は `internal/hook.readPayload` を agent kind で分岐する必要が出る可能性がある。現時点では Codex 側の hook protocol が未確立のため、stdin が来なければ env / `os.Getwd()` にフォールバックする現挙動で十分

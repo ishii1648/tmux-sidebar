@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ishii1648/tmux-sidebar/internal/state"
 )
 
 // ── readRawSettings ───────────────────────────────────────────────────────────
@@ -143,41 +141,81 @@ func TestUpsertHookGroup_NoDuplicate(t *testing.T) {
 
 // ── stateRunningCmd / stateIdleCmd ────────────────────────────────────────────
 
-func TestStateCommandsTargetPhaseAPath(t *testing.T) {
-	r := stateRunningCmd()
-	if !strings.Contains(r, state.DefaultStateDir) {
-		t.Errorf("running cmd should target %s, got: %s", state.DefaultStateDir, r)
+func TestStateCommandsAreSubcommand(t *testing.T) {
+	if got := stateRunningCmd(); got != "tmux-sidebar hook running" {
+		t.Errorf("running cmd = %q, want tmux-sidebar hook running", got)
 	}
-	if strings.Contains(r, legacyStateDir) {
-		t.Errorf("running cmd should not mention legacy %s: %s", legacyStateDir, r)
-	}
-	for _, want := range []string{`printf 'running\nclaude\n'`, `pane_${num}_started`, `pane_${num}_path`, `pane_${num}_session_id`} {
-		if !strings.Contains(r, want) {
-			t.Errorf("running cmd missing %q: %s", want, r)
-		}
-	}
-
-	i := stateIdleCmd()
-	if !strings.Contains(i, `printf 'idle\nclaude\n'`) {
-		t.Errorf("idle cmd should write idle+claude, got: %s", i)
-	}
-	if !strings.Contains(i, state.DefaultStateDir) {
-		t.Errorf("idle cmd should target %s, got: %s", state.DefaultStateDir, i)
+	if got := stateIdleCmd(); got != "tmux-sidebar hook idle" {
+		t.Errorf("idle cmd = %q, want tmux-sidebar hook idle", got)
 	}
 }
 
-func TestRequiredHooksMatchReadme(t *testing.T) {
+func TestInlineShellHookSig(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want bool
+	}{
+		{`num=$(echo "$TMUX_PANE" | tr -d '%'); dir=/tmp/agent-pane-state; mkdir -p "$dir"; printf 'running\nclaude\n' > "$dir/pane_${num}"`, true},
+		{"tmux-sidebar hook running", false},
+		{"echo unrelated", false},
+		{`pane_${num} alone, no formatter`, false},
+	}
+	for _, tc := range cases {
+		if got := inlineShellHookSig(tc.cmd); got != tc.want {
+			t.Errorf("inlineShellHookSig(%q) = %v, want %v", tc.cmd, got, tc.want)
+		}
+	}
+}
+
+func TestRequiredClaudeHooksMatchReadme(t *testing.T) {
 	want := map[string]bool{"PreToolUse": false, "PostToolUse": false, "Stop": false}
-	for _, h := range requiredHooks {
+	for _, h := range requiredClaudeHooks {
 		if _, ok := want[h.event]; !ok {
-			t.Errorf("unexpected event in requiredHooks: %s", h.event)
+			t.Errorf("unexpected event in requiredClaudeHooks: %s", h.event)
 		}
 		want[h.event] = true
+		if !strings.HasPrefix(h.command, "tmux-sidebar hook ") {
+			t.Errorf("claude hook command should call subcommand, got %q", h.command)
+		}
+		if strings.Contains(h.command, "--kind") {
+			t.Errorf("claude hook command should not need --kind, got %q", h.command)
+		}
 	}
 	for ev, found := range want {
 		if !found {
-			t.Errorf("requiredHooks missing %s", ev)
+			t.Errorf("requiredClaudeHooks missing %s", ev)
 		}
+	}
+}
+
+func TestRequiredCodexHooksUseKindFlag(t *testing.T) {
+	want := map[string]bool{"PreToolUse": false, "PostToolUse": false, "Stop": false}
+	for _, h := range requiredCodexHooks {
+		if _, ok := want[h.event]; !ok {
+			t.Errorf("unexpected event in requiredCodexHooks: %s", h.event)
+		}
+		want[h.event] = true
+		if !strings.Contains(h.command, "--kind codex") {
+			t.Errorf("codex hook command must include --kind codex, got %q", h.command)
+		}
+	}
+	for ev, found := range want {
+		if !found {
+			t.Errorf("requiredCodexHooks missing %s", ev)
+		}
+	}
+}
+
+func TestCodexSettingsPath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	got, err := codexSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, ".codex", "hooks.json")
+	if got != want {
+		t.Errorf("codexSettingsPath = %q, want %q", got, want)
 	}
 }
 
@@ -185,18 +223,15 @@ func TestRequiredHooksMatchReadme(t *testing.T) {
 
 func TestApplySettingsFixes_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
+	path := filepath.Join(dir, ".claude", "settings.json")
 
 	fixes := []hookFix{
 		{event: "PreToolUse", command: "echo running"},
 	}
-	if err := applySettingsFixes(fixes); err != nil {
+	if err := applySettingsFixes(path, fixes); err != nil {
 		t.Fatalf("applySettingsFixes: %v", err)
 	}
 
-	path := filepath.Join(dir, ".claude", "settings.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("settings.json not created: %v", err)
@@ -219,27 +254,23 @@ func TestApplySettingsFixes_CreatesFile(t *testing.T) {
 
 func TestApplySettingsFixes_PreservesExistingKeys(t *testing.T) {
 	dir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
-
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	path := filepath.Join(claudeDir, "settings.json")
 	initial := `{"apiKey":"existing","hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"echo stop"}]}]}}`
-	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(initial), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	fixes := []hookFix{
 		{event: "PreToolUse", command: "echo running"},
 	}
-	if err := applySettingsFixes(fixes); err != nil {
+	if err := applySettingsFixes(path, fixes); err != nil {
 		t.Fatalf("applySettingsFixes: %v", err)
 	}
 
-	path := filepath.Join(claudeDir, "settings.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("settings.json missing: %v", err)
@@ -274,14 +305,11 @@ func TestApplySettingsFixes_PreservesExistingKeys(t *testing.T) {
 
 func TestApplySettingsFixes_UpgradesLegacy(t *testing.T) {
 	dir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
-
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	path := filepath.Join(claudeDir, "settings.json")
 	legacyCmd := `num=1; dir=` + legacyStateDir + `; echo running > "$dir/pane_1"`
 	initial := map[string]any{
 		"hooks": map[string]any{
@@ -292,26 +320,26 @@ func TestApplySettingsFixes_UpgradesLegacy(t *testing.T) {
 		},
 	}
 	b, _ := json.Marshal(initial)
-	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), b, 0o644); err != nil {
+	if err := os.WriteFile(path, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	fixes := []hookFix{
 		{event: "PreToolUse", command: stateRunningCmd()},
 	}
-	if err := applySettingsFixes(fixes); err != nil {
+	if err := applySettingsFixes(path, fixes); err != nil {
 		t.Fatalf("applySettingsFixes: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), legacyStateDir) {
 		t.Errorf("legacy path should be purged, but still present: %s", string(data))
 	}
-	if !strings.Contains(string(data), state.DefaultStateDir) {
-		t.Errorf("phase-A path should be present, got: %s", string(data))
+	if !strings.Contains(string(data), "tmux-sidebar hook running") {
+		t.Errorf("subcommand fix should be present, got: %s", string(data))
 	}
 }
 
@@ -620,7 +648,8 @@ func TestCheckClaudeSettings_FlagsLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, fixes := checkClaudeSettings()
+	target := agentTarget{kind: "claude", titlePrefix: "Claude", pathFn: claudeSettingsPath, requiredHooks: requiredClaudeHooks}
+	results, fixes := checkAgentSettings(target)
 	var preToolUse checkResult
 	for _, r := range results {
 		if r.label == "PreToolUse" {
@@ -641,6 +670,61 @@ func TestCheckClaudeSettings_FlagsLegacy(t *testing.T) {
 	}
 	if !fixed {
 		t.Error("expected PreToolUse to be queued for fix when legacy detected")
+	}
+}
+
+// ── checkAgentSettings: codex backend ─────────────────────────────────────────
+
+func TestCheckAgentSettings_CodexNotConfigured(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	target := agentTarget{kind: "codex", titlePrefix: "Codex", pathFn: codexSettingsPath, requiredHooks: requiredCodexHooks}
+	results, fixes := checkAgentSettings(target)
+	if len(results) != len(requiredCodexHooks) {
+		t.Fatalf("expected %d results, got %d", len(requiredCodexHooks), len(results))
+	}
+	for _, r := range results {
+		if r.sev != sevWarn {
+			t.Errorf("expected sevWarn for missing Codex hook %s, got %+v", r.label, r)
+		}
+	}
+	if len(fixes) != len(requiredCodexHooks) {
+		t.Errorf("expected all Codex hooks queued for fix, got %d", len(fixes))
+	}
+}
+
+func TestCheckAgentSettings_CodexKindMismatch(t *testing.T) {
+	// Settings file at the Codex location but the command lacks --kind codex.
+	// Doctor should flag it as kind-mismatch so pane_N's agent line stays
+	// correct after auto-fix.
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	codexDir := filepath.Join(dir, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Each event has a `tmux-sidebar hook` call WITHOUT --kind codex.
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse":  []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running"}}}},
+			"PostToolUse": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
+			"Stop":        []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
+		},
+	}
+	b, _ := json.Marshal(settings)
+	if err := os.WriteFile(filepath.Join(codexDir, "hooks.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := agentTarget{kind: "codex", titlePrefix: "Codex", pathFn: codexSettingsPath, requiredHooks: requiredCodexHooks}
+	results, fixes := checkAgentSettings(target)
+	for _, r := range results {
+		if r.sev != sevWarn || !strings.Contains(r.detail, "kind mismatch") {
+			t.Errorf("expected kind-mismatch warning for %s, got %+v", r.label, r)
+		}
+	}
+	if len(fixes) != 3 {
+		t.Errorf("expected 3 fixes queued, got %d", len(fixes))
 	}
 }
 

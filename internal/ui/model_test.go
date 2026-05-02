@@ -25,6 +25,11 @@ func init() {
 
 type fakeTmuxClient struct {
 	panes []tmux.PaneInfo
+
+	killedSessions []string
+	killedWindows  []string // formatted as "session:index"
+	captureContent string   // returned from CapturePane
+	captureTargets []string
 }
 
 func (f *fakeTmuxClient) ListSessions() ([]tmux.Session, error)    { return nil, nil }
@@ -34,8 +39,18 @@ func (f *fakeTmuxClient) CurrentPane() (tmux.CurrentPane, error)   { return tmux
 func (f *fakeTmuxClient) SwitchWindow(_ string, _ int) error       { return nil }
 func (f *fakeTmuxClient) PaneCurrentPath(_ string) (string, error) { return "", nil }
 func (f *fakeTmuxClient) ListAll() ([]tmux.PaneInfo, error)        { return f.panes, nil }
-func (f *fakeTmuxClient) KillSession(_ string) error               { return nil }
-func (f *fakeTmuxClient) KillWindow(_ string, _ int) error         { return nil }
+func (f *fakeTmuxClient) KillSession(name string) error {
+	f.killedSessions = append(f.killedSessions, name)
+	return nil
+}
+func (f *fakeTmuxClient) KillWindow(name string, index int) error {
+	f.killedWindows = append(f.killedWindows, fmt.Sprintf("%s:%d", name, index))
+	return nil
+}
+func (f *fakeTmuxClient) CapturePane(target string) (string, error) {
+	f.captureTargets = append(f.captureTargets, target)
+	return f.captureContent, nil
+}
 
 type fakeStateReader struct{ states map[int]state.PaneState }
 
@@ -196,6 +211,7 @@ func TestBlurMsg_SetsFocusedFalse(t *testing.T) {
 
 func TestBlurMsg_ClearsSearchQuery(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
 	m.Update(key('a'))
 	if m.searchQuery == "" {
 		t.Fatal("precondition: searchQuery should not be empty after typing")
@@ -203,6 +219,9 @@ func TestBlurMsg_ClearsSearchQuery(t *testing.T) {
 	m.Update(tea.BlurMsg{})
 	if m.searchQuery != "" {
 		t.Errorf("after BlurMsg: searchQuery = %q, want empty", m.searchQuery)
+	}
+	if m.inputMode != modeNormal {
+		t.Errorf("after BlurMsg: inputMode should reset to normal")
 	}
 }
 
@@ -318,8 +337,8 @@ func TestView_UnfocusedHidesCursorAndChangesHeader(t *testing.T) {
 func TestView_FocusedShowsFooter(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "Esc:clear") {
-		t.Errorf("focused View should show footer hints:\n%s", view)
+	if !strings.Contains(view, "/:search") {
+		t.Errorf("focused View should show normal-mode footer hints:\n%s", view)
 	}
 }
 
@@ -327,7 +346,7 @@ func TestView_FooterAlwaysVisible(t *testing.T) {
 	for _, focused := range []bool{true, false} {
 		m := newTestModel(sampleItems(), 1, focused)
 		view := stripANSI(m.View())
-		if !strings.Contains(view, "Esc:clear") {
+		if !strings.Contains(view, "/:search") {
 			t.Errorf("View (focused=%v) should always show footer hints:\n%s", focused, view)
 		}
 	}
@@ -616,6 +635,7 @@ func TestScroll_NoHeightNoRestriction(t *testing.T) {
 
 func TestSearch_TypingFiltersItems(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
 	for _, r := range "work" {
 		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -636,10 +656,17 @@ func TestSearch_TypingFiltersItems(t *testing.T) {
 
 func TestSearch_EscClearsSearch(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	if m.searchQuery == "" {
+		t.Fatal("precondition: searchQuery should not be empty after typing")
+	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
 	if m.searchQuery != "" {
 		t.Errorf("Esc should clear search query, got %q", m.searchQuery)
+	}
+	if m.inputMode != modeNormal {
+		t.Errorf("Esc should return to normal mode, got %v", m.inputMode)
 	}
 	if len(m.visibleItems()) != len(sampleItems()) {
 		t.Errorf("after Esc, all items should be visible")
@@ -648,6 +675,7 @@ func TestSearch_EscClearsSearch(t *testing.T) {
 
 func TestSearch_BackspaceDeletesChar(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
@@ -658,6 +686,7 @@ func TestSearch_BackspaceDeletesChar(t *testing.T) {
 
 func TestSearch_CaseInsensitive(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'W'}})
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
 	visible := m.visibleItems()
@@ -674,6 +703,7 @@ func TestSearch_CaseInsensitive(t *testing.T) {
 
 func TestSearch_MatchesSessionName(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
 	for _, r := range "session-b" {
 		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -706,6 +736,7 @@ func TestSearch_JKNavigateWhenEmpty(t *testing.T) {
 
 func TestSearch_JKTypeWhenNonEmpty(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	m.Update(key('j'))
 	if m.searchQuery != "aj" {
@@ -725,6 +756,7 @@ func TestView_SearchPromptAlwaysVisible(t *testing.T) {
 
 func TestView_SearchPromptShowsQuery(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
+	m.inputMode = modeSearch
 	m.searchQuery = "test"
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "> test") {
@@ -735,8 +767,8 @@ func TestView_SearchPromptShowsQuery(t *testing.T) {
 func TestView_FooterShowsKeyHints(t *testing.T) {
 	m := newTestModel(sampleItems(), 1, true)
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "Esc:clear") {
-		t.Errorf("footer should contain Esc:clear hint:\n%s", view)
+	if !strings.Contains(view, "/:search") {
+		t.Errorf("footer should contain /:search hint:\n%s", view)
 	}
 }
 
@@ -1113,5 +1145,279 @@ func TestView_PRBadgeRightAligned(t *testing.T) {
 	// (not just the single mandatory gap), since the name is short.
 	if !strings.Contains(line, "feat   ") {
 		t.Errorf("expected padding between name and suffix; line = %q", line)
+	}
+}
+
+// ── modal input (Phase 1) ───────────────────────────────────────────────────
+
+func TestModal_NormalIgnoresPlainText(t *testing.T) {
+	// In normal mode a stray rune that does not match a registered command
+	// must NOT enter the search query. This is the load-bearing change of
+	// Phase 1: it is what frees up letters like d/D/p for commands.
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('a'))
+	m.Update(key('z'))
+	if m.searchQuery != "" {
+		t.Errorf("normal mode must not capture text; query = %q", m.searchQuery)
+	}
+	if m.inputMode != modeNormal {
+		t.Errorf("normal mode plain text must not switch modes; got %v", m.inputMode)
+	}
+}
+
+func TestModal_SlashEntersSearchMode(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
+	if m.inputMode != modeSearch {
+		t.Errorf("after /: inputMode = %v, want modeSearch", m.inputMode)
+	}
+	if m.searchQuery != "" {
+		t.Errorf("after /: query should start empty, got %q", m.searchQuery)
+	}
+}
+
+func TestModal_SlashThenTextFiltersList(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
+	for _, r := range "work" {
+		m.Update(key(r))
+	}
+	if m.searchQuery != "work" {
+		t.Errorf("after /work: query = %q, want 'work'", m.searchQuery)
+	}
+	visible := m.visibleItems()
+	windows := 0
+	for _, item := range visible {
+		if item.Kind == ItemWindow {
+			windows++
+		}
+	}
+	if windows != 1 {
+		t.Errorf("expected 1 matching window after filter, got %d", windows)
+	}
+}
+
+func TestModal_EscReturnsToNormal(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('/'))
+	m.Update(key('w'))
+	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if m.inputMode != modeNormal {
+		t.Errorf("Esc should return to normal; got %v", m.inputMode)
+	}
+	if m.searchQuery != "" {
+		t.Errorf("Esc should clear query; got %q", m.searchQuery)
+	}
+}
+
+func TestModal_NormalKeysPreserved(t *testing.T) {
+	// j / k / Enter / Tab must still behave the way they used to in normal
+	// mode after the modal split. Tab is currently unbound — the assertion
+	// here is that it does not get swallowed as text.
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('j'))
+	if m.cursor != 2 {
+		t.Errorf("j in normal mode should move cursor; got %d", m.cursor)
+	}
+	m.Update(key('k'))
+	if m.cursor != 1 {
+		t.Errorf("k in normal mode should move cursor back; got %d", m.cursor)
+	}
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Errorf("Enter in normal mode should return a switch Cmd")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if m.searchQuery != "" {
+		t.Errorf("Tab must not be captured as search text; got %q", m.searchQuery)
+	}
+}
+
+// ── close / confirm (Phase 2) ───────────────────────────────────────────────
+
+func TestClose_DRequestsKillWindowConfirm(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('d'))
+	if m.confirm != confirmKillWindow {
+		t.Errorf("after d: confirm = %v, want confirmKillWindow", m.confirm)
+	}
+	if m.confirmItem.Window == nil || m.confirmItem.Window.ID != "@1" {
+		t.Errorf("confirmItem should reference cursor's window @1, got %+v", m.confirmItem.Window)
+	}
+}
+
+func TestClose_ShiftDRequestsKillSessionConfirm(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('D'))
+	if m.confirm != confirmKillSession {
+		t.Errorf("after D: confirm = %v, want confirmKillSession", m.confirm)
+	}
+	if m.confirmItem.SessionName != "session-a" {
+		t.Errorf("confirmItem should target session-a, got %q", m.confirmItem.SessionName)
+	}
+}
+
+func TestClose_NCancelsConfirm(t *testing.T) {
+	fc := &fakeTmuxClient{}
+	m := newTestModel(sampleItems(), 1, true)
+	m.tmuxClient = fc
+	m.Update(key('d'))
+	m.Update(key('n'))
+	if m.confirm != confirmNone {
+		t.Errorf("n should clear confirm state, got %v", m.confirm)
+	}
+	if len(fc.killedWindows) != 0 {
+		t.Errorf("n should not kill anything; killedWindows = %v", fc.killedWindows)
+	}
+}
+
+func TestClose_EscCancelsConfirm(t *testing.T) {
+	fc := &fakeTmuxClient{}
+	m := newTestModel(sampleItems(), 1, true)
+	m.tmuxClient = fc
+	m.Update(key('d'))
+	m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if m.confirm != confirmNone {
+		t.Errorf("Esc should clear confirm, got %v", m.confirm)
+	}
+	if len(fc.killedWindows) != 0 {
+		t.Errorf("Esc should not kill anything; killedWindows = %v", fc.killedWindows)
+	}
+}
+
+func TestClose_YInvokesKillWindow(t *testing.T) {
+	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
+	fc := &fakeTmuxClient{captureContent: "captured pane content"}
+	m := newTestModel(sampleItems(), 1, true)
+	m.tmuxClient = fc
+	m.Update(key('d'))
+	_, cmd := m.Update(key('y'))
+	if cmd == nil {
+		t.Fatal("y should return a kill Cmd")
+	}
+	msg := cmd()
+	res, ok := msg.(killResultMsg)
+	if !ok {
+		t.Fatalf("Cmd returned %T, want killResultMsg", msg)
+	}
+	if res.err != nil {
+		t.Errorf("kill returned err: %v", res.err)
+	}
+	if len(fc.killedWindows) != 1 || fc.killedWindows[0] != "session-a:0" {
+		t.Errorf("expected kill of session-a:0, got %v", fc.killedWindows)
+	}
+	if len(fc.captureTargets) != 1 || fc.captureTargets[0] != "session-a:0" {
+		t.Errorf("capture-pane should run before kill on session-a:0, got %v", fc.captureTargets)
+	}
+	if res.gravePath == "" {
+		t.Errorf("expected non-empty gravePath when capture succeeds")
+	}
+}
+
+func TestClose_YInvokesKillSession(t *testing.T) {
+	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
+	fc := &fakeTmuxClient{captureContent: "captured"}
+	m := newTestModel(sampleItems(), 4, true) // cursor on session-b's window
+	m.tmuxClient = fc
+	m.Update(key('D'))
+	_, cmd := m.Update(key('y'))
+	if cmd == nil {
+		t.Fatal("y should return a kill Cmd")
+	}
+	cmd()
+	if len(fc.killedSessions) != 1 || fc.killedSessions[0] != "session-b" {
+		t.Errorf("expected kill of session-b, got %v", fc.killedSessions)
+	}
+}
+
+func TestClose_ConfirmBlocksOtherKeys(t *testing.T) {
+	// While a confirm is pending, j must not move the cursor — the user
+	// should not be able to "drift past" a destructive prompt.
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(key('d'))
+	cursorBefore := m.cursor
+	m.Update(key('j'))
+	if m.cursor != cursorBefore {
+		t.Errorf("j during confirm should be ignored; cursor moved %d → %d", cursorBefore, m.cursor)
+	}
+	if m.confirm != confirmKillWindow {
+		t.Errorf("confirm state should persist through ignored keys")
+	}
+}
+
+func TestConfirmPrompt_IdleSimple(t *testing.T) {
+	idle := state.PaneState{Status: state.StatusIdle}
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "main"}, PaneState: &idle},
+	}
+	m := newTestModel(items, 1, true)
+	m.Update(key('d'))
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "kill window 'main'? [y/N]") {
+		t.Errorf("idle confirm should be simple; view:\n%s", view)
+	}
+}
+
+func TestConfirmPrompt_RunningShowsElapsed(t *testing.T) {
+	run := state.PaneState{Status: state.StatusRunning, Elapsed: 3 * time.Minute}
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "build"}, PaneState: &run},
+	}
+	m := newTestModel(items, 1, true)
+	m.Update(key('d'))
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "running 3m") {
+		t.Errorf("running confirm should mention elapsed; view:\n%s", view)
+	}
+}
+
+func TestConfirmPrompt_PermissionWarns(t *testing.T) {
+	perm := state.PaneState{Status: state.StatusPermission}
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "s"},
+		{Kind: ItemWindow, SessionName: "s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "perm"}, PaneState: &perm},
+	}
+	m := newTestModel(items, 1, true)
+	m.Update(key('d'))
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "agent waiting") {
+		t.Errorf("permission/ask confirm should warn 'agent waiting'; view:\n%s", view)
+	}
+}
+
+func TestKillResultMsg_SetsMessageAndReloads(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	_, cmd := m.Update(killResultMsg{gravePath: "/tmp/graveyard/foo.txt"})
+	if !strings.Contains(m.message, "/tmp/graveyard/foo.txt") {
+		t.Errorf("message should mention graveyard path, got %q", m.message)
+	}
+	if cmd == nil {
+		t.Errorf("killResultMsg should trigger a reload Cmd")
+	}
+}
+
+func TestKillResultMsg_ErrorMessage(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.Update(killResultMsg{err: fmt.Errorf("boom")})
+	if !strings.Contains(m.message, "boom") {
+		t.Errorf("message should include error text, got %q", m.message)
+	}
+}
+
+func TestSanitizeLabel(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"plain", "plain"},
+		{"with space", "with_space"},
+		{"slash/in/name", "slash_in_name"},
+		{"colon:thing", "colon_thing"},
+		{"", "unnamed"},
+	}
+	for _, tc := range cases {
+		if got := sanitizeLabel(tc.in); got != tc.want {
+			t.Errorf("sanitizeLabel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

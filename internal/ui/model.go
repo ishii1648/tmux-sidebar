@@ -4,7 +4,9 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,26 @@ import (
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 	"github.com/mattn/go-runewidth"
+)
+
+// inputMode is the modal input state. Phase 1: normal accepts single-key
+// commands (j/k/d/D/.../Enter), search accepts text into searchQuery.
+type inputMode int
+
+const (
+	modeNormal inputMode = iota
+	modeSearch
+)
+
+// confirmAction is a sub-state of normal mode that gates a destructive
+// operation behind a y/N prompt. Until the user answers, all other
+// commands are blocked.
+type confirmAction int
+
+const (
+	confirmNone confirmAction = iota
+	confirmKillWindow
+	confirmKillSession
 )
 
 // FilterMode describes which windows are shown in the sidebar list.
@@ -105,6 +127,13 @@ type gitDataMsg struct {
 	data map[string]gitInfo // keyed by window ID
 }
 
+// killResultMsg is sent after a kill-window/kill-session attempt finishes.
+// gravePath is non-empty on success when capture-pane wrote a snapshot.
+type killResultMsg struct {
+	gravePath string
+	err       error
+}
+
 // Styles used for rendering. Colors use AdaptiveColor so the sidebar works on
 // both light and dark terminal backgrounds.
 var (
@@ -148,7 +177,11 @@ type Model struct {
 	err              error
 	gitData          map[string]gitInfo // keyed by window ID
 	focused          bool               // true when this pane has terminal focus
-	searchQuery      string             // current search query text (always-on incremental filter)
+	inputMode        inputMode          // modal state: normal (commands) vs search (text)
+	confirm          confirmAction      // pending y/N confirmation; confirmNone when idle
+	confirmItem      ListItem           // window/session targeted by the pending confirmation
+	message          string             // transient one-line status (e.g. graveyard path); cleared on next normal-mode key
+	searchQuery      string             // search query text; only populated while inputMode == modeSearch
 	promptCache      map[string]string  // agent:sessionID → initial prompt text (cached)
 	cursorPrompt     string             // initial prompt for the window currently under cursor
 	currentSessionID string             // tmux session ID of the pane running this process (e.g. "$3")
@@ -542,6 +575,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return nil
 		}
 
+	case killResultMsg:
+		switch {
+		case msg.err != nil:
+			m.message = "kill failed: " + msg.err.Error()
+		case msg.gravePath != "":
+			m.message = "saved: " + msg.gravePath
+		default:
+			m.message = "killed"
+		}
+		return m, m.loadData()
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -553,6 +597,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 		m.searchQuery = ""
+		m.inputMode = modeNormal
+		m.confirm = confirmNone
+		m.message = ""
 		// Snap the cursor back to this sidebar's own session's active window.
 		// Manual j/k positions are "preview while focused" — once the user
 		// leaves (e.g., switches tmux sessions or selects another pane), any
@@ -568,21 +615,74 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
-
 	if !m.focused {
 		return m, nil
 	}
 
+	// Confirm sub-state takes precedence over both modes — until the user
+	// answers y or n/Esc, every other key is intentionally ignored so a
+	// stray j cannot move past a destructive prompt.
+	if m.confirm != confirmNone {
+		return m.handleConfirmKey(msg)
+	}
+
+	switch m.inputMode {
+	case modeSearch:
+		return m.handleSearchKey(msg)
+	default:
+		return m.handleNormalKey(msg)
+	}
+}
+
+func (m *Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Any normal-mode key clears the transient status message — it is meant
+	// to inform a single subsequent action, not linger forever.
+	m.message = ""
+
+	switch msg.Type {
+	case tea.KeyEnter:
+		return m, m.switchSelected()
+	case tea.KeyUp:
+		m.moveCursor(-1)
+		return m, m.updateCursorPrompt()
+	case tea.KeyDown:
+		m.moveCursor(1)
+		return m, m.updateCursorPrompt()
+	case tea.KeyRunes:
+		if len(msg.Runes) != 1 {
+			return m, nil
+		}
+		switch msg.Runes[0] {
+		case '/':
+			m.inputMode = modeSearch
+			m.searchQuery = ""
+			return m, nil
+		case 'j':
+			m.moveCursor(1)
+			return m, m.updateCursorPrompt()
+		case 'k':
+			m.moveCursor(-1)
+			return m, m.updateCursorPrompt()
+		case 'd':
+			m.requestKillWindow()
+			return m, nil
+		case 'D':
+			m.requestKillSession()
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
-		if m.searchQuery != "" {
-			m.searchQuery = ""
-			m.resetCursorToFirstWindow()
-		}
+		m.searchQuery = ""
+		m.inputMode = modeNormal
+		m.resetCursorToFirstWindow()
 		return m, nil
 	case tea.KeyEnter:
 		return m, m.switchSelected()
@@ -599,23 +699,152 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(1)
 		return m, m.updateCursorPrompt()
 	case tea.KeyRunes:
-		r := msg.Runes
-		// j/k keys only when search is empty
-		if m.searchQuery == "" && len(r) == 1 {
-			switch r[0] {
-			case 'j':
-				m.moveCursor(1)
-				return m, m.updateCursorPrompt()
-			case 'k':
-				m.moveCursor(-1)
-				return m, m.updateCursorPrompt()
-			}
-		}
-		m.searchQuery += string(r)
+		m.searchQuery += string(msg.Runes)
 		m.resetCursorToFirstWindow()
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.confirm = confirmNone
+		return m, nil
+	case tea.KeyRunes:
+		if len(msg.Runes) != 1 {
+			return m, nil
+		}
+		switch msg.Runes[0] {
+		case 'y', 'Y':
+			action := m.confirm
+			item := m.confirmItem
+			m.confirm = confirmNone
+			switch action {
+			case confirmKillWindow:
+				return m, m.killWindowCmd(item)
+			case confirmKillSession:
+				return m, m.killSessionCmd(item)
+			}
+		case 'n', 'N':
+			m.confirm = confirmNone
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+// requestKillWindow stages a confirmation prompt for the window under the cursor.
+func (m *Model) requestKillWindow() {
+	visible := m.visibleItems()
+	if m.cursor >= len(visible) {
+		return
+	}
+	item := visible[m.cursor]
+	if item.Kind != ItemWindow || item.Window == nil {
+		return
+	}
+	m.confirm = confirmKillWindow
+	m.confirmItem = item
+}
+
+// requestKillSession stages a confirmation prompt for the session that owns
+// the cursor's current window.
+func (m *Model) requestKillSession() {
+	visible := m.visibleItems()
+	if m.cursor >= len(visible) {
+		return
+	}
+	item := visible[m.cursor]
+	if item.Kind != ItemWindow || item.SessionName == "" {
+		return
+	}
+	m.confirm = confirmKillSession
+	m.confirmItem = item
+}
+
+// killWindowCmd captures the target pane to the graveyard and then kills the
+// window. The capture is best-effort: a failed capture must not block the kill.
+func (m *Model) killWindowCmd(item ListItem) tea.Cmd {
+	client := m.tmuxClient
+	return func() tea.Msg {
+		target := fmt.Sprintf("%s:%d", item.SessionName, item.Window.Index)
+		label := fmt.Sprintf("%s_%d_%s", sanitizeLabel(item.SessionName), item.Window.Index, sanitizeLabel(item.Window.Name))
+		gravePath, _ := captureToGraveyard(client, target, label)
+		if err := client.KillWindow(item.SessionName, item.Window.Index); err != nil {
+			return killResultMsg{err: err}
+		}
+		return killResultMsg{gravePath: gravePath}
+	}
+}
+
+// killSessionCmd captures the active pane of the session and then kills it.
+func (m *Model) killSessionCmd(item ListItem) tea.Cmd {
+	client := m.tmuxClient
+	return func() tea.Msg {
+		target := item.SessionName
+		label := fmt.Sprintf("session_%s", sanitizeLabel(item.SessionName))
+		gravePath, _ := captureToGraveyard(client, target, label)
+		if err := client.KillSession(item.SessionName); err != nil {
+			return killResultMsg{err: err}
+		}
+		return killResultMsg{gravePath: gravePath}
+	}
+}
+
+// graveyardDir returns the directory where pane snapshots are stored before a
+// kill. Override via TMUX_SIDEBAR_GRAVEYARD_DIR (used by e2e and unit tests).
+func graveyardDir() string {
+	if d := os.Getenv("TMUX_SIDEBAR_GRAVEYARD_DIR"); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "tmux-sidebar", "graveyard")
+}
+
+// captureToGraveyard captures the active pane of target via tmux capture-pane
+// and writes it to a file under the graveyard dir. Returns the file path on
+// success. Errors are returned but treated as non-fatal by the callers — the
+// kill must still happen even if the snapshot failed.
+func captureToGraveyard(client tmux.Client, target, label string) (string, error) {
+	dir := graveyardDir()
+	if dir == "" {
+		return "", fmt.Errorf("graveyard dir unavailable")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	content, err := client.CapturePane(target)
+	if err != nil {
+		return "", err
+	}
+	name := fmt.Sprintf("%s_%s.txt", time.Now().Format("20060102-150405"), label)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// sanitizeLabel replaces filesystem-hostile characters in s so it can be used
+// as part of a graveyard file name.
+func sanitizeLabel(s string) string {
+	if s == "" {
+		return "unnamed"
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '/', '\\', ':', ' ', '\t', '\n', '\r':
+			b.WriteRune('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // footerLines is the number of fixed lines below the item list
@@ -626,10 +855,10 @@ const footerLines = 2
 const previewLines = 7
 
 // headerLines returns the number of fixed lines above the item list.
-// Without a search query: title + query-hint = 2 lines.
-// With a search query: title + query + separator = 3 lines.
+// Normal mode: title + hint = 2 lines.
+// Search mode: title + query + separator = 3 lines.
 func (m *Model) headerLines() int {
-	if m.searchQuery != "" {
+	if m.inputMode == modeSearch {
 		return 3
 	}
 	return 2
@@ -848,11 +1077,11 @@ func (m *Model) View() string {
 
 	// Search prompt (no decorative separators; one faint rule under the query
 	// when the user is actively searching)
-	if m.searchQuery != "" {
+	if m.inputMode == modeSearch {
 		sb.WriteString(styleCursor.Render("> ") + m.searchQuery + "▏\n")
 		sb.WriteString(styleFaint.Render(strings.Repeat("─", m.width)) + "\n")
 	} else {
-		sb.WriteString(styleFaint.Render("> type to filter...") + "\n")
+		sb.WriteString(styleFaint.Render("> /:search d:close D:kill") + "\n")
 	}
 
 	// Session / window list
@@ -928,8 +1157,10 @@ func (m *Model) View() string {
 		sb.WriteString("\n")
 	}
 
-	// Footer key hints (above preview area)
-	sb.WriteString(styleFaint.MaxWidth(m.width).Render("Esc:clear ^C:quit") + "\n")
+	// Footer key hints (above preview area). The single line is shared with
+	// confirm prompts and one-shot status messages — only one of these is
+	// active at a time, so reusing the row keeps the viewport height stable.
+	sb.WriteString(m.renderFooter() + "\n")
 
 	// Preview area: separated by a line, showing initial prompt in normal color
 	previewH := previewLines
@@ -960,6 +1191,62 @@ func (m *Model) View() string {
 		}
 	}
 	return sb.String()
+}
+
+// renderFooter returns the single footer line shown just above the preview
+// separator. Priority: confirm prompt > status message > default key hints.
+// Truncated to the sidebar width so it never wraps onto a second row (which
+// would shift the viewport).
+func (m *Model) renderFooter() string {
+	switch {
+	case m.confirm != confirmNone:
+		return styleHeader.MaxWidth(m.width).Render(m.confirmPromptText())
+	case m.message != "":
+		return styleFaint.MaxWidth(m.width).Render(m.message)
+	default:
+		return styleFaint.MaxWidth(m.width).Render(footerHint(m.inputMode))
+	}
+}
+
+func footerHint(mode inputMode) string {
+	if mode == modeSearch {
+		return "Esc:cancel ^C:quit"
+	}
+	return "/:search d:close D:kill ^C:quit"
+}
+
+// confirmPromptText builds the y/N question shown in the footer. The wording
+// scales with the agent state per docs/spec.md: idle → simple, running →
+// elapsed, permission/ask → strong warning. The preview area still shows the
+// initial prompt for permission/ask, so the footer only needs to convey
+// urgency.
+func (m *Model) confirmPromptText() string {
+	item := m.confirmItem
+	if item.Window == nil {
+		return ""
+	}
+	scope := "window"
+	target := item.Window.Name
+	if m.confirm == confirmKillSession {
+		scope = "session"
+		target = item.SessionName
+	}
+	if item.PaneState != nil {
+		switch item.PaneState.Status {
+		case state.StatusRunning:
+			return fmt.Sprintf("running %s — kill %s '%s'? [y/N]", formatElapsed(item.PaneState.Elapsed), scope, target)
+		case state.StatusPermission, state.StatusAsk:
+			return fmt.Sprintf("agent waiting — kill %s '%s'? [y/N]", scope, target)
+		}
+	}
+	return fmt.Sprintf("kill %s '%s'? [y/N]", scope, target)
+}
+
+func formatElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm", int(d.Minutes()))
 }
 
 // paintActiveRow wraps a pre-rendered row with the active-background color so

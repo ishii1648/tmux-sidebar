@@ -2,7 +2,7 @@
 
 tmux の **cross-context 軸（session / window）** を司る常駐 control surface。
 左端 sidebar pane に全 session/window と agent (Claude Code / Codex CLI) の状態を一覧表示し、
-キーボードで switch / close / pin / move などのライフサイクル操作を発行する。
+キーボードで switch / close / pin などのライフサイクル操作を発行する。
 新規 session 生成は sidebar 起動の popup picker（repo + agent mode 選択）で完結する。
 
 > **Note**: 現時点で出荷済みの機能は「全 session/window 一覧 + 状態バッジ + Enter 移動 + 検索」まで。
@@ -38,7 +38,7 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 
 - vim 風 modal 入力（`/` で検索モード、normal モードで単打コマンド）
 - window/session の close (`d`/`D`)
-- pin / 並べ替えの永続化（`p` / `Shift+J/K` / `m`）
+- pin の永続化（`p`）
 - `N` で popup picker mode 起動 → ghq repo + agent mode (`claude` / `codex` / `dispatch` / `orchestrate`) 選択
 - multi-select + bulk close
 - unread permission/ask の履歴バッジ
@@ -117,8 +117,6 @@ normal モードの主なキー:
 | 切替 | `Enter` | 選択 window へ移動 |
 | Lifecycle | `d` / `D` | window/session の close（state に応じた confirm 強度） |
 | Lifecycle | `N` | popup picker で新規 session |
-| 並べ替え | `Shift+J`/`Shift+K` | 同 session 内 swap |
-| 並べ替え | `m` | mark → drop で別 session へ move |
 | 装飾 | `p` | pin toggle |
 | 多重選択 | `Space`, `d`（選択あり） | multi-select toggle、bulk close |
 

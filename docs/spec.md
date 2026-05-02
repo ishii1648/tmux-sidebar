@@ -9,7 +9,7 @@
 
 tmux-sidebar は tmux の **cross-context 軸（session / window）** を司る常駐 control surface である。
 左端 sidebar pane に全 session/window を一覧表示し、cursor 選択 + 単打鍵で
-switch / close / pin / move などのライフサイクル操作を発行する。
+switch / close / pin などのライフサイクル操作を発行する。
 新規 session 生成は sidebar から起動される popup picker で行い、
 ghq repo 選択 + agent mode 選択をワンフローで完結する。
 
@@ -93,13 +93,6 @@ destructive 操作（close 系）は **state file の `running` / `permission` /
 | `idle` | 単純確認（`y/N`） |
 | `running` | 「N 分前から running、本当に kill する？」 |
 | `permission` / `ask` | 強い警告 + 直近の prompt を preview に表示 |
-
-### 並べ替え・移動
-
-| キー | 動作 |
-|---|---|
-| `Shift+J` / `Shift+K` | 同 session 内で window を 1 つ下/上へ swap（`swap-window`） |
-| `m` | 移動マーク開始 → カーソルを target session/位置へ → `m` で drop（`move-window`） |
 
 ### Pin
 

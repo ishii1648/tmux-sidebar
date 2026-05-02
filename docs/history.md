@@ -209,3 +209,26 @@ control surface 拡張の初版 spec で Phase 2 に含めていた `n` キー
 - design.md: `internal/tmux` 責務から `new` を削除、mutate 翻訳表の `n`（新規 window）行を削除
 - TODO.md: Phase 2 の「### 新規 window」サブセクションを削除し、「採用しない・延期する項目」表に `n` を理由付きで追加。実装順序根拠も `Phase 2 (close)` に修正
 - README.md: Lifecycle 表の `n / N` を `N` のみに
+
+---
+
+## window swap（`Shift+J/K`）と move-window（`m`）の取り下げ
+
+control surface 拡張の初版 spec で Phase 3 に含めていた window 並べ替え・移動操作を、
+実装着手前の見直しで取り下げた。`m` を入口にしていた move-mark sub-state も不要になる。
+この取り下げにより Phase 3 は `pin` 永続化のみとなり、cross-context 軸の lifecycle 操作は
+switch (`Enter`) / close (`d` / `D`) / pin (`p`) / 新規 session (`N`) の 4 系統に集約される。
+
+### 却下理由
+
+- 同 session 内 window swap (`Shift+J/K`) は tmux native の `prefix+{` / `prefix+}` で同等。同 session 内の window 順を細かく入れ替える運用は薄く、カーソル追従ロジック（`cursorWinID` 維持）の実装コストに見合わない
+- 別 session への move-window (`m`) は tmux native の `prefix+.` で代替可能。「動的に session を移す」シーンは頻度が低く、tmw で session を切るなら「最初から正しい session に作る」のが普通。2 段階モード（mark → カーソル移動 → drop）+ 視覚マーカー + Esc 取消 + session header 末尾挿入の実装コストに対する体感差が小さい
+- 「sidebar dominant + native fallback」原則の下、native で済む操作を sidebar に持ち込む価値は薄い。rename / `n` の取り下げと同じ論理
+- swap / move を落とすことで Phase 3 が pin 永続化だけになり、Phase 2 の close (`d` / `D`) と並んで mutate 操作の core が際立つ
+
+### 影響範囲
+
+- spec.md: 概要文の `move`、`### 並べ替え・移動` セクション全体（`Shift+J/K` と `m` 行）を削除
+- design.md: `internal/tmux` 責務から `swap` / `move` を削除、modal sub-state 列挙から move-mark を削除、mutate 翻訳表の `Shift+J/K` / `m` 行、`## 並べ替え・移動` セクション全体を削除
+- TODO.md: Phase 3 タイトルを「pin 永続化」に、`### window swap` / `### move-window` サブセクションを削除し、「採用しない・延期する項目」表に両方を理由付きで追加。実装順序根拠も `Phase 3 (pin)` に修正
+- README.md: 概要文の `move`、実装中 lifecycle 列挙から `Shift+J/K` / `m`、normal mode キー表の並べ替え行 2 つを削除

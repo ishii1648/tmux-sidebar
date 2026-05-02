@@ -231,6 +231,12 @@ scratch
 tmw-popup
 ```
 
+### kill との関係
+
+`D`（session kill）でサイドバーから session を kill すると、**`pinned_sessions` からも自動的に該当行が削除される**。同名 session を後で作ったときに、過去の残骸 entry によって意図せず pinned になるのを防ぐため。
+
+`d`（window kill）は session を直接 kill しないので `pinned_sessions` には影響しない。tmux 側で最後の window を kill したことで session が消えた場合は entry が残るが、それは tmux 経由で同名 session を作るときに自動 pin される副作用と引き換えなので、明示的に session を畳みたいときは `D` を使うのが推奨。
+
 ### 競合時の優先
 
 - `hidden` は `pinned` より強い。両方に書かれている session は **隠される**

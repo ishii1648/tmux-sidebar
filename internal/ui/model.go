@@ -133,9 +133,13 @@ type gitDataMsg struct {
 
 // killResultMsg is sent after a kill-window/kill-session attempt finishes.
 // gravePath is non-empty on success when capture-pane wrote a snapshot.
+// killedSession is set (and only set) for a successful session kill — the
+// Update handler uses it to drop the name from pinned_sessions so the file
+// does not accumulate stale entries.
 type killResultMsg struct {
-	gravePath string
-	err       error
+	gravePath     string
+	err           error
+	killedSession string
 }
 
 // Styles used for rendering. Colors use AdaptiveColor so the sidebar works on
@@ -639,6 +643,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.message = "killed"
 		}
+		// Drop the killed session from pinned_sessions so the file stays in
+		// sync with reality. Without this, a same-named session created later
+		// would automatically be pinned again from the stale entry.
+		if msg.err == nil && msg.killedSession != "" && m.cfg.IsPinnedSession(msg.killedSession) {
+			updated := m.cfg.TogglePinned(msg.killedSession)
+			if m.pinnedPath != "" {
+				_ = config.WritePinnedSessions(m.pinnedPath, updated)
+			}
+		}
 		return m, m.loadData()
 
 	case tea.WindowSizeMsg:
@@ -876,7 +889,7 @@ func (m *Model) killSessionCmd(item ListItem) tea.Cmd {
 		if err := client.KillSession(item.SessionName); err != nil {
 			return killResultMsg{err: err}
 		}
-		return killResultMsg{gravePath: gravePath}
+		return killResultMsg{gravePath: gravePath, killedSession: item.SessionName}
 	}
 }
 

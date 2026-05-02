@@ -1598,6 +1598,99 @@ func TestPin_KeyTogglesPinAndPersists(t *testing.T) {
 	}
 }
 
+func TestPin_SessionKillAlsoRemovesFromPinnedFile(t *testing.T) {
+	// Killing a pinned session via 'D' must also drop its name from
+	// pinned_sessions — otherwise a future session of the same name
+	// would auto-pin from the stale entry.
+	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
+	dir := t.TempDir()
+	pinnedPath := filepath.Join(dir, "pinned_sessions")
+	if err := config.WritePinnedSessions(pinnedPath, []string{"session-a", "session-b"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "hidden_sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.IsPinnedSession("session-a") {
+		t.Fatalf("precondition: session-a should be pinned after Load")
+	}
+
+	fc := &fakeTmuxClient{captureContent: "x"}
+	m := newTestModel(sampleItems(), 1, true) // cursor on session-a window
+	m.tmuxClient = fc
+	m.cfg = cfg
+	m.pinnedPath = pinnedPath
+
+	// D → y to kill session-a.
+	m.Update(key('D'))
+	_, cmd := m.Update(key('y'))
+	if cmd == nil {
+		t.Fatal("y should return a kill Cmd")
+	}
+	msg := cmd().(killResultMsg)
+	if msg.killedSession != "session-a" {
+		t.Errorf("killResultMsg.killedSession = %q, want %q", msg.killedSession, "session-a")
+	}
+	// Apply the result like the runtime would.
+	m.Update(msg)
+
+	if m.cfg.IsPinnedSession("session-a") {
+		t.Errorf("session-a should be unpinned in-memory after kill")
+	}
+	if !m.cfg.IsPinnedSession("session-b") {
+		t.Errorf("session-b should still be pinned (only session-a was killed)")
+	}
+	data, err := os.ReadFile(pinnedPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "session-a") {
+		t.Errorf("pinned_sessions should no longer contain 'session-a'; got %q", string(data))
+	}
+	if !strings.Contains(string(data), "session-b") {
+		t.Errorf("pinned_sessions must keep other entries; got %q", string(data))
+	}
+}
+
+func TestPin_WindowKillLeavesPinnedFileAlone(t *testing.T) {
+	// Killing a single window (`d`) does not remove the session entry from
+	// pinned_sessions even if the session happens to die when its last
+	// window is gone — the user should use `D` for explicit session intent.
+	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
+	dir := t.TempDir()
+	pinnedPath := filepath.Join(dir, "pinned_sessions")
+	if err := config.WritePinnedSessions(pinnedPath, []string{"session-a"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load(filepath.Join(dir, "hidden_sessions"))
+
+	fc := &fakeTmuxClient{captureContent: "x"}
+	m := newTestModel(sampleItems(), 1, true)
+	m.tmuxClient = fc
+	m.cfg = cfg
+	m.pinnedPath = pinnedPath
+
+	m.Update(key('d'))
+	_, cmd := m.Update(key('y'))
+	if cmd == nil {
+		t.Fatal("y should return a kill Cmd")
+	}
+	msg := cmd().(killResultMsg)
+	if msg.killedSession != "" {
+		t.Errorf("window kill must not set killedSession; got %q", msg.killedSession)
+	}
+	m.Update(msg)
+
+	if !m.cfg.IsPinnedSession("session-a") {
+		t.Errorf("window kill must not unpin the owning session")
+	}
+	data, _ := os.ReadFile(pinnedPath)
+	if !strings.Contains(string(data), "session-a") {
+		t.Errorf("pinned_sessions must keep 'session-a' after window-only kill; got %q", string(data))
+	}
+}
+
 func TestPin_KeyIgnoredOnNonWindowItems(t *testing.T) {
 	panes := withSessionNames(pinPanes(), map[string]string{
 		"$1": "work", "$2": "infra", "$3": "scratch",

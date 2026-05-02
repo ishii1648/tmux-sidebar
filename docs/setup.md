@@ -232,17 +232,26 @@ tmw-popup
 
 ### kill との関係（削除保護）
 
-pin は **削除保護** も兼ねる。`D`（session kill）はカーソル window が所属する session が pinned のとき **ブロックされる**。footer に以下のメッセージが出るので、`pinned_sessions` から該当行を削除してから改めて `D` を押す。
+pin は **削除保護** も兼ねる。pinned session の消滅につながる kill 操作は **ブロックされる**。
+
+| 操作 | pinned session | 挙動 |
+|---|---|---|
+| `D`（session kill） | 対象 | ブロック |
+| `d`（window kill） | **最後の window** | ブロック（消すと session 消滅 = `D` バイパス） |
+| `d`（window kill） | 最後ではない window | 通常どおり通す |
+
+ブロック時は footer に以下のメッセージが出るので、`pinned_sessions` から該当行を削除してから改めて押す。
 
 ```
 pinned: remove '<name>' from pinned_sessions before kill
+pinned: '<name>' has only this window — remove from pinned_sessions before kill
 ```
 
 これにより:
-- 重要な session を `D` の単打で誤爆できない
+- 重要な session を `D` / `d` の単打で誤爆できない
 - 設定ファイルが「実在しない session 名の残骸」で汚れない（kill が通らないので残骸が出ない）
 
-`d`（window kill）はブロックされない。pin は **session 単位** の概念で、個別の window 操作までは縛らない。最後の window を `d` で消したときに tmux 標準挙動として session も消えるが、これは「明示的に最後の window を畳みに行った」操作と解釈する。
+「session 全部畳みたい」場合は `pinned_sessions` から行を消してから kill する 2 段階が必要。これは pin の意味（重要なので保護）に対する明示的なオプトアウト操作で、誤爆耐性とのトレードオフ。
 
 ### 競合時の優先
 

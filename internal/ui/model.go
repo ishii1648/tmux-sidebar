@@ -809,6 +809,10 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // requestKillWindow stages a confirmation prompt for the window under the cursor.
+// Special case: when the target is the *last* window of a pinned session,
+// killing it would also kill the session (tmux standard behavior), which would
+// silently bypass the `D` delete-protection. Block in that case and tell the
+// user to unpin first via the config file.
 func (m *Model) requestKillWindow() {
 	visible := m.visibleItems()
 	if m.cursor >= len(visible) {
@@ -818,8 +822,25 @@ func (m *Model) requestKillWindow() {
 	if item.Kind != ItemWindow || item.Window == nil {
 		return
 	}
+	if m.cfg.IsPinnedSession(item.SessionName) && m.sessionWindowCount(item.SessionName) <= 1 {
+		m.message = "pinned: '" + item.SessionName + "' has only this window — remove from pinned_sessions before kill"
+		return
+	}
 	m.confirm = confirmKillWindow
 	m.confirmItem = item
+}
+
+// sessionWindowCount returns how many window rows in m.items belong to name.
+// Used by requestKillWindow to detect the "killing this window kills the
+// session" case so the pin protection cannot be bypassed via `d`.
+func (m *Model) sessionWindowCount(name string) int {
+	n := 0
+	for _, it := range m.items {
+		if it.Kind == ItemWindow && it.SessionName == name {
+			n++
+		}
+	}
+	return n
 }
 
 // requestKillSession stages a confirmation prompt for the session that owns

@@ -1653,10 +1653,11 @@ func TestPin_SessionKillAllowedAfterUnpinOnDisk(t *testing.T) {
 	}
 }
 
-func TestPin_WindowKillNotBlockedByPin(t *testing.T) {
-	// `d` (window kill) is intentionally not blocked. Pin is a session-level
-	// concept; window-level destructive operations remain governed by the
-	// state-based confirm strength. This documents that boundary.
+func TestPin_WindowKillNotBlockedWhenSessionHasOtherWindows(t *testing.T) {
+	// `d` on a window of a pinned session is fine when the session has more
+	// than one window — kill-window won't take the session down.
+	// sampleItems() gives session-a two windows (@1 main, @2 work), so the
+	// cursor on @1 (index 1) leaves @2 alive after the kill.
 	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
 	fc := &fakeTmuxClient{captureContent: "x"}
 	m := newTestModel(sampleItems(), 1, true)
@@ -1665,7 +1666,30 @@ func TestPin_WindowKillNotBlockedByPin(t *testing.T) {
 
 	m.Update(key('d'))
 	if m.confirm != confirmKillWindow {
-		t.Errorf("d should arm window-kill confirm even when session is pinned; got %v", m.confirm)
+		t.Errorf("d on a pinned session with other windows should arm confirm; got %v", m.confirm)
+	}
+}
+
+func TestPin_WindowKillBlockedOnLastWindowOfPinnedSession(t *testing.T) {
+	// `d` on the *last* window of a pinned session must be blocked: tmux's
+	// kill-window auto-kills the session when no windows remain, which would
+	// silently bypass the `D` pin protection. sample-b has exactly one window.
+	fc := &fakeTmuxClient{}
+	m := newTestModel(sampleItems(), 4, true) // cursor on session-b's only window @3
+	m.tmuxClient = fc
+	m.cfg, _ = pinFixture(t, []string{"session-b"}, nil)
+
+	m.Update(key('d'))
+	if m.confirm != confirmNone {
+		t.Errorf("d on last window of pinned session must not arm confirm; got %v", m.confirm)
+	}
+	if !strings.Contains(m.message, "pinned") || !strings.Contains(m.message, "session-b") {
+		t.Errorf("expected message to explain why d was blocked; got %q", m.message)
+	}
+	// Even pressing y afterward must not kill anything.
+	m.Update(key('y'))
+	if len(fc.killedWindows) != 0 {
+		t.Errorf("kill must not happen after blocked d; killedWindows = %v", fc.killedWindows)
 	}
 }
 

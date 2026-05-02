@@ -1,6 +1,12 @@
 # tmux-sidebar
 
-全 tmux セッション・ウィンドウの一覧と agent (Claude Code / Codex CLI) の状態をサイドバーペインに表示し、キーボード選択で対象ウィンドウへ即座に移動できる TUI ツール。
+tmux の **cross-context 軸（session / window）** を司る常駐 control surface。
+左端 sidebar pane に全 session/window と agent (Claude Code / Codex CLI) の状態を一覧表示し、
+キーボードで switch / close / rename / pin / move などのライフサイクル操作を発行する。
+新規 session 生成は sidebar 起動の popup picker（repo + agent mode 選択）で完結する。
+
+> **Note**: 現時点で出荷済みの機能は「全 session/window 一覧 + 状態バッジ + Enter 移動 + 検索」まで。
+> 上記の lifecycle 操作 / popup picker は実装中。詳細は [docs/spec.md](docs/spec.md)（目標仕様）と [docs/TODO.md](docs/TODO.md)（実装計画）を参照。
 
 ```
 ┌──────────────────────┬──────────────────────────────────────────┐
@@ -18,11 +24,27 @@
 
 ## Features
 
+### 出荷済み
+
 - 全セッション・ウィンドウを階層表示（agent がいないウィンドウも含む）
 - agent (Claude Code / Codex CLI) の状態バッジ: 行頭に agent タグ (`[c]` / `[x]`)、続けて状態絵文字 (`🔄Nm` / `💬`)
 - `j` / `k` / `↑` / `↓` でカーソル移動、`Enter` で対象ウィンドウへジャンプ
 - 任意の文字を入力するとインクリメンタル検索フィルタが効く（`Esc` でクリア）
 - `after-new-window` フックで新しいウィンドウに自動生成
+- 選択ウィンドウの agent transcript から initial prompt を下部にプレビュー
+- Git ブランチ / PR 番号の表示
+
+### 実装中（roadmap）
+
+- vim 風 modal 入力（`/` で検索モード、normal モードで単打コマンド）
+- window/session の close (`d`/`D`) と inline rename (`R`/`Shift+R`)
+- pin / mute / 並べ替えの永続化（`p` / `M` / `Shift+J/K` / `Alt+J/K` / `m`）
+- `N` で popup picker mode 起動 → ghq repo + agent mode (`claude` / `codex` / `dispatch` / `orchestrate`) 選択
+- multi-select + bulk close
+- unread permission/ask の履歴バッジ
+- カーソル window の capture-pane プレビュー
+
+詳細は [docs/spec.md](docs/spec.md) と [docs/TODO.md](docs/TODO.md) を参照。
 
 ## Installation
 
@@ -49,19 +71,22 @@ mv tmux-sidebar ~/.local/bin/
 
 ## Subcommands
 
-| サブコマンド | 説明 |
-|---|---|
-| (なし) | TUI サイドバーを起動 |
-| `close` | サイドバーを閉じる |
-| `toggle` | サイドバーの表示/非表示を切り替え |
-| `focus-or-open` | サイドバーがあればフォーカス、なければ作成 |
-| `cleanup-if-only-sidebar` | sidebar のみ残ったウィンドウを削除 |
-| `restart` | 全 tmux ウィンドウのサイドバーペインを kill して再生成（バイナリ更新後に使う） |
-| `doctor [--yes]` | tmux 設定をチェック（`--yes` で自動修正） |
-| `upgrade` | GitHub Releases から最新バイナリをダウンロードしてインストール |
-| `version` | バージョンを表示 |
+| サブコマンド | 説明 | 状態 |
+|---|---|---|
+| (なし) | TUI サイドバー（pane mode）を起動 | 出荷済み |
+| `new [--context=<file>]` | popup picker mode を起動（通常は sidebar の `N` から間接実行） | 実装中 |
+| `close` | サイドバーを閉じる | 出荷済み |
+| `toggle` | サイドバーの表示/非表示を切り替え | 出荷済み |
+| `focus-or-open` | サイドバーがあればフォーカス、なければ作成 | 出荷済み |
+| `cleanup-if-only-sidebar` | sidebar のみ残ったウィンドウを削除 | 出荷済み |
+| `restart` | 全 tmux ウィンドウのサイドバーペインを kill して再生成（バイナリ更新後に使う） | 出荷済み |
+| `doctor [--yes]` | tmux 設定をチェック（`--yes` で自動修正） | 出荷済み |
+| `upgrade` | GitHub Releases から最新バイナリをダウンロードしてインストール | 出荷済み |
+| `version` | バージョンを表示 | 出荷済み |
 
 ## Keyboard shortcuts
+
+### 出荷済み
 
 フッターには `Esc:clear ^C:quit` が表示されます。
 
@@ -74,6 +99,32 @@ mv tmux-sidebar ~/.local/bin/
 | `Backspace` | 検索クエリを 1 文字削除 |
 | `Esc` | 検索クエリをクリア |
 | `Ctrl+C` | 終了 |
+
+### 実装後の目標仕様
+
+入力モデルは `normal` / `search` の 2 モードに分かれます。
+
+| モード | 動作 |
+|---|---|
+| `normal` | 単打キーで commands 発行（switch / close / rename / pin など） |
+| `search` | `/` で進入、`Esc` で normal へ戻る |
+
+normal モードの主なキー:
+
+| カテゴリ | キー | 動作 |
+|---|---|---|
+| 移動 | `j`/`k`, `gg`/`G`, `Tab`/`Shift+Tab` | 行移動、先頭/末尾、フィルタ切替 |
+| 切替 | `Enter` | 選択 window へ移動 |
+| Lifecycle | `d` / `D` | window/session の close（state に応じた confirm 強度） |
+| Lifecycle | `R` / `Shift+R` | window/session の inline rename |
+| Lifecycle | `n` / `N` | カーソル session 内に新規 window / popup picker で新規 session |
+| 並べ替え | `Shift+J`/`Shift+K` | 同 session 内 swap |
+| 並べ替え | `Alt+J`/`Alt+K` | session 順を上下 |
+| 並べ替え | `m` | mark → drop で別 session へ move |
+| 装飾 | `p` / `M` | pin / mute toggle |
+| 多重選択 | `Space`, `d`（選択あり） | multi-select toggle、bulk close |
+
+詳細は [docs/spec.md](docs/spec.md) を参照。
 
 ## State badges
 
@@ -105,11 +156,17 @@ mv tmux-sidebar ~/.local/bin/
 
 ## Configuration files
 
+すべて `~/.config/tmux-sidebar/` 配下、1行1エントリ、`#` でコメント。
+
+| ファイル | 内容 | 状態 |
+|---|---|---|
+| `hidden_sessions` | 表示しないセッション名 | 出荷済み |
+| `pinned_sessions` | pin するセッション名（行順 = 表示順） | 実装中 |
+| `muted_sessions` | badge を抑制するセッション名 | 実装中 |
+| `session_order` | 全 session の表示順（pinned 群の後の unpinned 並び） | 実装中 |
+| `width` | サイドバー既定幅（列数） | 出荷済み |
+
 ### hidden_sessions
-
-サイドバーに表示しないセッション名を指定するファイルです。1行1エントリで記述し、`#` 以降はコメントとして無視されます。
-
-**ファイルパス**: `~/.config/tmux-sidebar/hidden_sessions`
 
 ```
 # 表示対象外にするセッション名（1行1エントリ、# はコメント）
@@ -120,9 +177,7 @@ main
 
 ### width
 
-サイドバーの既定幅（列数）を指定するファイルです。`TMUX_SIDEBAR_WIDTH` 環境変数が優先されます。
-
-**ファイルパス**: `~/.config/tmux-sidebar/width`
+`TMUX_SIDEBAR_WIDTH` 環境変数が優先されます。
 
 ```
 40

@@ -99,3 +99,45 @@ sidebar 幅が 40 列からずれることがある。
 
 `enforce-width` サブコマンドは作っていない。処理が単純な resize であり、
 tmux.conf の hook だけで完結できるため。
+
+---
+
+## read-only navigation から control surface への scope 拡張
+
+ここまで sidebar は read-only な display + nav 層として位置づけてきた。
+ADR-051 で Fish 実装を Go へ移行した時点では、まずキーボード選択 + Enter 移動の
+安定提供を優先し、状態を mutate する操作は tmux native (`prefix+&`, `prefix+,` 等) と
+外部ツール (tmw / dispatch / popup tmw) に委ねていた。
+
+これを **tmux の cross-context 軸（session / window）の canonical control surface** へ拡張する。
+具体的には sidebar pane 内に以下の mutate 操作を持ち込み、新規 session 生成は
+sidebar から起動される popup picker に統合する。
+
+- window / session の close, rename, swap, move
+- pin / mute / 並べ替えの永続化
+- カーソル session 内への新規 window 生成
+- 新規 session 生成（sidebar の `N` → tmux popup → repo + agent mode wizard → 完了で sidebar に追従）
+
+sidebar 自身は **常駐 pane (40 cols)** と **popup picker (80×24 程度)** の 2 つの
+レンダリング先を持ち、両者は同一バイナリで実装する。
+
+### 採用しなかった代替
+
+| 代替 | 却下理由 |
+|---|---|
+| 既存の read-only stance を維持 | switch だけ sidebar、close/rename/new は tmux native + popup tmw に分散しており、cross-context 軸の入口が複数ある状態が認知コストになっていた |
+| pane 内部操作（split, zoom, copy-mode 等）まで sidebar に取り込む | pane 内部はカーソル位置に対する 1:1 操作で、sidebar を経由する利得がない。「カーソル位置に対する 1 操作は pane、新規入力 + 多軸選択は popup」という線引きを採用 |
+| sidebar pane 内部に new-session wizard を描画 | 40 cols では ghq repo 選択 + mode 選択 + mode 別設定を表示しきれない。popup picker として別レンダリング先を持つ方針に修正 |
+| 入力モデルを現状維持（任意文字 → search） | mutate 操作のキーバインドを単打で取れず、modal 化（`/` で search モード、normal mode で commands）に変更 |
+| popup tmw を完全に廃止 | sidebar 未起動時 / sidebar bug 時の fallback として残す価値があり、両者を tmw engine 共有で並立させる |
+| リポジトリ名を control-surface 寄りに rename | sidebar pane が依然として dominant な visible artifact であり、`@pane_role=sidebar` / `TMUX_SIDEBAR_*` 等 identifier への影響も大きい。説明は README/spec.md で行う |
+| 完全な undo close（scrollback 完全復元） | tmux primitive にない。tmux-resurrect 等別レイヤの責務として切り分け、sidebar 側は kill 直前 confirm + 退避 path 通知に留める |
+
+### 維持する原則
+
+- 状態の正は依然として tmux + state file（`/tmp/agent-pane-state/`）。sidebar が UI 状態を独占しない
+- mutate は tmux primitive（`kill-window`, `rename-window`, `swap-window`, `move-window`, `new-window`, `new-session`）へ素直に翻訳する
+- destructive 操作は state file の running 判定を根拠に confirm 強度を変える
+- tmux native binding は削らない（sidebar dominant + native fallback）
+- tmw / dispatch / orchestrate のロジックは引き続きそれらの責務。sidebar は entry と post-process のみ
+- ADR-052 の「one state source, multiple views」は維持（pane mode と popup picker mode は同じ state を読む別 view）

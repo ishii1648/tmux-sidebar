@@ -823,7 +823,7 @@ func (m *Model) requestKillWindow() {
 		return
 	}
 	if m.cfg.IsPinnedSession(item.SessionName) && m.sessionWindowCount(item.SessionName) <= 1 {
-		m.message = "pinned: '" + item.SessionName + "' has only this window — remove from pinned_sessions before kill"
+		m.message = "📌 last window — unpin in config"
 		return
 	}
 	m.confirm = confirmKillWindow
@@ -857,7 +857,7 @@ func (m *Model) requestKillSession() {
 		return
 	}
 	if m.cfg.IsPinnedSession(item.SessionName) {
-		m.message = "pinned: remove '" + item.SessionName + "' from pinned_sessions before kill"
+		m.message = "📌 unpin in config to kill"
 		return
 	}
 	m.confirm = confirmKillSession

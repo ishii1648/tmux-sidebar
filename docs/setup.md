@@ -240,11 +240,11 @@ pin は **削除保護** も兼ねる。pinned session の消滅につながる 
 | `d`（window kill） | **最後の window** | ブロック（消すと session 消滅 = `D` バイパス） |
 | `d`（window kill） | 最後ではない window | 通常どおり通す |
 
-ブロック時は footer に以下のメッセージが出るので、`pinned_sessions` から該当行を削除してから改めて押す。
+ブロック時は footer に以下のメッセージが出るので、`pinned_sessions` から該当行を削除してから改めて押す。`📌` プレフィックスで pin が原因であることが視覚的に分かる（対象 session 名はカーソル位置で文脈的に示される）。
 
 ```
-pinned: remove '<name>' from pinned_sessions before kill
-pinned: '<name>' has only this window — remove from pinned_sessions before kill
+📌 unpin in config to kill        (D が pinned session を狙ったとき)
+📌 last window — unpin in config  (d が pinned session の最後の window を狙ったとき)
 ```
 
 これにより:

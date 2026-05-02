@@ -1592,8 +1592,8 @@ func TestPin_BlocksSessionKill(t *testing.T) {
 	if m.confirm != confirmNone {
 		t.Errorf("D on pinned session should not arm confirm; got %v", m.confirm)
 	}
-	if !strings.Contains(m.message, "pinned") || !strings.Contains(m.message, "session-a") {
-		t.Errorf("expected message to explain why kill was blocked; got %q", m.message)
+	if !strings.Contains(m.message, "📌") || !strings.Contains(m.message, "config") {
+		t.Errorf("expected message to mention pin and config edit; got %q", m.message)
 	}
 	// Even pressing y afterward must not kill anything.
 	m.Update(key('y'))
@@ -1683,8 +1683,8 @@ func TestPin_WindowKillBlockedOnLastWindowOfPinnedSession(t *testing.T) {
 	if m.confirm != confirmNone {
 		t.Errorf("d on last window of pinned session must not arm confirm; got %v", m.confirm)
 	}
-	if !strings.Contains(m.message, "pinned") || !strings.Contains(m.message, "session-b") {
-		t.Errorf("expected message to explain why d was blocked; got %q", m.message)
+	if !strings.Contains(m.message, "📌") || !strings.Contains(m.message, "last window") {
+		t.Errorf("expected message to mention pin and last window; got %q", m.message)
 	}
 	// Even pressing y afterward must not kill anything.
 	m.Update(key('y'))

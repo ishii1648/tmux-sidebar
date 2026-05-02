@@ -1,12 +1,12 @@
 // Package picker implements the popup wizard that creates a new tmux session
-// from a ghq repository plus a launcher (claude / codex). It is the
-// tmux-sidebar `N` key UI and mirrors dotfiles' dispatch_launcher.fish so
-// the same workflow is available without fish/fzf.
+// from a ghq repository plus a launcher (claude / codex). It mirrors
+// dotfiles' dispatch_launcher.fish so the same workflow is available without
+// fish/fzf.
 //
-// The picker is launched by pane mode via `tmux display-popup -E` running
-// `tmux-sidebar new --context=<file>`. It is a separate Bubble Tea program
-// from the sidebar; the two communicate only through the temp context file
-// and tmux state.
+// The picker is invoked via `tmux-sidebar new`, which is intended to be
+// bound from tmux.conf (typically via `tmux display-popup -E ...`). It is a
+// separate Bubble Tea program from the sidebar; the two share state only
+// through tmux itself (e.g. listing open sessions).
 package picker
 
 import (
@@ -48,7 +48,6 @@ type Runner interface {
 
 // Model is the picker's Bubble Tea model.
 type Model struct {
-	ctx          Context
 	openSessions map[string]struct{} // session names already open
 
 	repos    []repo.Repo
@@ -75,16 +74,17 @@ type Model struct {
 }
 
 // New creates a Model. repos is the discovered ghq list (caller fetches
-// before constructing so failures surface synchronously). runner executes
-// tmux / dispatch commands on Enter.
-func New(ctx Context, repos []repo.Repo, runner Runner) *Model {
+// before constructing so failures surface synchronously). openSessionNames
+// lists session names that already exist so the picker can dim duplicates
+// and switch to them instead of dispatching. runner executes tmux /
+// dispatch commands on Enter.
+func New(repos []repo.Repo, openSessionNames []string, runner Runner) *Model {
 	repo.SortByBasename(repos)
 	openSessions := map[string]struct{}{}
-	for _, s := range ctx.Sessions {
-		openSessions[s.Name] = struct{}{}
+	for _, name := range openSessionNames {
+		openSessions[name] = struct{}{}
 	}
 	m := &Model{
-		ctx:          ctx,
 		openSessions: openSessions,
 		repos:        repos,
 		runner:       runner,

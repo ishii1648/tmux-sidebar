@@ -691,3 +691,39 @@ dispatch 完了通知として display-message を撤廃した結果、「dispat
 
 - pinned session が新規作成された場合 (今は非常に稀だが将来 pin の動的管理が入った場合) の見た目は `📌` + 緑色になる。`📌` のメタ情報と「fresh」のメタ情報が同居するが、競合はしない
 - サイドバーが非フォーカスの状態で 10 秒が経過すると、そのフレームで色が落ちる。再描画タイミングが微妙にズレる場合があるが、視認上の影響は小さい
+
+---
+
+## サイドバー `N` キーで popup picker を起動するパスを撤回（2026-05-03）
+
+### 動機
+
+サイドバー pane mode から `N` を押すと内部で `tmux display-popup -E ... 'tmux-sidebar new --context=...'` を呼び出し、開いている session の重複検出のためにコンテキスト JSON を一時ファイルに書き出して picker に渡していた。実運用では「サイドバーを開いた状態で `N` を押す」というユースケースが想定通りに使われておらず、popup picker は tmux.conf bind-key (`prefix + N` 等) から直接起動する方が普通の tmux UX に揃って自然、という判断に至った。設計上の二重エントリポイント（サイドバー → picker と bind-key → picker）が、実装側に context file 受け渡しという余計な機構を抱え込ませていた。
+
+### 採用した方式
+
+- `internal/ui/model.go` から `case 'N'` ハンドラと popup 起動関連 (`launchPopupPicker` / `launchPopupViaTmux` / `writePopupContext` / `popupSessionInfo` / `popupClosedMsg` / `popupLauncher` / `shellQuote`) をまとめて削除
+- `tmux-sidebar new` サブコマンドそのものは残し、tmux.conf からの bind-key 経由で `tmux display-popup -E -w 80 -h 24 'tmux-sidebar new'` を呼び出すのを唯一の起動経路にする
+- `--context=<file>` フラグを廃止。`internal/picker.Context` / `WriteContext` / `ReadContext` / `SessionInfo` を全部削除し、`picker.New(repos, openSessionNames, runner)` というシグネチャに簡素化
+- 重複 session 検出（同名 session が既に開いている repo を dim 表示し、Enter で switch）は機能維持。`runNew` 側で `tmux.NewExecClient().ListSessions()` を呼び、session 名スライスを picker に渡す形にした
+- ドキュメントは setup.md §10 を「bind-key を書く」の単一手順に圧縮、spec.md からは「`N` で popup picker mode を起動」の記述を撤回し picker mode は独立エントリポイントとして書き直し
+
+### 採用しなかった代替
+
+- **`N` キーは残しつつ context 渡しを削除し、picker 側でも tmux 直問い合わせで dup 検出する**: サイドバー起動経路を残す価値が見えない（重複したエントリポイント）。残すと「どっち推奨？」の判断を README/spec に永続的に残すことになる
+- **popup 起動機構を完全に残し、`N` のキーバインドだけ封印する**: dead code が残るうえ、将来別のキーで再有効化したくなったときに同じ context-file 機構を引きずる。今やめるのが楽
+- **`--context` フラグを残し、内部実装だけ削除する**: 互換のための「使われない引数」を CLI に残すと、後から誰かが期待値を勘違いする。サイドバー以外に書く caller がいないので消し切る方が誠実
+
+### 影響範囲
+
+- `internal/picker/context.go` および `internal/picker/context_test.go` を削除
+- `internal/picker/picker.go` の `New` シグネチャ変更に伴い `picker_test.go` を更新（`New(Context{}, ...)` → `New(..., nil, ...)`、`Context{Sessions: ...}` → 文字列スライス）
+- `internal/doctor/doctor.go` のメッセージから `popup picker (\`N\`)` の表現を `\`tmux-sidebar new\` popup picker` に変更
+- `main.go` の `runNew` を簡素化（`--context=` パース削除、tmux 直問い合わせで openSessionNames を構築）
+- `docs/spec.md`: `N` の Lifecycle 表エントリ削除、Popup picker mode 節の前文を独立エントリポイントとして書き換え、Subcommands 表の `new` 行から「sidebar の `N`」削除
+- `docs/setup.md` §10 を rewrite（picker 挙動の重複説明を spec.md にリンクで集約）
+
+### 残課題
+
+- 既存ユーザの tmux.conf にサイドバー側の `N` 想定で bind を書いていない人は、§10 の bind-key 例を追加しないと popup picker を使えなくなる。リリースノートで明示する必要がある
+- dotfiles の `dispatch_launcher.fish` が `tmux-sidebar dispatch` の thin wrapper に置き換わる長期移行は変わらず別タスク

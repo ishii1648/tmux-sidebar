@@ -658,14 +658,15 @@ func checkRuntime() []checkResult {
 	if out, err := exec.Command("tmux", "-V").Output(); err == nil {
 		ver := strings.TrimSpace(string(out))
 		results = append(results, checkResult{label: "tmux", sev: sevOK, detail: ver})
-		// Popup picker (Phase 4) needs `display-popup`, introduced in tmux 3.2.
-		// Treat older versions as a warning rather than an error so the rest of
-		// the sidebar (which works on 3.0+) keeps functioning.
+		// `tmux-sidebar new` runs the popup picker via `tmux display-popup`,
+		// which was introduced in tmux 3.2. Treat older versions as a warning
+		// rather than an error so the rest of the sidebar (which works on
+		// 3.0+) keeps functioning.
 		if maj, min, ok := parseTmuxVersion(ver); ok {
 			if maj < 3 || (maj == 3 && min < 2) {
 				results = append(results, checkResult{
 					label: "tmux popup support", sev: sevWarn,
-					detail: fmt.Sprintf("%d.%d found; popup picker (`N`) requires tmux 3.2+", maj, min),
+					detail: fmt.Sprintf("%d.%d found; `tmux-sidebar new` popup picker requires tmux 3.2+", maj, min),
 				})
 			} else {
 				results = append(results, checkResult{

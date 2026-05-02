@@ -1422,59 +1422,6 @@ func TestKillResultMsg_ErrorMessage(t *testing.T) {
 	}
 }
 
-// ── popup picker (Phase 4) ──────────────────────────────────────────────────
-
-func TestPopup_NLaunchesPickerWithContext(t *testing.T) {
-	var called string
-	prev := popupLauncher
-	popupLauncher = func(ctxPath string) error {
-		called = ctxPath
-		// verify the temp file exists and has the expected JSON shape
-		data, err := os.ReadFile(ctxPath)
-		if err != nil {
-			t.Fatalf("read ctx: %v", err)
-		}
-		if !strings.Contains(string(data), `"sessions"`) {
-			t.Errorf("context missing sessions field: %s", data)
-		}
-		return nil
-	}
-	defer func() { popupLauncher = prev }()
-
-	m := newTestModel(sampleItems(), 1, true)
-	_, cmd := m.Update(key('N'))
-	if cmd == nil {
-		t.Fatal("N should return a Cmd")
-	}
-	msg := cmd()
-	if _, ok := msg.(popupClosedMsg); !ok {
-		t.Fatalf("Cmd should return popupClosedMsg, got %T", msg)
-	}
-	if called == "" {
-		t.Errorf("popupLauncher was not invoked")
-	}
-	// temp file should be cleaned up.
-	if _, err := os.Stat(called); !os.IsNotExist(err) {
-		t.Errorf("context temp file %s should be removed, stat err = %v", called, err)
-	}
-}
-
-func TestPopup_ClosedMsgTriggersReload(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-	_, cmd := m.Update(popupClosedMsg{})
-	if cmd == nil {
-		t.Fatal("popupClosedMsg should trigger a reload Cmd")
-	}
-}
-
-func TestPopup_ClosedMsgWithErrorSetsMessage(t *testing.T) {
-	m := newTestModel(sampleItems(), 1, true)
-	m.Update(popupClosedMsg{err: fmt.Errorf("display-popup failed")})
-	if !strings.Contains(m.message, "display-popup failed") {
-		t.Errorf("message should include error, got %q", m.message)
-	}
-}
-
 // ── pin (Phase 3) ───────────────────────────────────────────────────────────
 
 // pinPanes returns three sessions (work / infra / scratch) with one window

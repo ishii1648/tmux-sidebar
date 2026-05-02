@@ -10,8 +10,8 @@
 tmux-sidebar は tmux の **cross-context 軸（session / window）** を司る常駐 control surface である。
 左端 sidebar pane に全 session/window を一覧表示し、cursor 選択 + 単打鍵で
 switch / close / pin などのライフサイクル操作を発行する。
-新規 session 生成は sidebar から起動される popup picker で行い、
-ghq repo 選択 + agent mode 選択をワンフローで完結する。
+新規 session 生成は別バイナリの popup picker (`tmux-sidebar new`) で行い、
+ghq repo 選択 + agent mode 選択をワンフローで完結する（tmux.conf の bind-key 経由で起動する）。
 
 pane 内部の操作（split-window, resize, zoom, copy-mode 等）と
 server 境界（attach, detach, new-server）は対象外であり、tmux native の責務に残す。
@@ -23,7 +23,7 @@ server 境界（attach, detach, new-server）は対象外であり、tmux native
 | **pane mode** | 常駐 navigation + lifecycle 操作 | 既定 40 cols × 端末高 |
 | **popup picker mode** | 新規 session wizard、その他の多段選択 | tmux popup（既定 80 × 24） |
 
-両者は同一バイナリ。pane mode が popup picker を起動し、終了後に状態を取り込む。
+両者は同一バイナリ。pane mode と popup picker mode は独立したエントリポイント（pane mode は引数なし起動、picker mode は `tmux-sidebar new`）で、tmux 経由でのみ状態を共有する。
 
 ## 入力モデル
 
@@ -82,7 +82,6 @@ infra
 |---|---|---|
 | `d` | カーソル window を close | running agent 検出時は強い confirm |
 | `D` | カーソル session を close | 複数 window 影響のため必ず confirm |
-| `N` | popup picker mode で新規 session 作成 | 後述 |
 
 destructive 操作（close 系）は **state file の `running` / `permission` / `ask` 状態を根拠に confirm 強度を変える**。
 
@@ -115,8 +114,7 @@ pinned session は上部に持ち上げられ、`📌 <name>` で表示される
 
 ## Popup picker mode
 
-`N` 押下で sidebar process が tmux popup を起動し、popup 内で同一バイナリの
-picker mode が走る。
+`tmux-sidebar new` で picker TUI が起動する。tmux.conf 側で `tmux display-popup -E -w 80 -h 24 'tmux-sidebar new'` を bind-key に割り当てて popup として呼び出すことを想定する（[setup.md](setup.md#10-popup-pickern-の前提任意) 参照）。サイドバー pane mode 自体には起動キーを設けない。
 
 ### Step 1: repo 選択
 
@@ -147,8 +145,7 @@ claude / codex  <repo>
 
 ### 完了時
 
-popup を閉じ、tmw / agent 起動コマンドを実行する。
-sidebar pane は自発的に reload し、新 session にカーソル移動する。
+popup を閉じ、dispatch を背景で起動する（前項参照）。新 session が生成されると sidebar の reload tick（最大 10 秒、または SIGUSR1 hook で即時）でリストに現れる。
 
 ## Preview
 
@@ -218,7 +215,7 @@ dispatch / popup picker のフローはローカルの CLI を直接呼び出す
 | サブコマンド | 動作 |
 |---|---|
 | (なし) | sidebar pane mode を起動 |
-| `new` | picker TUI を起動。popup として表示するかは呼び出し側（sidebar の `N`、tmux.conf bind-key）が `tmux display-popup -E ...` で決める |
+| `new` | picker TUI を起動。popup として表示するかは呼び出し側（tmux.conf bind-key）が `tmux display-popup -E ...` で決める |
 | `dispatch <repo> [prompt]` | git worktree + tmux session を作成して launcher (claude / codex) を起動する CLI（`/dispatch` skill の engine と共通） |
 | `toggle` | 現在 window の sidebar を toggle |
 | `close` | 現在 window の sidebar を閉じる |

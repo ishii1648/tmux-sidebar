@@ -37,8 +37,7 @@ func sampleRepos() []repo.Repo {
 
 func TestPickerExistingSessionSwitches(t *testing.T) {
 	runner := &fakeRunner{}
-	ctx := Context{Sessions: []SessionInfo{{Name: "foo", Path: "/r/foo"}}}
-	m := New(ctx, sampleRepos(), runner)
+	m := New(sampleRepos(), []string{"foo"}, runner)
 
 	// repos sort by Basename → bar, foo. Move cursor to "foo".
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyDown})
@@ -54,7 +53,7 @@ func TestPickerExistingSessionSwitches(t *testing.T) {
 
 func TestPickerNewRepoAdvancesToPromptStep(t *testing.T) {
 	runner := &fakeRunner{}
-	m := New(Context{}, sampleRepos(), runner)
+	m := New(sampleRepos(), nil, runner)
 	// cursor on "bar" (first after sort), no open session → Enter advances
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.step != stepPrompt {
@@ -70,7 +69,7 @@ func TestPickerNewRepoAdvancesToPromptStep(t *testing.T) {
 
 func TestPickerDispatchFlowClaude(t *testing.T) {
 	runner := &fakeRunner{}
-	m := New(Context{}, sampleRepos(), runner)
+	m := New(sampleRepos(), nil, runner)
 	// Step 1: Enter on "bar" → prompt step (claude is the default launcher)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 	for _, r := range []rune("add") {
@@ -127,7 +126,7 @@ func TestPickerDispatchFlowClaude(t *testing.T) {
 }
 
 func TestPickerTabTogglesLauncherStepRepo(t *testing.T) {
-	m := New(Context{}, sampleRepos(), &fakeRunner{})
+	m := New(sampleRepos(), nil, &fakeRunner{})
 	if m.launcher != dispatch.LauncherClaude {
 		t.Fatalf("default launcher = %q want claude", m.launcher)
 	}
@@ -143,7 +142,7 @@ func TestPickerTabTogglesLauncherStepRepo(t *testing.T) {
 
 func TestPickerTabTogglesLauncherStepPrompt(t *testing.T) {
 	runner := &fakeRunner{}
-	m := New(Context{}, sampleRepos(), runner)
+	m := New(sampleRepos(), nil, runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyTab})   // claude → codex
 	if m.launcher != dispatch.LauncherCodex {
@@ -161,7 +160,7 @@ func TestPickerTabTogglesLauncherStepPrompt(t *testing.T) {
 
 func TestPickerCheckoutMode(t *testing.T) {
 	runner := &fakeRunner{}
-	m := New(Context{}, sampleRepos(), runner)
+	m := New(sampleRepos(), nil, runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
 	for _, r := range []rune(":existing-branch") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -192,7 +191,7 @@ func TestPickerNewlineKeysInsertNewline(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			m := New(Context{}, sampleRepos(), &fakeRunner{})
+			m := New(sampleRepos(), nil, &fakeRunner{})
 			m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt
 			for _, r := range []rune("first") {
 				m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -213,7 +212,7 @@ func TestPickerNewlineKeysInsertNewline(t *testing.T) {
 
 func TestPickerSpawnErrorShownNotQuit(t *testing.T) {
 	runner := &fakeRunner{dispatchErr: errors.New("run-shell boom")}
-	m := New(Context{}, sampleRepos(), runner)
+	m := New(sampleRepos(), nil, runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt
 	for _, r := range []rune("x") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -229,7 +228,7 @@ func TestPickerSpawnErrorShownNotQuit(t *testing.T) {
 
 func TestPickerEmptyPromptShowsError(t *testing.T) {
 	runner := &fakeRunner{}
-	m := New(Context{}, sampleRepos(), runner)
+	m := New(sampleRepos(), nil, runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // empty submit
 	if m.errMsg == "" {
@@ -242,7 +241,7 @@ func TestPickerEmptyPromptShowsError(t *testing.T) {
 
 func TestPickerEscFromRepoQuits(t *testing.T) {
 	runner := &fakeRunner{}
-	m := New(Context{}, sampleRepos(), runner)
+	m := New(sampleRepos(), nil, runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEscape})
 	if !m.quitting {
 		t.Fatal("expected quitting after Esc on repo step")
@@ -253,7 +252,7 @@ func TestPickerEscFromRepoQuits(t *testing.T) {
 }
 
 func TestPickerEscFromPromptReturnsToRepo(t *testing.T) {
-	m := New(Context{}, sampleRepos(), &fakeRunner{})
+	m := New(sampleRepos(), nil, &fakeRunner{})
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})  // → prompt
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEscape}) // back
 	if m.step != stepRepo {
@@ -266,8 +265,7 @@ func TestPickerEscFromPromptReturnsToRepo(t *testing.T) {
 
 func TestPickerSwitchErrorShownNotQuit(t *testing.T) {
 	runner := &fakeRunner{switchErr: errors.New("boom")}
-	ctx := Context{Sessions: []SessionInfo{{Name: "foo"}}}
-	m := New(ctx, sampleRepos(), runner)
+	m := New(sampleRepos(), []string{"foo"}, runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyDown}) // foo
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.quitting {
@@ -280,7 +278,7 @@ func TestPickerSwitchErrorShownNotQuit(t *testing.T) {
 
 func TestPickerPasteNormalizesNewlines(t *testing.T) {
 	runner := &fakeRunner{}
-	m := New(Context{}, sampleRepos(), runner)
+	m := New(sampleRepos(), nil, runner)
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
 	// Simulate a bracketed-paste of multi-line content where the terminal
 	// translated LF to CR (or sent CRLF). The picker should normalise both
@@ -311,7 +309,7 @@ func TestPickerPasteNormalizesNewlines(t *testing.T) {
 }
 
 func TestPickerNonPasteRunesNotNormalized(t *testing.T) {
-	m := New(Context{}, sampleRepos(), &fakeRunner{})
+	m := New(sampleRepos(), nil, &fakeRunner{})
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
 	// A bare \r keystroke without Paste should land verbatim — this
 	// shouldn't happen in practice (terminals send Enter for CR), but the
@@ -326,7 +324,7 @@ func TestPickerNonPasteRunesNotNormalized(t *testing.T) {
 }
 
 func TestFuzzyFilterAndCursorReset(t *testing.T) {
-	m := New(Context{}, sampleRepos(), &fakeRunner{})
+	m := New(sampleRepos(), nil, &fakeRunner{})
 	for _, r := range []rune("ba") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -344,7 +342,7 @@ func TestFuzzyFilterAndCursorReset(t *testing.T) {
 // byte) so multi-byte input like Japanese is not corrupted into replacement
 // glyphs (e.g. ◆) on the next render.
 func TestPromptBackspaceMultiByteRune(t *testing.T) {
-	m := New(Context{}, sampleRepos(), &fakeRunner{})
+	m := New(sampleRepos(), nil, &fakeRunner{})
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
 	for _, r := range []rune("こんにちは") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -365,7 +363,7 @@ func TestPromptBackspaceMultiByteRune(t *testing.T) {
 // TestRepoQueryBackspaceMultiByteRune mirrors the prompt test for the repo
 // filter input on Step 1.
 func TestRepoQueryBackspaceMultiByteRune(t *testing.T) {
-	m := New(Context{}, sampleRepos(), &fakeRunner{})
+	m := New(sampleRepos(), nil, &fakeRunner{})
 	for _, r := range []rune("あい") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}

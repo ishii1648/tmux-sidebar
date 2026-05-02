@@ -36,7 +36,7 @@ func main() {
 
 Subcommands:
   (none)                    Start the TUI sidebar
-  new [--context=<file>]    Popup picker for new session (usually invoked via N)
+  new                       Popup picker for new session (invoke via tmux bind-key + display-popup)
   dispatch <repo> [prompt] [flags]
                             Create a worktree + tmux session and start a launcher
   close                     Close sidebar if open
@@ -545,25 +545,14 @@ func sidebarWidth() int {
 	return cfg.Width
 }
 
-// runNew is the entry point for `tmux-sidebar new [--context=<file>]`. It
-// runs the picker bubbletea program in the current terminal. Popup framing
-// is *not* the subcommand's responsibility — callers (sidebar pane mode,
-// tmux.conf bind-key) decide whether to invoke this via `tmux display-popup
-// -E ...`, a split-window, or a plain shell. Decoupling popup orchestration
-// from the picker keeps the subcommand predictable and the popup geometry
-// configurable from the call site.
-func runNew(args []string) error {
-	contextPath := ""
-	for _, a := range args {
-		if strings.HasPrefix(a, "--context=") {
-			contextPath = strings.TrimPrefix(a, "--context=")
-		}
-	}
-
-	ctx, err := picker.ReadContext(contextPath)
-	if err != nil {
-		return err
-	}
+// runNew is the entry point for `tmux-sidebar new`. It runs the picker
+// bubbletea program in the current terminal. Popup framing is *not* the
+// subcommand's responsibility — callers (tmux.conf bind-key) decide whether
+// to invoke this via `tmux display-popup -E ...`, a split-window, or a
+// plain shell. Decoupling popup orchestration from the picker keeps the
+// subcommand predictable and the popup geometry configurable from the call
+// site.
+func runNew(_ []string) error {
 	repos, err := repo.List()
 	if err != nil {
 		return err
@@ -572,7 +561,19 @@ func runNew(args []string) error {
 		return fmt.Errorf("no repositories found under ghq")
 	}
 
-	model := picker.New(ctx, repos, picker.ExecRunner{})
+	// Discover already-open sessions so the picker can dim duplicates and
+	// switch instead of dispatching when the user picks an open repo.
+	// Best-effort: if tmux is unreachable we fall through with an empty
+	// list (picker still runs, just without dup detection).
+	var openSessionNames []string
+	if sessions, err := tmux.NewExecClient().ListSessions(); err == nil {
+		openSessionNames = make([]string, 0, len(sessions))
+		for _, s := range sessions {
+			openSessionNames = append(openSessionNames, s.Name)
+		}
+	}
+
+	model := picker.New(repos, openSessionNames, picker.ExecRunner{})
 	// No alt-screen: the popup itself owns its terminal canvas; alt-screen
 	// inside a popup leaves stale escape sequences when display-popup tears
 	// it down.

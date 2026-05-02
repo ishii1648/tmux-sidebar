@@ -3,9 +3,9 @@
 tmux の **cross-context 軸（session / window）** を司る常駐 control surface。
 左端 sidebar pane に全 session/window と agent (Claude Code / Codex CLI) の状態を一覧表示し、
 キーボードで switch / close / pin などのライフサイクル操作を発行する。
-新規 session 生成は sidebar 起動の popup picker（repo + agent mode 選択）で完結する。
+新規 session 生成は別エントリポイントの popup picker (`tmux-sidebar new`、tmux.conf bind-key 経由で起動) で repo + launcher + prompt をワンフローで決められる。
 
-> **Note**: lifecycle 操作（`d`/`D`）と popup picker（`N`）も含めて実装済み。
+> **Note**: lifecycle 操作（`d`/`D`）と popup picker (`tmux-sidebar new`) も含めて実装済み。
 > 詳細は [docs/spec.md](docs/spec.md) と [docs/TODO.md](docs/TODO.md) を参照。
 
 ```
@@ -29,7 +29,7 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 - vim 風の modal 入力: `normal` ではカーソル移動と単打コマンド、`/` で `search` モードへ
 - `j` / `k` / `↑` / `↓` でカーソル移動、`Enter` で対象ウィンドウへジャンプ
 - `d` / `D` で window / session を close（agent state に応じた confirm 強度、kill 直前に capture-pane を graveyard に保存）
-- `N` で popup picker mode を起動。Step 1 で ghq repo を fuzzy 選択（`Tab` で claude ↔ codex 切替）、Step 2 で prompt を入力すると git worktree + tmux session 生成 + launcher 起動 + prompt 投入まで一括で行う
+- `tmux-sidebar new`（tmux.conf bind-key 経由で popup として起動）で repo + launcher + prompt のワンフロー作成。Step 1 で ghq repo を fuzzy 選択（`Tab` で claude ↔ codex 切替）、Step 2 で prompt を入力すると git worktree + tmux session 生成 + launcher 起動 + prompt 投入まで一括で行う
 - pin（`~/.config/tmux-sidebar/pinned_sessions`）でセッションを上部に持ち上げ、`D` の削除保護を兼ねる
 - `after-new-window` フックで新しいウィンドウに自動生成
 - 選択ウィンドウの agent transcript から initial prompt を下部にプレビュー
@@ -72,14 +72,14 @@ mv tmux-sidebar ~/.local/bin/
 - [§7. サイドバーへのフォーカスキーバインド（任意）](docs/setup.md#7-サイドバーへのフォーカスキーバインド任意)
 - [§8. Agent (Claude Code / Codex CLI) の状態ファイル（任意）](docs/setup.md#8-agent-claude-code--codex-cli-の状態ファイル任意)
 - [§9. セッションの固定 (Pin) と非表示 (Hidden)（任意）](docs/setup.md#9-セッションの固定-pin-と非表示-hidden任意)
-- [§10. Popup picker（`N`）の前提（任意）](docs/setup.md#10-popup-pickern-の前提任意)
+- [§10. Popup picker（`tmux-sidebar new`）の前提（任意）](docs/setup.md#10-popup-pickertmux-sidebar-new-の前提任意)
 
 ## Subcommands
 
 | サブコマンド | 説明 |
 |---|---|
 | (なし) | TUI サイドバー（pane mode）を起動 |
-| `new [--context=<file>]` | picker TUI を起動。popup として表示するには tmux.conf の bind-key で `tmux display-popup -E ...` でラップする（[setup.md §10](docs/setup.md#10-popup-pickern-の前提任意) 参照、tmux 3.2+ が必要） |
+| `new` | picker TUI を起動。popup として表示するには tmux.conf の bind-key で `tmux display-popup -E ...` でラップする（[setup.md §10](docs/setup.md#10-popup-pickertmux-sidebar-new-の前提任意) 参照、tmux 3.2+ が必要） |
 | `dispatch <repo> [prompt] [flags]` | git worktree + tmux session を作成して launcher (claude / codex) を起動。dispatch.sh CLI と互換（`--launcher`, `--branch`, `--no-worktree`, `--no-prompt`, `--prompt-file`, `--in-session` ほか） |
 | `close` | サイドバーを閉じる |
 | `toggle` | サイドバーの表示/非表示を切り替え |
@@ -104,8 +104,9 @@ mv tmux-sidebar ~/.local/bin/
 | 検索 | `/` | search モードへ進入 |
 | Lifecycle | `d` | カーソル window を close（agent state に応じた confirm 強度、kill 前に capture-pane を graveyard に保存） |
 | Lifecycle | `D` | カーソル session を close（pinned session はブロック） |
-| Lifecycle | `N` | popup picker で新規 session（ghq repo + agent mode） |
 | 終了 | `Ctrl+C` | サイドバーを終了 |
+
+新規 session 作成は `tmux-sidebar new`（tmux.conf bind-key 経由で popup 起動。詳細は [setup.md §10](docs/setup.md#10-popup-pickertmux-sidebar-new-の前提任意)）。
 
 ### Search モード
 

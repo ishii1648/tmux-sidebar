@@ -537,7 +537,15 @@ func (ExecRunner) SpawnDispatch(opts dispatch.Options) error {
 	for _, a := range opts.ToArgs() {
 		parts = append(parts, shellQuote(a))
 	}
-	cmdLine := strings.Join(parts, " ")
+	// Redirect both stdout and stderr to /dev/null. tmux run-shell -b
+	// collects child output and dumps it into the calling client's
+	// active pane on completion — without this, the structured
+	// STATUS:/SESSION:/... lines that runDispatch prints for CLI
+	// scrapers land at the top of the freshly attached session's pane
+	// (visible above the launcher's prompt). Errors still reach the
+	// user via the explicit `tmux display-message` call in main.go's
+	// runDispatch error handler, so muting stderr here is safe.
+	cmdLine := strings.Join(parts, " ") + " >/dev/null 2>&1"
 	out, err := exec.Command("tmux", "run-shell", "-b", cmdLine).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux run-shell: %w (%s)", err, strings.TrimSpace(string(out)))

@@ -198,6 +198,27 @@ sidebar は switch-client 後に当該 pane の `pane_N_event_log` を **truncat
 
 ---
 
+## transcript lookup
+
+agent transcript（initial prompt 取得用）の解決は **二段構え**。
+
+1. **session index** (`~/.claude/session-index.jsonl` / `~/.codex/sessions/...`)
+   を `pane_N_session_id` で引く
+2. index が空 / ENOENT の場合は agent ごとの transcript root を `filepath.WalkDir` し、
+   basename で session ID を拾う
+
+| agent | index | walk root | basename match |
+|---|---|---|---|
+| claude | `~/.claude/session-index.jsonl` | `~/.claude/projects/` | `<sid>.jsonl` 完全一致 |
+| codex | （index なし） | `~/.codex/sessions/` | `Contains(<sid>)`（rollout-...-<sid>.jsonl 形式） |
+
+claude 側の walk fallback は **basename 完全一致**（`Contains` ではない）で
+`projects/*/<parent>/subagents/agent-*.jsonl` のような subagent transcript の
+誤拾いを防ぐ。`WalkDir` のエラーは握りつぶす（symlink loop 対策は標準ライブラリ任せ）。
+
+walk root のデフォルトは `session.DefaultClaudeProjectsDir` /
+`session.DefaultCodexSessionsDir` という package 変数で、テストから差し替える。
+
 ## capture-pane preview
 
 cursor 行が指す window の代表 pane（state file が指す pane、なければ first non-sidebar pane）について、
@@ -344,6 +365,6 @@ sidebar は tmux 標準のキーバインドを上書きしない。`prefix+s`, 
 - tmux hook が未設定でも基本表示は動くが、window/session 変更の反映は最大 10 秒遅れる
 - `client-resized` hook の幅値と runtime config の幅値は自動同期されない
 - `gh pr view` は環境の GitHub 認証状態に依存する
-- prompt preview は agent transcript index と `pane_N_session_id` がある場合のみ
+- prompt preview は `pane_N_session_id` と transcript 実体（index 経由 or projects walk fallback で解決）が両方揃った場合のみ
 - 完全な undo close は提供しない（kill 直前 confirm + scrollback 退避 path 通知のみ）
 - popup picker は tmux popup の機能に依存する（tmux 3.2 以上）

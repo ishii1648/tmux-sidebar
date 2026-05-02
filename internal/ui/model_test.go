@@ -1598,96 +1598,77 @@ func TestPin_KeyTogglesPinAndPersists(t *testing.T) {
 	}
 }
 
-func TestPin_SessionKillAlsoRemovesFromPinnedFile(t *testing.T) {
-	// Killing a pinned session via 'D' must also drop its name from
-	// pinned_sessions — otherwise a future session of the same name
-	// would auto-pin from the stale entry.
-	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
-	dir := t.TempDir()
-	pinnedPath := filepath.Join(dir, "pinned_sessions")
-	if err := config.WritePinnedSessions(pinnedPath, []string{"session-a", "session-b"}); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(filepath.Join(dir, "hidden_sessions"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.IsPinnedSession("session-a") {
-		t.Fatalf("precondition: session-a should be pinned after Load")
-	}
-
-	fc := &fakeTmuxClient{captureContent: "x"}
+func TestPin_BlocksSessionKill(t *testing.T) {
+	// Pin = delete protection. `D` on a pinned session must NOT enter the
+	// confirm state and must NOT call kill — the user has to `p` first.
+	fc := &fakeTmuxClient{}
 	m := newTestModel(sampleItems(), 1, true) // cursor on session-a window
 	m.tmuxClient = fc
-	m.cfg = cfg
-	m.pinnedPath = pinnedPath
+	m.cfg = config.Config{HiddenSessions: map[string]struct{}{}}
+	m.cfg.TogglePinned("session-a")
 
-	// D → y to kill session-a.
 	m.Update(key('D'))
-	_, cmd := m.Update(key('y'))
-	if cmd == nil {
-		t.Fatal("y should return a kill Cmd")
+	if m.confirm != confirmNone {
+		t.Errorf("D on pinned session should not arm confirm; got %v", m.confirm)
 	}
-	msg := cmd().(killResultMsg)
-	if msg.killedSession != "session-a" {
-		t.Errorf("killResultMsg.killedSession = %q, want %q", msg.killedSession, "session-a")
+	if !strings.Contains(m.message, "pinned") || !strings.Contains(m.message, "session-a") {
+		t.Errorf("expected message to explain why kill was blocked; got %q", m.message)
 	}
-	// Apply the result like the runtime would.
-	m.Update(msg)
-
-	if m.cfg.IsPinnedSession("session-a") {
-		t.Errorf("session-a should be unpinned in-memory after kill")
-	}
-	if !m.cfg.IsPinnedSession("session-b") {
-		t.Errorf("session-b should still be pinned (only session-a was killed)")
-	}
-	data, err := os.ReadFile(pinnedPath)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if strings.Contains(string(data), "session-a") {
-		t.Errorf("pinned_sessions should no longer contain 'session-a'; got %q", string(data))
-	}
-	if !strings.Contains(string(data), "session-b") {
-		t.Errorf("pinned_sessions must keep other entries; got %q", string(data))
+	// Even pressing y afterward must not kill anything.
+	m.Update(key('y'))
+	if len(fc.killedSessions) != 0 {
+		t.Errorf("kill must not happen after blocked D; killedSessions = %v", fc.killedSessions)
 	}
 }
 
-func TestPin_WindowKillLeavesPinnedFileAlone(t *testing.T) {
-	// Killing a single window (`d`) does not remove the session entry from
-	// pinned_sessions even if the session happens to die when its last
-	// window is gone — the user should use `D` for explicit session intent.
+func TestPin_SessionKillAllowedAfterUnpin(t *testing.T) {
+	// Once unpinned, `D` should work normally — the protection is *only*
+	// derived from the pinned list, not a separate setting.
 	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
+	fc := &fakeTmuxClient{captureContent: "x"}
 	dir := t.TempDir()
 	pinnedPath := filepath.Join(dir, "pinned_sessions")
-	if err := config.WritePinnedSessions(pinnedPath, []string{"session-a"}); err != nil {
-		t.Fatal(err)
-	}
-	cfg, _ := config.Load(filepath.Join(dir, "hidden_sessions"))
-
-	fc := &fakeTmuxClient{captureContent: "x"}
 	m := newTestModel(sampleItems(), 1, true)
 	m.tmuxClient = fc
-	m.cfg = cfg
+	m.cfg = config.Config{HiddenSessions: map[string]struct{}{}}
+	m.cfg.TogglePinned("session-a")
 	m.pinnedPath = pinnedPath
 
-	m.Update(key('d'))
+	// Try kill while pinned → blocked.
+	m.Update(key('D'))
+	if m.confirm != confirmNone {
+		t.Fatal("precondition: D should be blocked while pinned")
+	}
+	// Unpin, then kill → goes through.
+	m.Update(key('p'))
+	m.Update(key('D'))
+	if m.confirm != confirmKillSession {
+		t.Fatalf("after unpin, D should arm confirm; got %v", m.confirm)
+	}
 	_, cmd := m.Update(key('y'))
 	if cmd == nil {
 		t.Fatal("y should return a kill Cmd")
 	}
-	msg := cmd().(killResultMsg)
-	if msg.killedSession != "" {
-		t.Errorf("window kill must not set killedSession; got %q", msg.killedSession)
+	cmd()
+	if len(fc.killedSessions) != 1 || fc.killedSessions[0] != "session-a" {
+		t.Errorf("expected kill of session-a; got %v", fc.killedSessions)
 	}
-	m.Update(msg)
+}
 
-	if !m.cfg.IsPinnedSession("session-a") {
-		t.Errorf("window kill must not unpin the owning session")
-	}
-	data, _ := os.ReadFile(pinnedPath)
-	if !strings.Contains(string(data), "session-a") {
-		t.Errorf("pinned_sessions must keep 'session-a' after window-only kill; got %q", string(data))
+func TestPin_WindowKillNotBlockedByPin(t *testing.T) {
+	// `d` (window kill) is intentionally not blocked. Pin is a session-level
+	// concept; window-level destructive operations remain governed by the
+	// state-based confirm strength. This documents that boundary.
+	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
+	fc := &fakeTmuxClient{captureContent: "x"}
+	m := newTestModel(sampleItems(), 1, true)
+	m.tmuxClient = fc
+	m.cfg = config.Config{HiddenSessions: map[string]struct{}{}}
+	m.cfg.TogglePinned("session-a")
+
+	m.Update(key('d'))
+	if m.confirm != confirmKillWindow {
+		t.Errorf("d should arm window-kill confirm even when session is pinned; got %v", m.confirm)
 	}
 }
 

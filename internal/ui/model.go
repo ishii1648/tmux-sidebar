@@ -133,13 +133,9 @@ type gitDataMsg struct {
 
 // killResultMsg is sent after a kill-window/kill-session attempt finishes.
 // gravePath is non-empty on success when capture-pane wrote a snapshot.
-// killedSession is set (and only set) for a successful session kill — the
-// Update handler uses it to drop the name from pinned_sessions so the file
-// does not accumulate stale entries.
 type killResultMsg struct {
-	gravePath     string
-	err           error
-	killedSession string
+	gravePath string
+	err       error
 }
 
 // Styles used for rendering. Colors use AdaptiveColor so the sidebar works on
@@ -643,15 +639,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.message = "killed"
 		}
-		// Drop the killed session from pinned_sessions so the file stays in
-		// sync with reality. Without this, a same-named session created later
-		// would automatically be pinned again from the stale entry.
-		if msg.err == nil && msg.killedSession != "" && m.cfg.IsPinnedSession(msg.killedSession) {
-			updated := m.cfg.TogglePinned(msg.killedSession)
-			if m.pinnedPath != "" {
-				_ = config.WritePinnedSessions(m.pinnedPath, updated)
-			}
-		}
 		return m, m.loadData()
 
 	case tea.WindowSizeMsg:
@@ -850,7 +837,9 @@ func (m *Model) requestKillWindow() {
 }
 
 // requestKillSession stages a confirmation prompt for the session that owns
-// the cursor's current window.
+// the cursor's current window. Pinned sessions are explicitly protected — pin
+// signals "this is important enough to keep around", so a single 'D' must not
+// be able to take it down. The user has to unpin first.
 func (m *Model) requestKillSession() {
 	visible := m.visibleItems()
 	if m.cursor >= len(visible) {
@@ -858,6 +847,10 @@ func (m *Model) requestKillSession() {
 	}
 	item := visible[m.cursor]
 	if item.Kind != ItemWindow || item.SessionName == "" {
+		return
+	}
+	if m.cfg.IsPinnedSession(item.SessionName) {
+		m.message = "pinned: press 'p' to unpin '" + item.SessionName + "' before kill"
 		return
 	}
 	m.confirm = confirmKillSession
@@ -889,7 +882,7 @@ func (m *Model) killSessionCmd(item ListItem) tea.Cmd {
 		if err := client.KillSession(item.SessionName); err != nil {
 			return killResultMsg{err: err}
 		}
-		return killResultMsg{gravePath: gravePath, killedSession: item.SessionName}
+		return killResultMsg{gravePath: gravePath}
 	}
 }
 

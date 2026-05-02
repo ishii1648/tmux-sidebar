@@ -100,6 +100,8 @@ destructive 操作（close 系）は **state file の `running` / `permission` /
 `p` を押すとカーソル window の **所属 session** が pin/unpin される。pinned session は上部に持ち上げられ、`📌 <name>` で表示される。pinned 群と unpinned 群の境界には区切り線が入る。
 状態は `~/.config/tmux-sidebar/pinned_sessions` に書き戻され、再起動を跨いで保持される（後述 [Configuration files](#configuration-files)）。
 
+**pin は削除保護を兼ねる**: pinned session に対する `D`（session kill）はブロックされ、先に `p` で unpin することを促すメッセージが footer に出る。`d`（window kill）は session 単位ではないため、pin の影響を受けない。
+
 ### その他
 
 | キー | 動作 |

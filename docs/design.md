@@ -113,6 +113,8 @@ status = permission / ask  → "agent is waiting for input — really kill? [y/N
                               + 直近 prompt を preview area に表示
 ```
 
+`D` は対象 session が pinned のとき confirm を出さずブロックする（`requestKillSession` で `cfg.IsPinnedSession` をガード）。message line に「`p` で unpin してから kill」を案内する。これは pin = 削除保護というユーザのメンタルモデルを実装に反映するもので、結果として pinned_sessions ファイルに「kill 済み session の残骸」が残ることを構造的に防ぐ。`d`（window kill）は session 単位ではないためガードしない。
+
 ---
 
 ## pin / hidden の合成

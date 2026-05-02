@@ -1,314 +1,224 @@
 # tmux-sidebar 実装 TODO
 
-設計ドキュメント (`design.md`) をもとに、Go 実装のタスクを整理したもの。
+read-only navigation から control surface への scope 拡張に伴う実装タスク。
+背景は `docs/history.md`、目標仕様は `docs/spec.md`、設計は `docs/design.md` を参照。
+
+各 phase は **その phase 単独で merge 可能** な単位とし、上から順に実装する。
 
 ---
 
-## 0. 事前決定事項（実装前に確定が必要）
+## Phase 1: modal 入力モデルの基盤
 
-| # | 未決定事項 | 選択肢 | 推奨 |
-|---|-----------|--------|------|
-| 0-1 | TUI ライブラリ | [bubbletea](https://github.com/charmbracelet/bubbletea) / [tview](https://github.com/rivo/tview) / 自前 | bubbletea（Elm アーキテクチャ、テストしやすい） |
-| 0-2 | 通常ペイン移動からの除外方式 | `after-select-pane` hook で即座に離脱 / TUI 側でキャプチャして無視 | hook 方式（tmux 側で制御、TUI 実装を単純に保てる） |
-| 0-3 | passive / interactive モード切り替え | 常時インタラクティブ / キー入力で切り替え | キー入力で切り替え（`q` / `Esc` で passive に戻る） |
+後続フェーズの単打コマンドを成立させるための土台。これがないと `d` / `R` などが search に流れて取れない。
 
----
-
-## 1. プロジェクト初期化
-
-- [x] `go mod init github.com/ishii1648/tmux-sidebar`
-- [x] ディレクトリ構成を決定・作成
-  ```
-  tmux-sidebar/
-  ├── main.go
-  ├── internal/
-  │   ├── tmux/       # tmux コマンド呼び出し
-  │   ├── state/      # 状態ファイル読み取り
-  │   └── ui/         # TUI モデル・ビュー
-  ├── e2e/            # tmux capture-pane ベースの E2E テスト
-  │   ├── helpers.go
-  │   ├── display_test.go
-  │   ├── polling_test.go
-  │   └── keyboard_test.go
-  ├── docs/
-  └── .github/workflows/
-  ```
-- [x] TUI ライブラリ（0-1 の決定後）を `go get` で追加
+- [ ] `internal/ui` に `inputMode` (`normal` / `search`) を導入し、`handleKey` を分岐
+- [ ] `/` で search モードへ進入、`Esc` で normal へ戻る
+- [ ] 既存の「任意文字入力 → search」を「`/` 押下後の任意文字 → search」へ変更
+- [ ] 既存テストの key dispatch を modal 前提に書き直す
+- [ ] `j` / `k` / `Enter` / `Tab` の挙動が normal モードで保たれていることをテスト
+- [ ] e2e: `/` で検索開始、`Esc` で解除、normal 中は文字入力が無視されること
 
 ---
 
-## 2. tmux データ取得層 (`internal/tmux`)
+## Phase 2: 単一行 mutate 操作
 
-- [x] **セッション一覧取得**
-  - `tmux list-sessions -F "#{session_id}:#{session_name}"` を実行してパース
-- [x] **ウィンドウ一覧取得**
-  - `tmux list-windows -a -F "#{session_id}:#{window_id}:#{window_index}:#{window_name}"` をパース
-- [x] **現在のペイン/ウィンドウ情報取得**
-  - `tmux display-message -p "#{session_id}:#{window_id}:#{pane_id}"` で自分自身を特定
-- [x] **ウィンドウ切り替え**
-  - `tmux switch-client -t {session_name}` + `tmux select-window -t :{window_index}` を実行
-- [x] **ペイン番号の取得**（状態ファイルのキー解決用）
-  - `tmux list-panes -a -F "#{session_id}:#{window_id}:#{pane_id}:#{pane_index}"` をパース
-  - pane_id（`%N` 形式）から数値 N を抽出
+最小工数で体感を変えられるコマンド群。modal 化が前提。
 
----
+### close
 
-## 3. 状態ファイル読み取り層 (`internal/state`)
+- [ ] `internal/tmux` に `KillWindow(target string)` / `KillSession(name string)` を追加
+- [ ] `d` で window close、`D` で session close
+- [ ] state file の status から confirm 強度を分岐:
+  - `idle` → `y/N`
+  - `running` → 経過時間付き confirm
+  - `permission` / `ask` → 直近 prompt 付き warning
+- [ ] confirm dialog UI（normal mode の sub-state）
+- [ ] kill 直前に `tmux capture-pane -p` を `~/.local/share/tmux-sidebar/graveyard/` へ退避し、path を message line に通知
+- [ ] e2e: idle window の close、running window の confirm、cancel 時に kill されないこと
 
-ADR-007 の仕組みを継続利用する。
+### rename
 
-- [x] **状態ファイルのスキャン**
-  - `/tmp/claude-pane-state/` 配下のファイルを列挙
-  - `pane_N` → ステータス（`running` / `idle` / `permission` / `ask`）
-  - `pane_N_started` → running 開始時刻（epoch）
-- [x] **経過時間計算**
-  - `pane_N_started` の値から現在時刻との差分を分数で返す
-- [x] **ウィンドウとペインの紐付け**
-  - tmux 層から取得したペイン情報と状態ファイルの `pane_N` を突合
+- [ ] `internal/tmux` に `RenameWindow` / `RenameSession` を追加
+- [ ] `R` / `Shift+R` で `bubbles/textinput` を行内に展開（inline edit mode）
+- [ ] `Enter` で確定、`Esc` で取消、編集中は他コマンド無効化
+- [ ] e2e: rename 後に行が更新されること、`Esc` で元に戻ること
 
----
+### 新規 window
 
-## 4. TUI モデル (`internal/ui`)
-
-bubbletea を使用する場合の実装。
-
-### 4-1. データ構造
-
-- [x] `Session` / `Window` / `PaneState` 型の定義
-- [x] フラット化したリスト行（`ListItem`）型の定義
-  - セッションヘッダ行 / ウィンドウ行を区別するフィールドを持つ
-
-### 4-2. Model（状態）
-
-- [x] `cursor int` — 現在選択中の行インデックス
-- [x] `items []ListItem` — 表示行のリスト
-- [x] `mode` — `passive` / `interactive` の切り替え
-
-### 4-3. Update（キー入力処理）
-
-| キー | 処理 |
-|------|------|
-| `j` / `↓` | cursor を次のウィンドウ行へ移動（セッションヘッダはスキップ） |
-| `k` / `↑` | cursor を前のウィンドウ行へ移動 |
-| `Enter` | 選択ウィンドウへ `switch-client` + `select-window` |
-| `q` / `Esc` | passive モードに戻る |
-
-- [x] passive モード中はキー入力を完全に無視（ペインに通常の入力が届く）
-- [ ] interactive モードへの移行トリガー検討（`prefix+e` でフォーカス後に自動移行 など）
-
-### 4-4. View（描画）
-
-- [x] セッション名のヘッダ行描画
-- [x] ウィンドウ行の描画
-  - 現在のウィンドウに `▶` カーソルを表示
-- [x] 状態バッジの描画
-  - `[running 3m]` / `[idle]` / `[permission]` / `[ask]`
-  - 状態ごとに色付け（bubbletea の `lipgloss` 使用）
-- [x] 1 秒ごとのポーリング更新（`tea.Tick` を使用）
+- [ ] `internal/tmux` に `NewWindow(target, cwd string)` を追加
+- [ ] `n` でカーソル session 内に新規 window 作成（cwd は session の current path）
+- [ ] e2e: 新規 window が末尾に追加され、カーソル追従すること
 
 ---
 
-## 5. 通常ペイン移動からの除外
+## Phase 3: pin / mute / 並べ替え永続化
 
-0-2 の決定に基づく実装。
+config file 拡張と並び替えロジック。
 
-### hook 方式（推奨）
+### config 拡張
 
-- [x] `after-select-pane` フック用のサブコマンド実装
-  - `tmux-sidebar focus-guard` などで呼び出す
-  - 選択されたペインの `@pane_role` が `sidebar` なら直前のペインに戻る
-- [ ] dotfiles 側での設定方法をドキュメント化（Section 10 スコープ外）
+- [ ] `internal/config.Config` に `PinnedSessions` / `MutedSessions` / `SessionOrder` を追加
+- [ ] それぞれ `~/.config/tmux-sidebar/{pinned,muted,session_order}` を read/write
+- [ ] 1 行 1 entry、`#` でコメントの形式を踏襲
 
----
+### pin / mute toggle
 
-## 6. 単体テスト
+- [ ] `p` で pin toggle（pinned_sessions ファイル更新 + reload）
+- [ ] `M` で mute toggle（muted_sessions ファイル更新 + reload）
+- [ ] pinned session header に `📌` 表示
+- [ ] pinned 群と unpinned 群の境界に区切り線
+- [ ] muted session の window は status/unread badge を抑制（行表示は残す）
+- [ ] hidden > pinned > 通常順 の優先関係をテスト
 
-各層を tmux 実環境なしにテストできるよう、依存を interface で抽象化したうえでテストを書く。
+### window swap (同 session 内)
 
-### 6-1. tmux 層のモック化
+- [ ] `internal/tmux` に `SwapWindow` を追加
+- [ ] `Shift+J` / `Shift+K` で同 session 内 swap、カーソル追従
+- [ ] e2e: 並びが入れ替わり、カーソルが対象 window を追跡すること
 
-- [x] `TmuxClient` interface を定義する（`ListSessions` / `ListWindows` / `SwitchWindow` など）
-- [x] テスト用の `FakeTmuxClient` 実装を用意し、固定データを返せるようにする
+### session 並べ替え
 
-### 6-2. 状態ファイル層 (`internal/state`)
+- [ ] `Alt+J` / `Alt+K` で session 順を 1 つ下/上へ
+- [ ] `session_order` ファイルへ書き戻し、未記載 session は末尾に creation 順で追加
+- [ ] e2e: 並び順が永続化されること
 
-- [x] `StateReader` interface を定義し、`fsStateReader`（実装）と `fakeStateReader`（テスト用）を分離
-- [x] **正常系**: `running` / `idle` / `permission` / `ask` が正しく読み取れること
-- [x] **経過時間計算**: epoch 値から分数が正しく計算されること
-- [x] **ファイルなし**: 状態ファイルが存在しないペインは `idle` 扱いになること
-- [x] **不正値**: ファイル内容が空や未知の文字列でもパニックしないこと
+### move-window (別 session へ)
 
-### 6-3. tmux パース層 (`internal/tmux`)
-
-- [x] `list-sessions` / `list-windows` / `list-panes` の出力文字列をパースする関数の単体テスト
-- [x] セッション名にコロンや空白を含む場合も正しく扱えること
-- [x] pane_id（`%101` 形式）から数値抽出が正しく行えること
-
-### 6-4. TUI モデル (`internal/ui`)
-
-bubbletea の `Update` 関数は純粋関数（`Model → Msg → Model`）なので、tmux 環境なしにテスト可能。
-
-- [x] **カーソル移動**
-  - `j` / `↓` でセッションヘッダ行をスキップして次のウィンドウ行に移動すること
-  - `k` / `↑` で同様にスキップすること
-  - リスト末尾・先頭でループしないこと（または設計通りに振る舞うこと）
-- [x] **passive モードではキー入力を無視**
-  - passive モード中に `j` / `Enter` を送っても Model が変化しないこと
-- [x] **Enter でコマンドが発行される**
-  - `Enter` 時に `SwitchWindowCmd` が返ること（実際の tmux 呼び出しはしない）
-- [x] **View の出力検証**
-  - 固定データを与えたときの `View()` 文字列に `▶` カーソル・状態バッジ・セッション名が含まれること
-
-### 6-5. テスト実行
-
-- [x] `go test ./...` が CI（GitHub Actions）で通ること
-- [x] `.github/workflows/ci.yml` に `go test` ステップを追加
+- [ ] `internal/tmux` に `MoveWindow` を追加
+- [ ] `m` mark → カーソル移動 → `m` drop の 2 段階モード
+- [ ] mark 行に視覚マーカー、`Esc` で取消
+- [ ] target が session header の場合は session 末尾に挿入
+- [ ] e2e: window が別 session に移動し、元 session に痕跡が残らないこと
 
 ---
 
-## 7. E2E テスト（`tmux capture-pane` ベース）
+## Phase 4: 多重選択 + バルク
 
-`tmux -L e2e` で独立したサーバを立て、`tmux capture-pane -p` でペイン内容をテキストとして取得し、
-期待文字列と比較する。CI（GitHub Actions）で自動実行する。
+multi-select の UI と一括 close。
 
-### 7-1. テスト基盤の実装 (`e2e/`)
-
-- [x] `e2e/helpers.go` に以下のヘルパーを実装
-  - `newTestEnv(t)` — 分離 tmux サーバ起動・`t.Cleanup` でクリーンアップ
-  - `capturePane(target string) string` — `tmux capture-pane -p` でペイン内容を返す
-  - `sendKeys(target, keys string)` — `send-keys` でキーを送信
-  - `waitForText` / `waitForNoText` — capture-pane をポーリング
-  - `setupStateFile` / `setupStateFileStarted` / `removeStateFile` — 状態ファイル操作
-
-- [x] テスト用フィクスチャ（ダミーセッション + 状態ファイル）のセットアップ処理を共通化
-
-  | セッション | ウィンドウ | 状態ファイル | 期待バッジ |
-  |-----------|-----------|------------|-----------|
-  | session-a | 1: main   | なし        | （なし）  |
-  | session-a | 2: work   | `running` + `_started` = 3分前 | `[running 3m]` |
-  | session-b | 1: idle   | `idle`     | `[idle]`  |
-  | session-b | 2: perm   | `permission` | `[permission]` |
-  | session-b | 3: ask    | `ask`      | `[ask]`   |
-
-### 7-2. 表示 snapshot テスト (`e2e/display_test.go`)
-
-- [x] **セッション・ウィンドウ一覧の描画**
-  - `capturePane` の出力にセッション名・ウィンドウ名が含まれること
-- [x] **状態バッジの描画**
-  - `[idle]` / `[permission]` / `[ask]` / `[running` が対応ウィンドウ行に含まれること
-- [x] **running バッジの描画**
-  - epoch ファイルを書き込んで `[running` で始まるバッジが出現すること
-
-### 7-3. ポーリング更新テスト (`e2e/polling_test.go`)
-
-- [x] 状態ファイルなし → 書き込み後に `[idle]` バッジが出現することを確認
-- [x] 状態ファイルあり → 削除後にバッジが消えることを確認
-
-### 7-4. キーボード操作テスト (`e2e/keyboard_test.go`)
-
-- [x] **カーソル移動**
-  - `j` で `▶` が出現し、2回目の `j` で位置が変わること
-  - `k` でカーソルが戻ること（セッションヘッダはスキップ）
-- [x] **q で passive モードへ移行**
-  - `q` 後に `[i] to activate` が出現し `▶` が消えること
-- [x] **i でインタラクティブモードへ復帰**
-  - `i` 後に `[i] to activate` が消えること
-
-### 7-5. CI 設定
-
-- [x] `.github/workflows/ci.yml` に E2E テストのステップを追加（`e2e` ジョブで tmux インストール + `go test -tags e2e`）
+- [ ] `Space`（window 上）で multi-select toggle、選択行に視覚マーカー
+- [ ] `Esc` で選択解除
+- [ ] 選択ありの状態で `d` 押下 → bulk close（全件 idle なら一括 confirm、1 件でも running があれば個別 confirm）
+- [ ] e2e: 複数選択 → 一括 close、cancel で残ること
 
 ---
 
-## 8. メインエントリポイント (`main.go`)
+## Phase 5: popup picker mode（新規 session）
 
-- [x] `split-window` 経由で起動された際のサイドバーモード動作
-- [x] サブコマンド構成（必要に応じて）
-  - `tmux-sidebar` — サイドバー本体起動
-  - `tmux-sidebar focus-guard` — `after-select-pane` フック用
-- [x] ペイン幅の自動検出（`$COLUMNS` 環境変数または `tmux display-message -p "#{pane_width}"`）
+cross-context lifecycle の最後のピース。tmw を engine として残しつつ UI を統合する。
+
+### 基盤
+
+- [ ] `internal/picker` パッケージを新設、bubbletea で repo→mode→config の wizard を実装
+- [ ] subcommand `tmux-sidebar new --context=<file>` を追加
+- [ ] `--context` の JSON フォーマット定義（既存 sessions / pinned / muted / sidebar session id）
+
+### 起動経路
+
+- [ ] sidebar pane で `N` 押下 → context を temp file へ書き出し → `tmux display-popup -E -w 80 -h 24 'tmux-sidebar new --context=...'`
+- [ ] popup 終了後、pane mode が `loadData()` を発火、新 session にカーソル移動
+
+### Step 1: repo 選択
+
+- [ ] `internal/repo` に ghq 配下 repo 列挙を実装（`ghq list` 呼び出し）
+- [ ] fuzzy filter（`sahilm/fuzzy` などのライブラリ採用）
+- [ ] context の既存 sessions と突き合わせ、open 中の repo を dim 表示
+- [ ] `Enter` で:
+  - 未 open repo → mode 選択へ進む
+  - open 中 repo → 既存 session へ switch して終了
+
+### Step 2: mode 選択
+
+- [ ] `claude` / `codex` / `dispatch` / `orchestrate` の 4 択を radio 形式で表示
+- [ ] 各 mode の説明を 1 行で添える
+
+### Step 3: mode 別追加設定（必要時のみ）
+
+- [ ] worktree branch 名入力（tmw worktree 対象 repo の場合）
+- [ ] orchestrate chain 種別選択（orchestrate 選択時）
+- [ ] 詳細仕様は tmw / 各 skill の引数に従う
+
+### 実行
+
+- [ ] tmw / agent 起動コマンドを `os/exec` で実行
+- [ ] 失敗時は stderr 内容を popup 内 error line に表示、`Esc` で popup 終了
+- [ ] 成功時は popup を閉じて pane mode に戻る
+
+### 既存 popup tmw との並存
+
+- [ ] dotfiles 側の popup tmw キーバインドを維持（fallback として）
+- [ ] README にて「sidebar の `N` が primary、popup tmw は fallback」と明記
 
 ---
 
-## 9. リリース設定
+## Phase 6: preview 拡張 + activity history
 
-- [x] `goreleaser.yaml` の作成
-  - `GOOS=darwin,linux` / `GOARCH=amd64,arm64` でクロスビルド
-- [x] `.github/workflows/release.yml` の作成
-  - `git tag v*` push をトリガーに `goreleaser release` を実行
+cursored window の補助情報を強化する。
+
+### capture-pane preview
+
+- [ ] `internal/tmux` に `CapturePane(target string, lines int)` を追加
+- [ ] 10 秒 tick で cursored window の代表 pane を capture
+- [ ] prompt preview があればそちら優先、なければ capture を fallback で表示
+- [ ] sidebar pane 自身の capture を読まないこと（自己参照ループ防止）
+
+### unread badge
+
+- [ ] state 形式に `pane_N_event_log` を追加（仕様: `<epoch>:permission|ask` を改行区切り append）
+- [ ] `internal/state` で last-attached time 以降の event 数をカウント
+- [ ] `!N` バッジを window 行に表示
+- [ ] switch-client で当該 window に移動した際、`pane_N_event_log` を truncate
+- [ ] muted session では unread badge も抑制
+- [ ] dotfiles 側の Claude/Codex hook を更新する追記タスクを README に明記（ファイル append 仕様）
+
+### session 折りたたみ
+
+- [ ] session header 上で `Space` 押下時の toggle ロジック
+- [ ] 折りたたみ状態は in-memory のみ（永続化しない）
+- [ ] header の `▾`/`▸` 表示
 
 ---
 
-## 10. dotfiles 側の設定（実装後に dotfiles リポジトリで対応）
+## Phase 7: ナビゲーション補助
 
-実装完了後、dotfiles 側で以下を設定する（このリポジトリのスコープ外）。
+vim 風の追加移動キー。
 
-- [ ] `aqua.yaml` にバイナリを追加
-- [ ] `tmux.conf` に `after-new-window` フックを追加
-  ```
-  set-hook -g after-new-window 'run-shell "tmux-sidebar"'
-  ```
-- [ ] `prefix+e` の toggle keybind 設定
-- [ ] `after-select-pane` フックの設定（hook 方式を採用した場合）
+- [ ] `gg` で先頭、`G` で末尾の window 行へ
+- [ ] e2e: 大きな session 群でジャンプが効くこと
 
 ---
 
-## 実装優先順位
+## Phase 8: doctor 更新と documentation
+
+- [ ] `tmux-sidebar doctor` に以下を追加:
+  - tmux 3.2 以上の確認（popup 必須）
+  - `pane_N_event_log` 仕様の hook 設定確認（dotfiles 側）
+- [ ] README.md を Phase 進捗に応じて更新（features / keyboard shortcuts / subcommands）
+- [ ] docs/setup.md に `N` キーバインドの推奨設定を追記
+
+---
+
+## 参考: 採用しない・延期する項目
+
+| 項目 | 理由 |
+|---|---|
+| 完全な undo close（scrollback 完全復元） | tmux primitive にない。tmux-resurrect 連携で別途検討 |
+| pane 内部操作（split, zoom, copy-mode）の sidebar 経由化 | 「カーソル位置に対する 1:1 操作」は tmux native の責務 |
+| server 境界制御（attach/detach/new-server） | sidebar 起動前の世界。tmw / 起動 profile の責務 |
+| repo rename | sidebar pane が dominant artifact、識別子への影響大 |
+| session 並びの MRU 自動ソート | カーソル追従と相性が悪く、UX が混乱しやすい。要検討項目として保留 |
+
+---
+
+## 実装順序の根拠
 
 ```
-[高] 2. tmux データ取得層          ← interface 設計を先に固める
-[高] 3. 状態ファイル読み取り層     ← interface 設計を先に固める
-[高] 6. 単体テスト                 ← 2/3/4 と並行して書く
-[高] 4. TUI モデル（最低限の表示・Enter 移動）
-[中] 7. E2E テスト（scripts/e2e-setup.sh + チェックリスト実施）
-[中] 5. 通常ペイン移動からの除外
-[中] 9. リリース設定
-[低] 8. サブコマンド構成の整備
-[後] 10. dotfiles 側設定
+Phase 1 (modal)        ← ブロッカー。これがないと 2 以降が成立しない
+Phase 2 (close/rename) ← 単発で体感が変わる、リスクが低い
+Phase 3 (pin/move)     ← 永続化の追加、設計の中核
+Phase 4 (multi-select) ← Phase 2/3 の上に乗る派生
+Phase 5 (popup picker) ← 別バイナリモードの新規実装、最大ボリューム
+Phase 6 (preview)      ← state 形式拡張を伴うため後ろに置く
+Phase 7 (gg/G)         ← おまけ、いつでも入れられる
+Phase 8 (doctor/docs)  ← 全体が形になってから整える
 ```
-
----
-
-## 11. `doctor` サブコマンド（セットアップ自動化）
-
-hiroppy/tmux-agent-sidebar の `doctor` 機能を参考にした、フック設定の自動セットアップ。
-
-- [x] `tmux-sidebar doctor` サブコマンドの実装
-  - `~/.claude/settings.json` を読み込み、必要なフック設定が存在するか診断
-  - 不足しているフック（`UserPromptSubmit` / `Stop` / `PostToolUse` など）を非破壊マージで追記
-  - 変更前後の差分を表示して、ユーザーに確認を求める（`--yes` フラグで自動適用）
-- [x] `tmux.conf` に必要なフック（`after-new-window`、`after-select-pane`）が設定されているか確認
-- [x] 診断結果を `OK` / `WARN` / `ERROR` で色付き出力
-
----
-
-## 12. Git 情報パネル（下部エリア）
-
-選択中のペインのリポジトリ情報を下部パネルに表示する。
-
-- [x] `git` コマンドをバックグラウンドポーリングで呼び出す仕組みの実装
-  - ペインの作業ディレクトリを `tmux display-message -p "#{pane_current_path}"` で取得
-  - `git rev-parse --abbrev-ref HEAD`（ブランチ名）
-  - `git rev-list --count HEAD ^origin/HEAD`（unpushed コミット数）
-- [x] `gh pr view --json state,title` で PR 状態（open / draft / merged）を取得（`gh` CLI が存在する場合のみ）
-- [x] 下部エリアの描画
-  - `branch: main  +3 commits  PR: draft` のような 1 行表示
-  - `gh` CLI が未インストールの場合は PR 情報を省略
-- [x] ポーリング間隔は 10 秒程度（git コマンドは重いため 1 秒ポーリングから分離）
-
----
-
-## 13. タブ/フィルタ機能
-
-多セッション環境で対応が必要なエージェントをすぐ見つけるためのフィルタ。
-
-- [x] フィルタ状態の定義
-  - `FilterAll`（全ウィンドウ表示）
-  - `FilterWaiting`（`permission` または `ask` 状態のみ）
-- [x] `Tab` / `Shift+Tab` でフィルタを循環切り替え
-- [x] ヘッダ行にアクティブなフィルタを表示
-  ```
-  [All] [Waiting]  ← 現在選択中を強調
-  ```
-- [x] フィルタ変更時にカーソルを先頭ウィンドウ行にリセット
-- [x] 単体テスト：フィルタ状態ごとに `items` が正しく絞り込まれること

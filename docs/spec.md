@@ -7,198 +7,263 @@
 
 ## 概要
 
-tmux-sidebar は tmux の左端 pane に全 session/window の一覧と
-agent (Claude Code / Codex CLI) の状態を表示し、キーボードで選択した
-window へ移動できる TUI ツールである。
+tmux-sidebar は tmux の **cross-context 軸（session / window）** を司る常駐 control surface である。
+左端 sidebar pane に全 session/window を一覧表示し、cursor 選択 + 単打鍵で
+switch / close / rename / pin / move などのライフサイクル操作を発行する。
+新規 session 生成は sidebar から起動される popup picker で行い、
+ghq repo 選択 + agent mode 選択をワンフローで完結する。
 
-sidebar は tmux hook により新しい window/session に自動生成できる。
-手動で開閉・focus するための CLI サブコマンドも提供する。
+pane 内部の操作（split-window, resize, zoom, copy-mode 等）と
+server 境界（attach, detach, new-server）は対象外であり、tmux native の責務に残す。
 
----
+## レンダリング先
+
+| 面 | 用途 | サイズ |
+|---|---|---|
+| **pane mode** | 常駐 navigation + lifecycle 操作 | 既定 40 cols × 端末高 |
+| **popup picker mode** | 新規 session wizard、その他の多段選択 | tmux popup（既定 80 × 24） |
+
+両者は同一バイナリ。pane mode が popup picker を起動し、終了後に状態を取り込む。
+
+## 入力モデル
+
+vim 風の modal。
+
+| モード | 動作 |
+|---|---|
+| **normal** | 単打キーで commands 発行（switch, close, rename, pin など） |
+| **search** | `/` で進入。任意文字でインクリメンタル検索。`Esc` で normal へ戻る |
 
 ## 表示
 
-sidebar は session を見出し、window を子行として階層表示する。
-agent がいない window も表示対象である。
+session を見出し、window を子行として階層表示する。
+pinned session は上部に区切り線で隔てて並べる。
 
 ```
 ● Sessions
-> type to filter...
+─────────────────────
+📌 ▾ tmux-sidebar
+   1: main          [c]💬
+─────────────────────
 ▾ work
-  1: main
-▶ 2: feature                 [c]🔄3m
+   1: main
+▶  2: feature       [c]🔄3m
 ▾ infra
-  1: deploy                  [x]💬
+   1: deploy        [x]💬
 ```
 
-現在の tmux window は背景色で highlight される。
-sidebar pane が focus されている場合は title が `● Sessions`、
-focus されていない場合は `○ Sessions` になる。
+- session header は `▾`（展開）/ `▸`（折りたたみ）。`Space` で toggle（後述）
+- pinned session は `📌` を付与し、unpinned 群との境界に区切り線
+- 現在の tmux window は背景色で highlight
+- sidebar pane が focus されている場合は title が `● Sessions`、focus されていない場合は `○ Sessions`
 
-表示から除外したい session は `~/.config/tmux-sidebar/hidden_sessions` に
-1 行 1 session name で指定する。
+## 操作（normal mode）
 
----
-
-## Agent 状態バッジ
-
-agent 状態がある window には、右端に agent tag と status badge を表示する。
-
-### Agent tag
-
-| Tag | 意味 |
-|---|---|
-| `[c]` | Claude Code。unknown / legacy state も fallback として `[c]` |
-| `[x]` | Codex CLI |
-
-### Status badge
-
-| Status | 表示 |
-|---|---|
-| `running` | `🔄Ns` または `🔄Nm` |
-| `idle` | status badge は表示しない |
-| `permission` | `💬` |
-| `ask` | `💬` |
-
-1 分未満の running は秒表示、1 分以上は分表示にする。
-
----
-
-## キーボード操作
-
-sidebar pane に focus がある時だけ、以下のキーを処理する。
+### 移動・切替
 
 | キー | 動作 |
 |---|---|
-| `j` / `↓` | 次の window 行へ移動。検索クエリが空の時のみ |
-| `k` / `↑` | 前の window 行へ移動。検索クエリが空の時のみ |
-| `Enter` | 選択 window へ移動 |
-| 任意の文字 | session name / window name のインクリメンタル検索 |
-| `Backspace` | 検索クエリを 1 文字削除 |
-| `Esc` | 検索クエリをクリア |
-| `Ctrl+C` | sidebar process を終了 |
+| `j` / `↓` | 次の window 行へ |
+| `k` / `↑` | 前の window 行へ |
+| `gg` | 先頭の window 行へ |
+| `G` | 末尾の window 行へ |
+| `Enter` | 選択 window へ移動（`switch-client` + `select-window`） |
+| `Tab` / `Shift+Tab` | filter 切替（All / Waiting） |
 
-`q` は特別扱いしない。検索クエリとして入力される。
-`Esc` は sidebar pane から focus を外す操作ではない。
+### 検索
 
----
-
-## Window 移動
-
-`Enter` を押すと、選択中 window の session name と window index を使って
-tmux client を対象 window に移動する。
-
-session header 行は選択対象ではない。
-cursor は window 行だけを移動する。
-
----
-
-## 検索
-
-文字入力すると検索クエリになり、session name または window name に
-case-insensitive substring match する window だけを表示する。
-
-検索結果がある session header だけを表示する。
-`Esc` で検索クエリを空に戻す。
-
----
-
-## Prompt preview
-
-選択中 window の agent state に `pane_N_session_id` があり、対応する Claude transcript が
-見つかる場合、sidebar 下部に initial prompt preview を表示する。
-
-prompt がない、transcript が見つからない、session id がない場合は preview を空にする。
-
----
-
-## Git/PR 表示
-
-window の作業 directory が git repository の場合、branch / ahead / PR 情報を表示する。
-`gh` が利用でき、対象 branch に PR がある場合は PR 番号と state を表示する。
-
-Git/PR 表示は補助情報であり、取得に失敗しても sidebar の一覧表示や移動は継続する。
-
----
-
-## Sidebar の開閉と focus
-
-| サブコマンド | 動作 |
+| キー | 動作 |
 |---|---|
-| `tmux-sidebar` | TUI sidebar を起動 |
-| `tmux-sidebar toggle` | 現在 window の sidebar を閉じる。なければ開く |
-| `tmux-sidebar close` | 現在 window の sidebar を閉じる |
-| `tmux-sidebar focus-or-open` | sidebar があれば focus、なければ開いて focus |
-| `tmux-sidebar cleanup-if-only-sidebar` | sidebar だけが残った window を削除 |
-| `tmux-sidebar restart` | 既存 sidebar を再起動 |
-| `tmux-sidebar doctor [--yes]` | 設定を診断し、`--yes` 付きなら一部を自動修正 |
-| `tmux-sidebar upgrade` | GitHub Releases から最新バイナリを導入 |
-| `tmux-sidebar version` | version を表示 |
+| `/` | search モード進入 |
+| `Esc` | search クエリをクリア + normal モードへ |
+| `Backspace` | 1 文字削除 |
 
-sidebar pane は tmux pane option `@pane_role=sidebar` で識別する。
+### Lifecycle
 
----
+| キー | 動作 | 備考 |
+|---|---|---|
+| `d` | カーソル window を close | running agent 検出時は強い confirm |
+| `D` | カーソル session を close | 複数 window 影響のため必ず confirm |
+| `R` | window を inline rename | `Enter` で確定、`Esc` で取消 |
+| `Shift+R` | session を inline rename | 同上 |
+| `n` | カーソル session 内に新規 window 作成 | session の current path を引き継ぐ |
+| `N` | popup picker mode で新規 session 作成 | 後述 |
 
-## tmux hook
+destructive 操作（close 系）は **state file の `running` / `permission` / `ask` 状態を根拠に confirm 強度を変える**。
 
-README の Setup を正とする。代表的な hook は以下。
+| 状態 | confirm |
+|---|---|
+| `idle` | 単純確認（`y/N`） |
+| `running` | 「N 分前から running、本当に kill する？」 |
+| `permission` / `ask` | 強い警告 + 直近の prompt を preview に表示 |
 
-- `after-new-window`: 新しい window に sidebar を自動生成する。
-- `after-new-session`: new-session の初期 window に sidebar を自動生成する。
-- `after-select-window`: sidebar に window 切替を通知し、誤 focus を右隣 pane に逃がす。
-- `client-session-changed`: session 切替時も同様に通知・focus guard する。
-- `pane-exited` / `after-kill-pane`: sidebar だけ残った window を削除する。
-- `client-resized`: sidebar 幅を絶対セル数で再適用する。
-- `window-linked` / `window-unlinked` / `session-created` / `session-closed`: sidebar に即時更新を通知する。
+### 並べ替え・移動
 
-即時更新 hook が未設定でも、window/session 変更は最大 10 秒で sidebar に反映される。
+| キー | 動作 |
+|---|---|
+| `Shift+J` / `Shift+K` | 同 session 内で window を 1 つ下/上へ swap（`swap-window`） |
+| `Alt+J` / `Alt+K` | session を 1 つ下/上へ並べ替え（`session_order` ファイルに永続化） |
+| `m` | 移動マーク開始 → カーソルを target session/位置へ → `m` で drop（`move-window`） |
 
----
+### Pin / Mute
 
-## 状態ファイル
+| キー | 動作 |
+|---|---|
+| `p` | カーソル session の pin toggle |
+| `M` | カーソル session の mute toggle（badge 抑制、表示は残す） |
 
-デフォルトの状態 directory は `/tmp/agent-pane-state`。
-`TMUX_SIDEBAR_STATE_DIR` で変更できる。
+### 折りたたみ
+
+| キー | 動作 |
+|---|---|
+| `Space`（session header 上） | session 配下を折りたたみ / 展開 |
+| `Space`（window 上） | multi-select toggle |
+
+折りたたみ状態はセッションごとに保持されるが、永続化はしない（プロセス再起動でリセット）。
+
+### 多重選択 + バルク
+
+| キー | 動作 |
+|---|---|
+| `Space` | カーソル window を multi-select toggle |
+| `Esc` | 選択解除 |
+| `d`（選択あり） | 選択 window を一括 close（confirm） |
+
+### その他
+
+| キー | 動作 |
+|---|---|
+| `Ctrl+C` | sidebar process 終了 |
+
+## Popup picker mode
+
+`N` 押下で sidebar process が tmux popup を起動し、popup 内で同一バイナリの
+picker mode が走る。
+
+### Step 1: repo 選択
+
+ghq 配下の repo を fuzzy filter で選ぶ。
+すでに session として開いている repo は dim 表示し、`Enter` を押すと
+**新規作成せずその session に switch する**（重複作成防止）。
+
+### Step 2: mode 選択
+
+| Mode | 内容 |
+|---|---|
+| `claude` | session 内に Claude Code を起動 |
+| `codex` | session 内に Codex CLI を起動 |
+| `dispatch` | dispatch skill 経由で agent を起動（dotfiles 側 protocol） |
+| `orchestrate` | orchestrate workflow を起動 |
+
+### Step 3: mode 別追加設定
+
+mode が要求する場合のみ表示（worktree branch 名、orchestrate chain 種別など）。
+詳細は tmw / 各 skill の指定に従う。
+
+### 完了時
+
+popup を閉じ、tmw / agent 起動コマンドを実行する。
+sidebar pane は自発的に reload し、新 session にカーソル移動する。
+
+## Preview
+
+sidebar 下部の preview area は cursor が指す window の補助情報を出す。
+優先順位:
+
+1. agent transcript の initial prompt（state file に `pane_N_session_id` がある場合）
+2. `tmux capture-pane -p` による当該 pane の最新数行（fallback、または明示 toggle 時）
+
+## State / Activity badges
+
+各 window 行の右端に `<agent タグ><status バッジ>` を表示する。
+
+### Agent タグ
+
+| タグ | 装飾 | 意味 |
+|---|---|---|
+| `[c]` | 無着色 | Claude Code（unknown / legacy fallback も含む） |
+| `[x]` | cyan | Codex CLI |
+
+### Status バッジ
+
+| バッジ | 状態 | 意味 |
+|---|---|---|
+| `🔄Ns` / `🔄Nm` | running | 1 分未満は秒、1 分以上は分 |
+| `💬` | permission | ユーザ応答待ち（permission 用色） |
+| `💬` | ask | ユーザ応答待ち（ask 用色） |
+| `!N` | unread permission/ask | 過去 N 回の permission/ask イベントが未確認 |
+| (非表示) | idle | バッジを描画しない |
+
+unread badge は当該 window に switch した時点で 0 にリセットされる。
+muted session の window は status badge / unread badge が抑制される（行表示自体は残る）。
+
+## Configuration files
+
+すべて `~/.config/tmux-sidebar/` 配下、1 行 1 entry、`#` でコメント。
 
 | ファイル | 内容 |
 |---|---|
-| `pane_N` | 1 行目: status (`running` / `idle` / `permission` / `ask`)、2 行目: agent kind (`claude` / `codex`) |
-| `pane_N_started` | `running` 開始時刻の unix epoch 秒 |
-| `pane_N_path` | agent session の起動 directory |
-| `pane_N_session_id` | agent session UUID |
+| `hidden_sessions` | 表示しない session 名 |
+| `pinned_sessions` | pin する session 名（行順 = 表示順） |
+| `muted_sessions` | badge を抑制する session 名 |
+| `session_order` | 全 session の表示順（pinned 群の後の unpinned 並び） |
+| `width` | sidebar 既定幅（列数） |
 
-`pane_N` の 2 行目がない、または未対応値の場合は unknown として扱う。
-unknown agent は表示上 `[c]` に fallback する。
+### 競合時の優先
 
----
+- `hidden` > 表示（hidden 指定された session は何があっても出さない）
+- `pinned` 群と unpinned 群の境界に区切り線
+- `muted` は表示には影響せず badge のみ抑制
 
-## 設定
-
-### Environment variables
+## Environment variables
 
 | 変数 | 説明 |
 |---|---|
-| `TMUX_SIDEBAR_STATE_DIR` | 状態ファイル directory。未設定時は `/tmp/agent-pane-state` |
-| `TMUX_SIDEBAR_WIDTH` | sidebar 幅。未設定時は config file、さらに未設定なら `40` |
-| `TMUX_SIDEBAR_NO_ALT_SCREEN` | 設定すると alt-screen を無効化する。主に E2E テスト用 |
+| `TMUX_SIDEBAR_STATE_DIR` | state file directory（既定 `/tmp/agent-pane-state`） |
+| `TMUX_SIDEBAR_WIDTH` | sidebar 幅。config file より優先 |
+| `TMUX_SIDEBAR_NO_ALT_SCREEN` | 設定で alt-screen 無効化（E2E 用） |
 
-### `~/.config/tmux-sidebar/hidden_sessions`
+## Subcommands
 
-sidebar に表示しない session name を 1 行 1 entry で指定する。
-空行と `#` 始まりの行は無視する。
+| サブコマンド | 動作 |
+|---|---|
+| (なし) | sidebar pane mode を起動 |
+| `new` | popup picker mode を起動（通常は sidebar から `N` で間接起動） |
+| `toggle` | 現在 window の sidebar を toggle |
+| `close` | 現在 window の sidebar を閉じる |
+| `focus-or-open` | sidebar があれば focus、なければ作成 |
+| `cleanup-if-only-sidebar` | sidebar だけ残った window を削除 |
+| `restart` | 既存 sidebar を kill して再生成 |
+| `doctor [--yes]` | 設定診断と一部自動修正 |
+| `upgrade` | GitHub Releases から最新バイナリ取得 |
+| `version` | version 表示 |
 
-### `~/.config/tmux-sidebar/width`
+## tmux hook
 
-sidebar の既定幅を列数で指定する。
-`TMUX_SIDEBAR_WIDTH` が指定されている場合はそちらを優先する。
+詳細は README の Setup を正とする。要点のみ:
 
-最小値は `20`。未設定、不正値、最小値未満の場合は `40` に fallback する。
+- `after-new-window` / `after-new-session`: sidebar 自動生成
+- `after-select-window` / `client-session-changed`: cursor 追従と誤 focus 逃し
+- `pane-exited` / `after-kill-pane`: sidebar だけの window を削除
+- `client-resized`: 幅再適用
+- `window-linked` / `window-unlinked` / `session-created` / `session-closed`: 即時更新通知
 
----
+hook 未設定でも window/session 変更は最大 10 秒で反映する。
+
+## Coexistence with tmux native bindings
+
+sidebar の操作キーは tmux 標準のキーバインドを上書きしない。
+`prefix+s`, `prefix+&`, `prefix+,`, `prefix+$`, `prefix+.` 等は引き続き有効。
+sidebar process が動いていない / フォーカス外でも tmux 標準操作は完全に動作する。
+
+**sidebar は dominant path、tmux native は safety net。**
 
 ## 非目標
 
-- tmux plugin manager に依存しない。
-- sidebar 幅のドラッグ変更は提供しない。
-- tmux.conf 内の `split-window -l` / `resize-pane -x` の数値は自動で書き換えない。
-- `Esc` や `q` による tmux pane focus 離脱は提供しない。
+- pane 内部操作（split-window, resize-pane, zoom, copy-mode）の sidebar 経由化
+- server 境界（attach, detach, new-server, kill-server）の制御
+- tmux plugin manager への依存
+- sidebar 幅のドラッグ変更
+- tmux.conf 内の数値の自動書き換え
+- 完全な undo close（scrollback 完全復元は tmux-resurrect 等別レイヤに委ねる）
+- リポジトリ rename

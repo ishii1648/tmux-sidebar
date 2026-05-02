@@ -93,9 +93,18 @@ destructive 操作（close 系）は **state file の `running` / `permission` /
 
 ### Pin
 
-| キー | 動作 |
-|---|---|
-| `p` | カーソル session の pin toggle |
+pin は `~/.config/tmux-sidebar/pinned_sessions` ファイルでのみ管理する（キー操作は提供しない）。
+pinned session は上部に持ち上げられ、`📌 <name>` で表示される。pinned 群と unpinned 群の境界には区切り線が入る。
+ファイルの記述順がそのまま表示順になる。詳細は [Configuration files](#configuration-files) と `docs/setup.md` 参照。
+
+**pin は削除保護を兼ねる**:
+- pinned session に対する `D`（session kill）はブロックされる
+- pinned session の **最後の window** に対する `d`（window kill）もブロックされる（tmux 標準では最後の window を消すと session が消えるため、これを許すと `d` 経由で削除保護がバイパスされる）
+- pinned session に複数 window があるときの `d`（最後でない window）はブロックしない
+
+ブロック時は footer に `pinned_sessions` から該当行を削除するよう促すメッセージが出る。
+
+ファイル変更は sidebar 内部の reload tick（最大 10 秒間隔）で自動的に反映される。即時反映したい場合は tmux hook 経由で `SIGUSR1` を送るか、`tmux-sidebar restart` で再起動する。
 
 ### その他
 
@@ -166,10 +175,13 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 | `hidden_sessions` | 表示しない session 名 |
 | `pinned_sessions` | pin する session 名（行順 = 表示順） |
 
+設定方法・記述例は [docs/setup.md](setup.md) を参照。
+
 ### 競合時の優先
 
-- `hidden` > 表示（hidden 指定された session は何があっても出さない）
-- `pinned` 群と unpinned 群の境界に区切り線
+- `hidden` > 表示（hidden 指定された session は pin されていても出さない）
+- 表示される pinned session は **`pinned_sessions` の行順** で並ぶ（tmux 列挙順より優先）
+- pinned 群と unpinned 群の境界に区切り線。両群とも非空のときだけ描画する（全件 pinned / 全件 unpinned のときは出さない）
 
 ## Environment variables
 

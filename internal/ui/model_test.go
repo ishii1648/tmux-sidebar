@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -9,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ishii1648/tmux-sidebar/internal/config"
 	"github.com/ishii1648/tmux-sidebar/internal/state"
 	"github.com/ishii1648/tmux-sidebar/internal/tmux"
 	"github.com/muesli/termenv"
@@ -1402,6 +1405,388 @@ func TestKillResultMsg_ErrorMessage(t *testing.T) {
 	m.Update(killResultMsg{err: fmt.Errorf("boom")})
 	if !strings.Contains(m.message, "boom") {
 		t.Errorf("message should include error text, got %q", m.message)
+	}
+}
+
+// ── pin (Phase 3) ───────────────────────────────────────────────────────────
+
+// pinPanes returns three sessions (work / infra / scratch) with one window
+// each, in tmux enumeration order. Used by pin tests so the order of work →
+// infra → scratch represents the default unpinned layout.
+func pinPanes() []tmux.PaneInfo {
+	return []tmux.PaneInfo{
+		pane("$1", "@1", true, true, 1),
+		pane("$2", "@2", true, true, 2),
+		pane("$3", "@3", true, true, 3),
+	}
+}
+
+// withSessionNames overrides the auto-generated session names ("sess$1" etc.)
+// from pane(...) so tests can assert against meaningful names.
+func withSessionNames(panes []tmux.PaneInfo, names map[string]string) []tmux.PaneInfo {
+	out := make([]tmux.PaneInfo, len(panes))
+	for i, p := range panes {
+		if n, ok := names[p.SessionID]; ok {
+			p.SessionName = n
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// pinFixture writes hidden_sessions / pinned_sessions to a temp dir and
+// returns (cfg, hiddenPath). Pin-related tests build cfg through this path
+// so they exercise the same Load codepath that production uses.
+func pinFixture(t *testing.T, pinned []string, hidden []string) (config.Config, string) {
+	t.Helper()
+	dir := t.TempDir()
+	hiddenPath := filepath.Join(dir, "hidden_sessions")
+	hiddenContent := ""
+	if len(hidden) > 0 {
+		hiddenContent = strings.Join(hidden, "\n") + "\n"
+	}
+	if err := os.WriteFile(hiddenPath, []byte(hiddenContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if len(pinned) > 0 {
+		pinnedPath := filepath.Join(dir, "pinned_sessions")
+		if err := os.WriteFile(pinnedPath, []byte(strings.Join(pinned, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Load(hiddenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, hiddenPath
+}
+
+// loadModelWithPanes builds a Model wired with given panes and config and
+// invokes loadData() once so m.items reflects the desired layout. Routing
+// the dataMsg through Update applies relocateCursor so m.cursor lands on a
+// real window row, mirroring the production codepath.
+func loadModelWithPanes(panes []tmux.PaneInfo, cfg config.Config, hiddenPath string) *Model {
+	m := newLoadDataModel(panes, "$1")
+	m.cfg = cfg
+	m.hiddenPath = hiddenPath
+	m.focused = true
+	m.width = 40
+	msg := m.loadData()().(dataMsg)
+	m.Update(msg)
+	return m
+}
+
+func TestPin_LoadDataPlacesPinnedFirst(t *testing.T) {
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	cfg, hiddenPath := pinFixture(t, []string{"scratch"}, nil)
+	m := loadModelWithPanes(panes, cfg, hiddenPath)
+
+	// Expect order: scratch (pinned) → divider → work → infra (tmux order)
+	var names []string
+	sawDivider := false
+	for _, item := range m.items {
+		switch item.Kind {
+		case ItemSession:
+			names = append(names, item.SessionName)
+		case ItemDivider:
+			sawDivider = true
+		}
+	}
+	want := []string{"scratch", "work", "infra"}
+	if len(names) != len(want) {
+		t.Fatalf("session order = %v, want %v", names, want)
+	}
+	for i, n := range want {
+		if names[i] != n {
+			t.Errorf("session[%d] = %q, want %q", i, names[i], n)
+		}
+	}
+	if !sawDivider {
+		t.Errorf("expected ItemDivider between pinned and unpinned")
+	}
+}
+
+func TestPin_NoDividerWhenAllPinnedOrAllUnpinned(t *testing.T) {
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	// All unpinned: no divider.
+	cfg1, hp1 := pinFixture(t, nil, nil)
+	m := loadModelWithPanes(panes, cfg1, hp1)
+	for _, it := range m.items {
+		if it.Kind == ItemDivider {
+			t.Errorf("no divider expected when nothing is pinned")
+		}
+	}
+	// All pinned: no divider either.
+	cfg2, hp2 := pinFixture(t, []string{"work", "infra", "scratch"}, nil)
+	m2 := loadModelWithPanes(panes, cfg2, hp2)
+	for _, it := range m2.items {
+		if it.Kind == ItemDivider {
+			t.Errorf("no divider expected when everything is pinned")
+		}
+	}
+}
+
+func TestPin_PinnedOrderFollowsConfigOrder(t *testing.T) {
+	// Config order: scratch → work, but tmux enum order is work → infra → scratch.
+	// Pinned section must use config order (scratch first), not tmux order.
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	cfg, hp := pinFixture(t, []string{"scratch", "work"}, nil)
+	m := loadModelWithPanes(panes, cfg, hp)
+
+	var pinnedNames []string
+	for _, item := range m.items {
+		if item.Kind == ItemDivider {
+			break
+		}
+		if item.Kind == ItemSession {
+			pinnedNames = append(pinnedNames, item.SessionName)
+		}
+	}
+	want := []string{"scratch", "work"}
+	if len(pinnedNames) != len(want) {
+		t.Fatalf("pinned section = %v, want %v", pinnedNames, want)
+	}
+	for i, n := range want {
+		if pinnedNames[i] != n {
+			t.Errorf("pinned[%d] = %q, want %q", i, pinnedNames[i], n)
+		}
+	}
+}
+
+func TestPin_HiddenWinsOverPinned(t *testing.T) {
+	// "scratch" is both hidden and pinned — hidden must win, scratch is dropped.
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	cfg, hp := pinFixture(t, []string{"scratch"}, []string{"scratch"})
+	m := loadModelWithPanes(panes, cfg, hp)
+
+	for _, item := range m.items {
+		if item.Kind == ItemSession && item.SessionName == "scratch" {
+			t.Errorf("hidden session 'scratch' must not appear even when pinned")
+		}
+	}
+	// Also no divider — scratch was the only pinned item, and it's filtered out.
+	for _, item := range m.items {
+		if item.Kind == ItemDivider {
+			t.Errorf("divider should be absent when pinned set is fully hidden")
+		}
+	}
+}
+
+func TestPin_BlocksSessionKill(t *testing.T) {
+	// Pin = delete protection. `D` on a pinned session must NOT enter the
+	// confirm state and must NOT call kill.
+	fc := &fakeTmuxClient{}
+	m := newTestModel(sampleItems(), 1, true) // cursor on session-a window
+	m.tmuxClient = fc
+	m.cfg, _ = pinFixture(t, []string{"session-a"}, nil)
+
+	m.Update(key('D'))
+	if m.confirm != confirmNone {
+		t.Errorf("D on pinned session should not arm confirm; got %v", m.confirm)
+	}
+	if !strings.Contains(m.message, "📌") || !strings.Contains(m.message, "config") {
+		t.Errorf("expected message to mention pin and config edit; got %q", m.message)
+	}
+	// Even pressing y afterward must not kill anything.
+	m.Update(key('y'))
+	if len(fc.killedSessions) != 0 {
+		t.Errorf("kill must not happen after blocked D; killedSessions = %v", fc.killedSessions)
+	}
+}
+
+func TestPin_SessionKillAllowedAfterUnpinOnDisk(t *testing.T) {
+	// Removing the entry from pinned_sessions on disk and triggering a
+	// reload (loadData) drops the protection — `D` should then work.
+	// This exercises the file-only management contract: no `p` key, the
+	// only way to unpin is to edit the file.
+	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
+	cfg, hiddenPath := pinFixture(t, []string{"sess$1"}, nil)
+	// Build a model that goes through loadData() so cfg comes from disk.
+	panes := []tmux.PaneInfo{pane("$1", "@1", true, true, 1)}
+	m := loadModelWithPanes(panes, cfg, hiddenPath)
+	// Replace the tmux client (preserving panes so subsequent loadData calls
+	// still see the same layout) and add capture content for kill snapshots.
+	fc := &fakeTmuxClient{panes: panes, captureContent: "x"}
+	m.tmuxClient = fc
+	if !m.cfg.IsPinnedSession("sess$1") {
+		t.Fatalf("precondition: sess$1 should be pinned via fixture")
+	}
+
+	// While pinned, `D` is blocked.
+	m.Update(key('D'))
+	if m.confirm != confirmNone {
+		t.Fatal("precondition: D should be blocked while pinned")
+	}
+
+	// Edit pinned_sessions on disk to remove the entry.
+	pinnedPath := filepath.Join(filepath.Dir(hiddenPath), "pinned_sessions")
+	if err := os.WriteFile(pinnedPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Trigger a reload (what gitTickMsg / SIGUSR1 do in production).
+	msg := m.loadData()().(dataMsg)
+	m.Update(msg)
+	if m.cfg.IsPinnedSession("sess$1") {
+		t.Fatalf("after on-disk unpin + reload, IsPinnedSession should be false")
+	}
+
+	// Now `D` should work.
+	m.Update(key('D'))
+	if m.confirm != confirmKillSession {
+		t.Fatalf("after on-disk unpin, D should arm confirm; got %v", m.confirm)
+	}
+	_, cmd := m.Update(key('y'))
+	if cmd == nil {
+		t.Fatal("y should return a kill Cmd")
+	}
+	cmd()
+	if len(fc.killedSessions) != 1 || fc.killedSessions[0] != "sess$1" {
+		t.Errorf("expected kill of sess$1; got %v", fc.killedSessions)
+	}
+}
+
+func TestPin_WindowKillNotBlockedWhenSessionHasOtherWindows(t *testing.T) {
+	// `d` on a window of a pinned session is fine when the session has more
+	// than one window — kill-window won't take the session down.
+	// sampleItems() gives session-a two windows (@1 main, @2 work), so the
+	// cursor on @1 (index 1) leaves @2 alive after the kill.
+	t.Setenv("TMUX_SIDEBAR_GRAVEYARD_DIR", t.TempDir())
+	fc := &fakeTmuxClient{captureContent: "x"}
+	m := newTestModel(sampleItems(), 1, true)
+	m.tmuxClient = fc
+	m.cfg, _ = pinFixture(t, []string{"session-a"}, nil)
+
+	m.Update(key('d'))
+	if m.confirm != confirmKillWindow {
+		t.Errorf("d on a pinned session with other windows should arm confirm; got %v", m.confirm)
+	}
+}
+
+func TestPin_WindowKillBlockedOnLastWindowOfPinnedSession(t *testing.T) {
+	// `d` on the *last* window of a pinned session must be blocked: tmux's
+	// kill-window auto-kills the session when no windows remain, which would
+	// silently bypass the `D` pin protection. sample-b has exactly one window.
+	fc := &fakeTmuxClient{}
+	m := newTestModel(sampleItems(), 4, true) // cursor on session-b's only window @3
+	m.tmuxClient = fc
+	m.cfg, _ = pinFixture(t, []string{"session-b"}, nil)
+
+	m.Update(key('d'))
+	if m.confirm != confirmNone {
+		t.Errorf("d on last window of pinned session must not arm confirm; got %v", m.confirm)
+	}
+	if !strings.Contains(m.message, "📌") || !strings.Contains(m.message, "last window") {
+		t.Errorf("expected message to mention pin and last window; got %q", m.message)
+	}
+	// Even pressing y afterward must not kill anything.
+	m.Update(key('y'))
+	if len(fc.killedWindows) != 0 {
+		t.Errorf("kill must not happen after blocked d; killedWindows = %v", fc.killedWindows)
+	}
+}
+
+func TestPin_NoToggleKey(t *testing.T) {
+	// `p` is no longer bound. Pressing it must be a no-op and must not
+	// touch any pinned_sessions file (which we don't even have a path to).
+	m := newTestModel(sampleItems(), 1, true)
+	m.cfg, _ = pinFixture(t, nil, nil)
+	cursorBefore := m.cursor
+	m.Update(key('p'))
+	if m.cursor != cursorBefore {
+		t.Errorf("p must not move the cursor; got %d → %d", cursorBefore, m.cursor)
+	}
+	if m.cfg.IsPinnedSession("session-a") {
+		t.Errorf("p must not change pin state in-memory")
+	}
+}
+
+func TestPin_LoadDataRereadsConfigFromDisk(t *testing.T) {
+	// Edit pinned_sessions on disk → loadData → m.cfg reflects the change.
+	// This is the load-bearing property of the file-only management
+	// contract: without it, edits would only apply on sidebar restart.
+	panes := withSessionNames(pinPanes(), map[string]string{
+		"$1": "work", "$2": "infra", "$3": "scratch",
+	})
+	cfg, hiddenPath := pinFixture(t, nil, nil)
+	m := loadModelWithPanes(panes, cfg, hiddenPath)
+	if m.cfg.IsPinnedSession("scratch") {
+		t.Fatal("precondition: nothing pinned at start")
+	}
+	pinnedPath := filepath.Join(filepath.Dir(hiddenPath), "pinned_sessions")
+	if err := os.WriteFile(pinnedPath, []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Re-run loadData like a periodic reload would.
+	msg := m.loadData()().(dataMsg)
+	m.Update(msg)
+	if !m.cfg.IsPinnedSession("scratch") {
+		t.Errorf("after on-disk pin + reload, scratch should be pinned")
+	}
+}
+
+func TestView_PinnedSessionShowsEmoji(t *testing.T) {
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "work"},
+		{Kind: ItemWindow, SessionName: "work", Window: &tmux.Window{ID: "@1", Index: 0, Name: "main"}},
+	}
+	m := newTestModel(items, 1, true)
+	m.cfg, _ = pinFixture(t, []string{"work"}, nil)
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "📌 work") {
+		t.Errorf("pinned session should be prefixed with 📌; view:\n%s", view)
+	}
+	if strings.Contains(view, "▾ work") {
+		t.Errorf("pinned session should not use ▾ prefix; view:\n%s", view)
+	}
+}
+
+func TestView_DividerRenderedBetweenGroups(t *testing.T) {
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "pinned-s"},
+		{Kind: ItemWindow, SessionName: "pinned-s", Window: &tmux.Window{ID: "@1", Index: 0, Name: "p"}},
+		{Kind: ItemDivider},
+		{Kind: ItemSession, SessionName: "free-s"},
+		{Kind: ItemWindow, SessionName: "free-s", Window: &tmux.Window{ID: "@2", Index: 0, Name: "f"}},
+	}
+	m := newTestModel(items, 1, true)
+	m.cfg, _ = pinFixture(t, []string{"pinned-s"}, nil)
+	view := stripANSI(m.View())
+	// The divider should appear after the pinned section's window row.
+	pinnedIdx := strings.Index(view, "p")
+	dividerIdx := strings.Index(view, strings.Repeat("─", 40))
+	freeIdx := strings.Index(view, "free-s")
+	if pinnedIdx < 0 || dividerIdx < 0 || freeIdx < 0 {
+		t.Fatalf("missing landmarks: pinnedIdx=%d dividerIdx=%d freeIdx=%d\n%s", pinnedIdx, dividerIdx, freeIdx, view)
+	}
+	if !(pinnedIdx < dividerIdx && dividerIdx < freeIdx) {
+		t.Errorf("expected pinned-window < divider < free-session in view; got %d < %d < %d\n%s", pinnedIdx, dividerIdx, freeIdx, view)
+	}
+}
+
+func TestPin_CursorMoveSkipsDivider(t *testing.T) {
+	items := []ListItem{
+		{Kind: ItemSession, SessionName: "p"},
+		{Kind: ItemWindow, SessionName: "p", Window: &tmux.Window{ID: "@1", Index: 0, Name: "p1"}},
+		{Kind: ItemDivider},
+		{Kind: ItemSession, SessionName: "u"},
+		{Kind: ItemWindow, SessionName: "u", Window: &tmux.Window{ID: "@2", Index: 0, Name: "u1"}},
+	}
+	m := newTestModel(items, 1, true)
+	m.Update(key('j'))
+	if m.cursor != 4 {
+		t.Errorf("j must skip divider+session header; cursor = %d, want 4", m.cursor)
+	}
+	m.Update(key('k'))
+	if m.cursor != 1 {
+		t.Errorf("k must skip divider+session header upward; cursor = %d, want 1", m.cursor)
 	}
 }
 

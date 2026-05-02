@@ -113,9 +113,19 @@ status = permission / ask  → "agent is waiting for input — really kill? [y/N
                               + 直近 prompt を preview area に表示
 ```
 
+`D` は対象 session が pinned のとき confirm を出さずブロックする（`requestKillSession` で `cfg.IsPinnedSession` をガード）。`d` も「pinned session の最後の window」のときはブロックする（`requestKillWindow` で `IsPinnedSession && sessionWindowCount(name) <= 1`）。これは tmux の `kill-window` が最後の window を消すと session も消す挙動を持つため、ガードしないと `d` 経由で `D` のブロックがバイパスされてしまうのを防ぐ。message line に「`pinned_sessions` から該当行を削除してから kill」を案内する。pin = 削除保護というユーザのメンタルモデルを実装に反映し、結果として pinned_sessions ファイルに「kill 済み session の残骸」が残ることを構造的に防ぐ。
+
 ---
 
 ## pin / hidden の合成
+
+pin と hidden は **設定ファイルでのみ管理** する（in-app の toggle キーは提供しない）。
+ファイル編集の反映は `loadData()` の起点で `config.Load(...)` を毎回呼び直すことで行う：
+
+- `loadData()` は disk から最新の `hidden_sessions` / `pinned_sessions` を読み、
+  結果を `dataMsg.cfg` に積んで Update に渡す
+- Update の `dataMsg` ハンドラが `m.cfg = msg.cfg` で in-memory state を refresh する
+- 既存の reload 契機（`SIGUSR1` / `gitTickMsg` の 10 秒 tick / 自発 mutate 後）に乗って自動反映
 
 `internal/config` に以下の slice を持つ。
 

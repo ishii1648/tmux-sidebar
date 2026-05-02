@@ -37,6 +37,7 @@ Subcommands:
   toggle                    Open sidebar if closed, close if open
   focus-or-open             Focus sidebar if open, open if closed
   cleanup-if-only-sidebar   Kill window if only the sidebar pane remains
+  relayout                  Re-balance pane widths so the sidebar keeps its width
   restart                   Restart sidebar in all tmux windows
   doctor [--yes]            Check tmux configuration; --yes to auto-apply fixes
   upgrade                   Download and install the latest release from GitHub
@@ -65,6 +66,12 @@ Subcommands:
 		case "cleanup-if-only-sidebar":
 			if err := runCleanupIfOnlySidebar(); err != nil {
 				fmt.Fprintf(os.Stderr, "tmux-sidebar cleanup-if-only-sidebar: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "relayout":
+			if err := runRelayout(); err != nil {
+				fmt.Fprintf(os.Stderr, "tmux-sidebar relayout: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -370,6 +377,83 @@ func runCleanupIfOnlySidebar() error {
 		}
 	}
 	return nil
+}
+
+// runRelayout re-balances pane widths so each sidebar pane keeps its
+// configured width across client-resize events (display switch, popup
+// open/close, etc.).
+//
+// Background: the natural fix is `tmux resize-pane -t <sidebar> -x N`, but
+// resize-pane pushes the entire delta onto the immediate right neighbour. With
+// 3+ panes in a window, the rightmost pane absorbs the accumulated drift and
+// shrinks on every client-resize. This command instead rebuilds the layout
+// string and applies it via `select-layout`, distributing the non-sidebar
+// width evenly across siblings — no neighbour gets unfairly pinched.
+//
+// For unsupported layouts (sidebar nested in a vertical split, sidebar not the
+// top-level horizontal child, or only one pane) we fall back to a plain
+// resize-pane so the sidebar at least keeps its configured width.
+//
+// Usage in tmux.conf:
+//
+//	set-hook -g client-resized 'run-shell "tmux-sidebar relayout"'
+func runRelayout() error {
+	out, err := exec.Command("tmux", "list-windows", "-a", "-F", "#{window_id}\t#{window_layout}").Output()
+	if err != nil {
+		// Not inside a tmux server, or no windows — nothing to do.
+		return nil
+	}
+	width := sidebarWidth()
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		windowID, layoutStr := parts[0], parts[1]
+		relayoutOneWindow(windowID, layoutStr, width)
+	}
+	return nil
+}
+
+// relayoutOneWindow rebalances a single window's layout. Failures are logged
+// silently — relayout is a best-effort cleanup hook and must never break tmux.
+func relayoutOneWindow(windowID, layoutStr string, sidebarW int) {
+	panesOut, err := exec.Command("tmux", "list-panes", "-t", windowID, "-F", "#{pane_id} #{@pane_role}").Output()
+	if err != nil {
+		return
+	}
+	sidebarPaneID := ""
+	sidebarPaneNum := -1
+	for _, line := range strings.Split(strings.TrimSpace(string(panesOut)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[1] != "sidebar" {
+			continue
+		}
+		sidebarPaneID = fields[0]
+		if strings.HasPrefix(sidebarPaneID, "%") {
+			sidebarPaneNum, _ = strconv.Atoi(sidebarPaneID[1:])
+		}
+		break
+	}
+	if sidebarPaneID == "" {
+		return
+	}
+
+	newLayout, ok, err := tmux.RebalanceSidebar(layoutStr, sidebarPaneNum, sidebarW)
+	if err == nil && ok {
+		if applyErr := exec.Command("tmux", "select-layout", "-t", windowID, newLayout).Run(); applyErr == nil {
+			return
+		}
+		// select-layout failed (rare — bad checksum mismatch, pane id moved, etc.).
+		// Fall through to the resize-pane fallback so the sidebar at least keeps width.
+	}
+	// Unsupported layout or select-layout failed: at least force the sidebar
+	// back to its configured width. The right-neighbour-drift downside applies,
+	// but it's better than letting the sidebar shrink/grow indefinitely.
+	exec.Command("tmux", "resize-pane", "-t", sidebarPaneID, "-x", strconv.Itoa(sidebarW)).Run()
 }
 
 // runRestart kills the sidebar pane in every tmux window and re-creates them.

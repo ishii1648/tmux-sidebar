@@ -67,20 +67,22 @@ set-hook -g after-kill-pane 'run-shell "tmux-sidebar cleanup-if-only-sidebar"'
 
 tmux はクライアントウィンドウのリサイズ時に全ペインを **比例的にスケール** するため、
 異なる解像度のディスプレイ間を移動するとサイドバーの幅（列数）が変動し、
-比率が一定に保てない。絶対セル数を再適用するフックを設定すると解消される。
+比率が一定に保てない。`tmux-sidebar relayout` で全ウィンドウのレイアウトを再計算するフックを設定すると解消される。
 
 ```tmux
 # client-resized: ウィンドウ全体のサイズ変化時に発火
-# 全ウィンドウの sidebar ペインを 40 列に resize し直す
-set-hook -g client-resized \
-  'run-shell "tmux list-panes -aF \"##{pane_id} ##{@pane_role}\" | while read pane role; do [ \"\$role\" = sidebar ] && tmux resize-pane -t \"\$pane\" -x 40; done"'
+# tmux-sidebar relayout が全ウィンドウのレイアウトを再構築し、
+# sidebar を設定幅 (デフォルト 40 列) に固定したうえで残り幅を非 sidebar ペインに均等再配分する
+set-hook -g client-resized 'run-shell "tmux-sidebar relayout"'
 ```
 
-> `##{...}` の `##` はサイドバー側に `#{...}` として渡すためのエスケープ（tmux format 展開を抑止）。
-> シェル変数の `\$role` / `\$pane` も、tmux config 層で `$` を保護するためにバックスラッシュでエスケープしている。
+> **なぜ `resize-pane -x 40` ではなく `relayout` か**
+>
+> 単純な `tmux resize-pane -t <sidebar> -x 40` を hook で回す方法だと、3 ペイン以上の window で **右端ペインに累積ドリフト** が発生する。`resize-pane -x` は浮いた / 不足した列数を **直右隣のペイン** にだけ押し付けるため、ディスプレイ切替や popup 開閉のたびに右端ペインだけが極端に狭くなっていく（例: sidebar=40 / 中央=199 / 右端=71、本来は中央=右端=135 が期待値）。
+>
+> `tmux-sidebar relayout` は `select-layout` で window レイアウト全体を再構築し、sidebar を固定幅に、残りを非 sidebar ペインに均等配分するため、特定のペインだけがドリフトすることがない。nested split を含むレイアウトや sidebar が leaf top-level でないレイアウトはサポート外で、その場合は従来どおり `resize-pane -x` で sidebar 幅だけ戻すフォールバックが走る。
 
-幅をカスタマイズする場合は、`tmux split-window -l 40` と `resize-pane -x 40` の数値を揃えて変更する
-（§1 の `after-new-window` / `after-new-session` フックも含む）。
+幅をカスタマイズする場合は `~/.config/tmux-sidebar/width` に列数を書き出すか、環境変数 `TMUX_SIDEBAR_WIDTH=N` を設定する。`relayout` はこの値を読むので、設定したら §1 の `after-new-window` / `after-new-session` の `-l 40` も同じ値に揃える。
 
 ## 5. SIGUSR1 による即時更新通知（推奨）
 

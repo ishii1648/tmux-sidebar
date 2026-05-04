@@ -29,6 +29,24 @@ const (
 	stepPrompt             // enter the dispatch prompt
 )
 
+// pickerMode is the modal input state on stepRepo. Mirrors sidebar's
+// inputMode (internal/ui): the picker treats navigation as the dominant
+// activity, with text-search as an opt-in mode entered via `/`. Defined
+// here (not in internal/ui) so picker can evolve independently.
+type pickerMode int
+
+const (
+	modeNormal pickerMode = iota
+	modeSearch
+)
+
+// footer hint strings for stepRepo, surfaced at the top of viewRepo. Kept
+// as constants so the hint and the actual key handling stay in sync.
+const (
+	repoHintNormal = "  j/k:move  /:search  tab:launcher  enter:select  esc:cancel"
+	repoHintSearch = "  enter:select  esc:cancel-search  tab:launcher"
+)
+
 // Runner abstracts the tmux / dispatch invocations the picker performs.
 // Tests substitute a fake; production wires ExecRunner.
 type Runner interface {
@@ -54,6 +72,7 @@ type Model struct {
 	filtered []repo.Repo
 
 	step     step
+	mode     pickerMode // modal state on stepRepo: normal (j/k) vs search (typing into query)
 	query    string
 	cursor   int
 	launcher dispatch.Launcher // current launcher selection (claude / codex)
@@ -125,6 +144,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.mode == modeSearch {
+		return m.handleRepoSearchKey(msg)
+	}
+	return m.handleRepoNormalKey(msg)
+}
+
+// handleRepoNormalKey handles keys while stepRepo is in normal mode:
+// j/k navigation, `/` to enter search, no auto-search on letter keys.
+func (m *Model) handleRepoNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
 		m.quitting = true
@@ -133,23 +161,49 @@ func (m *Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleLauncher()
 		return m, nil
 	case tea.KeyEnter:
-		if len(m.filtered) == 0 {
-			return m, nil
-		}
-		r := m.filtered[m.cursor]
-		// Open session for this repo? Switch instead of dispatching.
-		if _, exists := m.openSessions[r.Basename]; exists {
-			if err := m.runner.SwitchClient(r.Basename); err != nil {
-				m.errMsg = "switch failed: " + err.Error()
+		return m.confirmRepo()
+	case tea.KeyUp, tea.KeyCtrlP:
+		m.moveCursor(-1)
+		return m, nil
+	case tea.KeyDown, tea.KeyCtrlN:
+		m.moveCursor(1)
+		return m, nil
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case '/':
+				m.mode = modeSearch
+				m.query = ""
+				m.applyFilter()
+				return m, nil
+			case 'j':
+				m.moveCursor(1)
+				return m, nil
+			case 'k':
+				m.moveCursor(-1)
 				return m, nil
 			}
-			m.statusMsg = "switched to " + r.Basename
-			m.quitting = true
-			return m, tea.Quit
 		}
-		m.step = stepPrompt
-		m.prompt = ""
+		// Other runes are intentionally ignored — picker is navigation-first.
 		return m, nil
+	}
+	return m, nil
+}
+
+// handleRepoSearchKey handles keys while stepRepo is in search mode:
+// runes append to query, navigation keys still work, Esc returns to normal.
+func (m *Model) handleRepoSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.query = ""
+		m.mode = modeNormal
+		m.applyFilter()
+		return m, nil
+	case tea.KeyTab:
+		m.toggleLauncher()
+		return m, nil
+	case tea.KeyEnter:
+		return m.confirmRepo()
 	case tea.KeyUp, tea.KeyCtrlP:
 		m.moveCursor(-1)
 		return m, nil
@@ -167,6 +221,27 @@ func (m *Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.applyFilter()
 		return m, nil
 	}
+	return m, nil
+}
+
+// confirmRepo handles Enter on stepRepo for both modes: switch to existing
+// session or advance to stepPrompt.
+func (m *Model) confirmRepo() (tea.Model, tea.Cmd) {
+	if len(m.filtered) == 0 {
+		return m, nil
+	}
+	r := m.filtered[m.cursor]
+	if _, exists := m.openSessions[r.Basename]; exists {
+		if err := m.runner.SwitchClient(r.Basename); err != nil {
+			m.errMsg = "switch failed: " + err.Error()
+			return m, nil
+		}
+		m.statusMsg = "switched to " + r.Basename
+		m.quitting = true
+		return m, tea.Quit
+	}
+	m.step = stepPrompt
+	m.prompt = ""
 	return m, nil
 }
 
@@ -359,10 +434,16 @@ func (m *Model) View() string {
 
 func (m *Model) viewRepo() string {
 	var sb strings.Builder
-	sb.WriteString(styleFaint.Render("  tab: launcher 切替  enter: select  esc: cancel") + "\n")
+	hint := repoHintNormal
+	if m.mode == modeSearch {
+		hint = repoHintSearch
+	}
+	sb.WriteString(styleFaint.Render(hint) + "\n")
 	sb.WriteString("  " + renderLauncherChoice(m.launcher) + "\n")
 	sb.WriteString(styleFaint.Render(strings.Repeat("─", clamp(m.width, 40, 100))) + "\n")
-	sb.WriteString(stylePrompt.Render("> ") + m.query + "▏\n")
+	if m.mode == modeSearch {
+		sb.WriteString(stylePrompt.Render("> ") + m.query + "▏\n")
+	}
 	maxRows := m.viewportRows()
 	for i, r := range m.filtered {
 		if i >= maxRows {
@@ -471,13 +552,19 @@ func isCheckout(prompt string) bool {
 }
 
 // viewportRows returns the maximum number of repo rows that fit in the popup.
-// Falls back to a safe default when the size is unknown.
+// Falls back to a safe default when the size is unknown. The query row only
+// exists in search mode, so the chrome budget shrinks by one in normal mode.
 func (m *Model) viewportRows() int {
 	if m.height <= 0 {
 		return 16
 	}
-	// header(1) + launcher(1) + sep(1) + query(1) + error(1) = 5
-	rows := m.height - 5
+	// header(1) + launcher(1) + sep(1) + error(1) = 4 in normal mode;
+	// search mode adds the query row (1).
+	base := 4
+	if m.step == stepRepo && m.mode == modeSearch {
+		base = 5
+	}
+	rows := m.height - base
 	if rows < 4 {
 		rows = 4
 	}

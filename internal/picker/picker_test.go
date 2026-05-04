@@ -325,6 +325,8 @@ func TestPickerNonPasteRunesNotNormalized(t *testing.T) {
 
 func TestFuzzyFilterAndCursorReset(t *testing.T) {
 	m := New(sampleRepos(), nil, &fakeRunner{})
+	// Enter search mode first; in normal mode plain runes are ignored.
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	for _, r := range []rune("ba") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
@@ -364,12 +366,122 @@ func TestPromptBackspaceMultiByteRune(t *testing.T) {
 // filter input on Step 1.
 func TestRepoQueryBackspaceMultiByteRune(t *testing.T) {
 	m := New(sampleRepos(), nil, &fakeRunner{})
+	// Enter search mode first; in normal mode plain runes are ignored.
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	for _, r := range []rune("あい") {
 		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
 	if m.query != "あ" {
 		t.Errorf("query = %q want %q", m.query, "あ")
+	}
+}
+
+// TestPickerStartsInNormalMode verifies the zero-value mode is normal so the
+// picker opens in navigation-first mode (j/k usable immediately, no auto-search).
+func TestPickerStartsInNormalMode(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	if m.mode != modeNormal {
+		t.Fatalf("mode = %v want modeNormal", m.mode)
+	}
+}
+
+// TestPickerNormalModeJK exercises j/k cursor movement in normal mode and
+// asserts the launcher is untouched (j/k must not be confused with Tab).
+func TestPickerNormalModeJK(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	if m.cursor != 0 {
+		t.Fatalf("initial cursor = %d want 0", m.cursor)
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if m.cursor != 1 {
+		t.Errorf("after j cursor = %d want 1", m.cursor)
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if m.cursor != 0 {
+		t.Errorf("after k cursor = %d want 0", m.cursor)
+	}
+	if m.launcher != dispatch.LauncherClaude {
+		t.Errorf("launcher should not change on j/k: %q", m.launcher)
+	}
+}
+
+// TestPickerNormalModeIgnoresLetters asserts that arbitrary letter keys are
+// silently dropped in normal mode — the picker is not fzf, navigation is
+// the dominant flow.
+func TestPickerNormalModeIgnoresLetters(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	for _, r := range []rune("abc") {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if m.query != "" {
+		t.Errorf("query = %q want empty (normal mode must not auto-search)", m.query)
+	}
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v want modeNormal (letters must not switch mode)", m.mode)
+	}
+}
+
+// TestPickerSlashEntersSearchMode covers `/` as the search-mode entry point
+// and verifies the query is reset to empty on entry (so a stale query from a
+// previous search does not bleed across).
+func TestPickerSlashEntersSearchMode(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	// Pre-seed query directly to simulate residue from a previous search session.
+	m.query = "stale"
+	m.applyFilter()
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.mode != modeSearch {
+		t.Fatalf("mode = %v want modeSearch", m.mode)
+	}
+	if m.query != "" {
+		t.Errorf("query = %q want empty after `/`", m.query)
+	}
+	if len(m.filtered) != 2 {
+		t.Errorf("filtered len = %d want 2 (filter must reset on `/`)", len(m.filtered))
+	}
+}
+
+// TestPickerSearchModeEscReturnsToNormal verifies Esc clears the query and
+// returns to normal mode (matches sidebar's handleSearchKey behavior).
+func TestPickerSearchModeEscReturnsToNormal(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	for _, r := range []rune("ba") {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if m.mode != modeSearch || m.query != "ba" {
+		t.Fatalf("setup failed: mode=%v query=%q", m.mode, m.query)
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEscape})
+	if m.mode != modeNormal {
+		t.Errorf("mode = %v want modeNormal", m.mode)
+	}
+	if m.query != "" {
+		t.Errorf("query = %q want empty after Esc", m.query)
+	}
+	if m.quitting {
+		t.Errorf("Esc in search mode must not quit the picker")
+	}
+	if len(m.filtered) != 2 {
+		t.Errorf("filtered len = %d want 2 after query clear", len(m.filtered))
+	}
+}
+
+// TestPickerSearchModeTabTogglesLauncher verifies Tab still works in search
+// mode (typing is the primary action but launcher toggle is global).
+func TestPickerSearchModeTabTogglesLauncher(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if m.launcher != dispatch.LauncherClaude {
+		t.Fatalf("default launcher = %q", m.launcher)
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.launcher != dispatch.LauncherCodex {
+		t.Errorf("launcher = %q want codex after Tab in search mode", m.launcher)
+	}
+	if m.mode != modeSearch {
+		t.Errorf("Tab must not exit search mode: mode = %v", m.mode)
 	}
 }
 

@@ -118,11 +118,40 @@ pinned session は上部に持ち上げられ、`📌 <name>` で表示される
 
 ### Step 1: repo 選択
 
-ghq 配下の repo を fuzzy filter で選ぶ。
+ghq 配下の repo から起動先を選ぶ。
 すでに session として開いている repo は dim 表示し、`Enter` を押すと
 **新規作成せずその session に switch する**（重複作成防止）。
 
-Step 1 では `Tab` で **launcher (claude / codex)** を切り替えられる。選んだ launcher は次のステップに引き継がれる。`Enter` で次のステップへ進む。
+Step 1 は **navigation 主体** の操作モデルで、検索は補助的な opt-in モードとして提供する（普段は j/k で一覧を眺めて選び、必要なときだけ `/` でフィルタする想定）。pane mode の入力モデルと同じく **normal / search の 2 モード** を持つ。
+
+| モード | 動作 |
+|---|---|
+| **normal**（既定） | 単打キーでナビゲーション。`/` で search に進入 |
+| **search** | 任意文字でインクリメンタルフィルタ。`Esc` でクエリをクリアして normal に戻る |
+
+#### 操作（normal mode）
+
+| キー | 動作 |
+|---|---|
+| `j` / `k` / `↓` / `↑` / `Ctrl+N` / `Ctrl+P` | カーソル移動 |
+| `Tab` | launcher (claude / codex) 切替 |
+| `Enter` | 選択 repo を確定（既存 session は switch、なければ Step 2 へ） |
+| `/` | search モード進入（クエリは空にリセット） |
+| `Esc` | popup を閉じる |
+| その他文字キー | 無視（auto-search はしない） |
+
+#### 操作（search mode）
+
+| キー | 動作 |
+|---|---|
+| 任意文字 | クエリに追記してフィルタ更新 |
+| `Backspace` | クエリ末尾 1 文字削除 |
+| `↓` / `↑` / `Ctrl+N` / `Ctrl+P` | カーソル移動（search 中もナビゲート可能） |
+| `Tab` | launcher 切替（mode は維持） |
+| `Enter` | 選択 repo を確定（normal と同じ） |
+| `Esc` | クエリをクリアして normal mode へ戻る |
+
+選んだ launcher は次のステップに引き継がれる。Step 2 から `Esc` で戻ったときの mode は維持される（途中で切ったときの状態を尊重する）。
 
 ### Step 2: prompt 入力
 

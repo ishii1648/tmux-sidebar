@@ -3,12 +3,20 @@ package picker
 import (
 	"errors"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ishii1648/tmux-sidebar/internal/dispatch"
 	"github.com/ishii1648/tmux-sidebar/internal/repo"
 )
+
+// ansiRE strips lipgloss-emitted SGR escapes so renderPromptInput's
+// visual layout can be asserted as plain runes.
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
 // fakeRunner records every call so assertions can verify side-effects.
 type fakeRunner struct {
@@ -370,6 +378,97 @@ func TestRepoQueryBackspaceMultiByteRune(t *testing.T) {
 	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
 	if m.query != "あ" {
 		t.Errorf("query = %q want %q", m.query, "あ")
+	}
+}
+
+func TestRenderPromptInputWrap(t *testing.T) {
+	// width=14 ⇒ contentWidth=8; "abcdefgh" is exactly 8 cols.
+	cases := []struct {
+		name   string
+		prompt string
+		width  int
+		want   string
+	}{
+		{
+			name:   "empty prompt still draws prefix and cursor",
+			prompt: "",
+			width:  80,
+			want:   "  > ▏\n",
+		},
+		{
+			name:   "short single line — no wrap",
+			prompt: "hello",
+			width:  80,
+			want:   "  > hello▏\n",
+		},
+		{
+			name:   "soft wrap — single break",
+			prompt: "abcdefghijkl",
+			width:  14,
+			want:   "  > abcdefgh\n      ijkl▏\n",
+		},
+		{
+			name:   "hard break + soft wrap mix",
+			prompt: "abcdefghijkl\nshort",
+			width:  14,
+			want:   "  > abcdefgh\n      ijkl\n    │ short▏\n",
+		},
+		{
+			name:   "japanese wide chars wrap at column boundary",
+			prompt: "あいうえお",
+			width:  14, // contentWidth=8, 4 kanji fit, 5th wraps
+			want:   "  > あいうえ\n      お▏\n",
+		},
+		{
+			name:   "width=0 fallback — no wrap",
+			prompt: "this is a long line that would have wrapped",
+			width:  0,
+			want:   "  > this is a long line that would have wrapped▏\n",
+		},
+		{
+			name:   "trailing newline — empty continuation segment with cursor",
+			prompt: "abc\n",
+			width:  80,
+			want:   "  > abc\n    │ ▏\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripANSI(renderPromptInput(tc.prompt, tc.width))
+			if got != tc.want {
+				t.Errorf("renderPromptInput\n got=%q\nwant=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderPromptInputCursorOnLastSegmentOnly(t *testing.T) {
+	// Two soft-wrapped segments should yield exactly one cursor glyph,
+	// at the end of the trailing line.
+	out := stripANSI(renderPromptInput("abcdefghij", 14))
+	if n := strings.Count(out, "▏"); n != 1 {
+		t.Errorf("cursor count = %d want 1; output = %q", n, out)
+	}
+	if !strings.HasSuffix(strings.TrimSuffix(out, "\n"), "ij▏") {
+		t.Errorf("cursor not at end of last segment: %q", out)
+	}
+}
+
+func TestViewPromptSoftWrapSnapshot(t *testing.T) {
+	// Drive the model into stepPrompt with a known width and verify the
+	// wrapped layout reaches viewPrompt's output. Assertion stays
+	// substring-based so unrelated layout (header / separator) changes
+	// don't drag this test along.
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	m.width = 14
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
+	for _, r := range []rune("abcdefghijkl") {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	out := stripANSI(m.viewPrompt())
+	wantBlock := "  > abcdefgh\n      ijkl▏\n"
+	if !strings.Contains(out, wantBlock) {
+		t.Errorf("viewPrompt missing wrapped block %q in output:\n%s", wantBlock, out)
 	}
 }
 

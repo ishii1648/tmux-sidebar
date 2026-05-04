@@ -139,6 +139,20 @@ claude / codex  <repo>
 - `Enter` で git worktree 作成 + tmux session 生成 + prompt 投入が実行される
 - branch 名は **dispatch 側（popup ではなく background process）** が prompt 内容から決定する。`claude -p` で短い `<type>/<slug>` を生成し、`claude` 不在 / 認証切れ / timeout / 不正な出力時は決定論的な `feat/<slug>` slugify にフォールバックする。実際の branch 名は新 session が sidebar に出現したタイミングで確認できる。popup 入力中はプレビューを出さない（実値と異なる「予想 slug」を見せると誤導になるため）。例外として `:<branch>` checkout モードのときだけ、入力した branch 名そのものを `checkout:` プレビューとして faint 表示する
 - 複数行の prompt は **bracketed paste で貼り付け** て入れる、もしくは **Ctrl+J / Shift+Enter / Alt+Enter** で改行を挿入する（Shift+Enter / Alt+Enter は kitty キーボードプロトコル等で plain Enter と区別できる terminal でのみ動く。区別できない terminal では plain Enter として扱われ確定する）。CR / CRLF は LF に正規化される。先頭行が slugify フォールバック用に使われ、全文がそのまま launcher に渡る（LLM 命名は全文を見る）
+- popup 横幅を超える長い行は **soft-wrap される**（runewidth で文字幅単位）。継続行の prefix は明示的な改行（`\n`）か折返しかで見分けられる:
+    - 入力先頭: `  > ` （bold）
+    - `\n` 直後の論理行先頭: `    │ ` （faint guide）
+    - soft-wrap の継続行: `      ` （空 6 スペースの indent。`│` を出さないことで「ユーザが入れた改行ではない」ことを示す）
+
+    例（popup width が狭く `abcdefghijkl\nshort` を入力した場合）:
+
+    ```
+    > abcdefgh
+          ijkl
+        │ short▏
+    ```
+
+    cursor `▏` は最終行の末尾だけに出る。
 - `Enter` で dispatch を **背景で起動** して popup は即閉じる（`tmux run-shell -b 'tmux-sidebar dispatch ...'`）。worktree 作成 + tmux session 生成 + launcher 起動 + LLM 命名はユーザを待たせない。**作業中の client は新 session に自動移動しない**。成功時の通知は出さず、新 session が sidebar に出現する（reload tick 最大 10 秒、または SIGUSR1 hook で即時）のがそのまま完了サインになる。attach するかは `prefix s` / sidebar からユーザが任意のタイミングで決める。失敗時のみ `tmux display-message` で `tmux-sidebar dispatch: <err>` が status line に出る
 - `:<branch>` プレフィックスで先頭行を始めると **branch 接続モード**になる: 指定 branch が local にあればそれを、remote のみなら fetch してから、どこにも無ければ `origin/<default>` から新規作成して worktree を作る。prompt は launcher に渡されず idle で起動する
 - `Esc` で Step 1 に戻る

@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ishii1648/tmux-sidebar/internal/dispatch"
 	"github.com/ishii1648/tmux-sidebar/internal/repo"
+	"github.com/mattn/go-runewidth"
 )
 
 // step is the picker's wizard position.
@@ -409,7 +410,7 @@ func (m *Model) viewPrompt() string {
 	sb.WriteString(styleFaint.Render("  "+strings.Repeat("─", clamp(m.width, 30, 80))) + "\n")
 	sb.WriteString("\n")
 
-	sb.WriteString(renderPromptInput(m.prompt))
+	sb.WriteString(renderPromptInput(m.prompt, m.width))
 
 	// Show a hint only for `:<branch>` checkout mode — that branch name is
 	// exactly what dispatch will use, so it's worth previewing. The default
@@ -429,28 +430,97 @@ func (m *Model) viewPrompt() string {
 }
 
 // renderPromptInput renders the prompt buffer as one or more `> ` lines.
-// First line gets the bold `> ` prefix; continuation lines get a faint two
-// space indent so they line up under the cursor column. The cursor `▏` is
-// only shown on the last line. Empty prompt still draws one prefix line so
-// the user sees the input area.
-func renderPromptInput(prompt string) string {
-	lines := strings.Split(prompt, "\n")
+// Three prefix flavors visually distinguish the segment kinds so a reader
+// can tell at a glance which lines are typed-newline boundaries vs. mere
+// terminal-width overflows:
+//   - first segment of the whole buffer:    `  > `   (bold prompt)
+//   - first segment after a hard `\n` break: `    │ ` (faint guide)
+//   - continuation segment from soft wrap:   `      ` (plain indent)
+//
+// Wrap is performed at runewidth boundaries so CJK / wide chars don't spill
+// past the popup edge. width<=0 disables wrap (initial render before
+// WindowSizeMsg arrives); the line is emitted verbatim and the terminal's
+// implicit wrap handles overflow as before. The cursor `▏` is drawn only on
+// the very last segment.
+func renderPromptInput(prompt string, width int) string {
+	// contentWidth is sized against the *widest* prefix (continuation = 6
+	// cols) so a soft-wrapped line never overruns the popup. Using the
+	// first-segment width (4 cols) here would let continuation lines spill
+	// 2 cols past the edge — exactly the artifact this function is meant
+	// to eliminate.
+	contentWidth := 0
+	if width > 0 {
+		contentWidth = width - 6
+		if contentWidth < 1 {
+			contentWidth = 1
+		}
+	}
+
+	type segment struct {
+		text       string
+		isFirst    bool // first segment of the whole buffer
+		hardBreak  bool // first segment of a logical line (after \n)
+	}
+	var segments []segment
+	for li, logical := range strings.Split(prompt, "\n") {
+		pieces := []string{logical}
+		if contentWidth > 0 {
+			pieces = wrapByWidth(logical, contentWidth)
+		}
+		for pi, p := range pieces {
+			segments = append(segments, segment{
+				text:      p,
+				isFirst:   li == 0 && pi == 0,
+				hardBreak: pi == 0,
+			})
+		}
+	}
+
 	var b strings.Builder
-	for i, line := range lines {
+	for i, seg := range segments {
 		var prefix string
-		if i == 0 {
+		switch {
+		case seg.isFirst:
 			prefix = "  " + stylePrompt.Render("> ")
-		} else {
+		case seg.hardBreak:
 			prefix = "    " + styleFaint.Render("│ ")
+		default:
+			prefix = "      "
 		}
 		b.WriteString(prefix)
-		b.WriteString(line)
-		if i == len(lines)-1 {
+		b.WriteString(seg.text)
+		if i == len(segments)-1 {
 			b.WriteString("▏")
 		}
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// wrapByWidth splits s into chunks whose display width does not exceed
+// width, breaking at rune boundaries. No word-aware logic — the prompt
+// input is free-form text where cutting mid-word matches user
+// expectations of "fill the popup row, then continue". Always returns at
+// least one element so callers can iterate without an empty-input guard.
+func wrapByWidth(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	var lines []string
+	var cur strings.Builder
+	curW := 0
+	for _, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if curW+rw > width && cur.Len() > 0 {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			curW = 0
+		}
+		cur.WriteRune(r)
+		curW += rw
+	}
+	lines = append(lines, cur.String())
+	return lines
 }
 
 // renderLauncherChoice renders the "<active> / <other>" launcher pair with

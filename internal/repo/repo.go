@@ -4,6 +4,7 @@ package repo
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -40,7 +41,33 @@ func List() ([]Repo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ghq list -p: %w", err)
 	}
-	return parseList(string(out), root), nil
+	repos := parseList(string(out), root)
+	// Strip git worktrees that don't follow the `<repo>@<branch>` naming
+	// convention (e.g. created with `git worktree add ../<repo>-<topic>`).
+	// parseList handles the `@`-named ones by string scan; this catches
+	// the rest by looking at `.git` itself: a directory means a real
+	// checkout, a regular file containing `gitdir:` means a worktree
+	// pointer. ghq list happily surfaces both forms as siblings.
+	out2 := repos[:0]
+	for _, r := range repos {
+		if isGitWorktree(r.Path) {
+			continue
+		}
+		out2 = append(out2, r)
+	}
+	return out2, nil
+}
+
+// isGitWorktree reports whether repoPath's `.git` is a worktree pointer
+// file (rather than a directory). Returns false for non-git directories
+// and on stat errors so unreadable entries are surfaced as-is rather than
+// silently dropped.
+func isGitWorktree(repoPath string) bool {
+	info, err := os.Lstat(filepath.Join(repoPath, ".git"))
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 // parseList converts `ghq list -p` output into Repo entries. Each line is an

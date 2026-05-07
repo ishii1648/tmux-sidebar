@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -53,6 +55,45 @@ func TestParseListWithoutRootFallback(t *testing.T) {
 	}
 	if got[0].Basename != "bar" {
 		t.Errorf("basename = %q, want bar", got[0].Basename)
+	}
+}
+
+// isGitWorktree must drop entries whose `.git` is a worktree pointer file
+// even when the directory name doesn't follow the `<repo>@<branch>`
+// convention (e.g. `git worktree add ../<repo>-<topic>`).
+func TestIsGitWorktree(t *testing.T) {
+	tmp := t.TempDir()
+
+	mainRepo := filepath.Join(tmp, "main")
+	if err := os.MkdirAll(filepath.Join(mainRepo, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir main: %v", err)
+	}
+
+	worktreeRepo := filepath.Join(tmp, "worktree-pr123")
+	if err := os.MkdirAll(worktreeRepo, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(worktreeRepo, ".git"),
+		[]byte("gitdir: "+filepath.Join(mainRepo, ".git", "worktrees", "worktree-pr123")+"\n"),
+		0o644,
+	); err != nil {
+		t.Fatalf("write worktree pointer: %v", err)
+	}
+
+	noGit := filepath.Join(tmp, "not-a-repo")
+	if err := os.MkdirAll(noGit, 0o755); err != nil {
+		t.Fatalf("mkdir noGit: %v", err)
+	}
+
+	if isGitWorktree(mainRepo) {
+		t.Errorf("isGitWorktree(main) = true, want false (.git is a directory)")
+	}
+	if !isGitWorktree(worktreeRepo) {
+		t.Errorf("isGitWorktree(worktree) = false, want true (.git is a file)")
+	}
+	if isGitWorktree(noGit) {
+		t.Errorf("isGitWorktree(noGit) = true, want false (no .git present)")
 	}
 }
 

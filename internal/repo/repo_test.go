@@ -7,7 +7,7 @@ import (
 
 func TestParseList(t *testing.T) {
 	out := "/Users/sho/ghq/github.com/foo/bar\n/Users/sho/ghq/github.com/baz/qux\n\n"
-	got := parseList(out)
+	got := parseList(out, "/Users/sho/ghq")
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
 	}
@@ -22,17 +22,37 @@ func TestParseList(t *testing.T) {
 func TestParseListExcludesWorktrees(t *testing.T) {
 	out := strings.Join([]string{
 		"/Users/sho/ghq/github.com/foo/bar",
-		"/Users/sho/ghq/github.com/foo/bar@feat-x",      // worktree
-		"/Users/sho/ghq/github.com/foo/bar@feat-y",      // worktree
-		"/Users/sho/ghq/github.com/baz/qux",             // main
-		"/Users/sho/ghq/github.com/baz/qux@hotfix-1",    // worktree
+		"/Users/sho/ghq/github.com/foo/bar@feat-x",                  // worktree
+		"/Users/sho/ghq/github.com/foo/bar@feat-y",                  // worktree
+		"/Users/sho/ghq/github.com/baz/qux",                         // main
+		"/Users/sho/ghq/github.com/baz/qux@hotfix-1",                // worktree
+		"/Users/sho/ghq/github.com/foo/bar@feat/with-slash",         // worktree, slashed branch
+		"/Users/sho/ghq/github.com/foo/bar@feat/deep/branch-name",   // worktree, multi-slash branch
 	}, "\n")
-	got := parseList(out)
+	got := parseList(out, "/Users/sho/ghq")
 	if len(got) != 2 {
 		t.Fatalf("len = %d (entries = %+v), want 2 main repos", len(got), got)
 	}
 	if got[0].Basename != "bar" || got[1].Basename != "qux" {
 		t.Errorf("basenames = [%q, %q], want [bar, qux]", got[0].Basename, got[1].Basename)
+	}
+}
+
+// Without ghqRoot, parseList falls back to a length-bounded scan of the
+// trailing path segments. Make sure that scan still drops slashed-branch
+// worktrees and is not fooled by '@' high up the path.
+func TestParseListWithoutRootFallback(t *testing.T) {
+	out := strings.Join([]string{
+		"/Users/foo@bar/ghq/github.com/foo/bar",                   // main, '@' in ancestor must NOT disqualify
+		"/Users/foo@bar/ghq/github.com/foo/bar@feat/with-slash",   // worktree
+		"/Users/foo@bar/ghq/github.com/baz/qux@hotfix",            // worktree
+	}, "\n")
+	got := parseList(out, "")
+	if len(got) != 1 {
+		t.Fatalf("len = %d (entries = %+v), want 1 main repo", len(got), got)
+	}
+	if got[0].Basename != "bar" {
+		t.Errorf("basename = %q, want bar", got[0].Basename)
 	}
 }
 

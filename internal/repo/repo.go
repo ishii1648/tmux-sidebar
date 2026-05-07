@@ -4,6 +4,7 @@ package repo
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -29,37 +30,104 @@ func List() ([]Repo, error) {
 	if _, err := exec.LookPath("ghq"); err != nil {
 		return nil, fmt.Errorf("ghq not found in PATH")
 	}
+	// `ghq root` lets us anchor the worktree-detection scan to just the
+	// host/owner/repo portion. Treat its failure as "unknown root" and fall
+	// back to a length-bounded segment scan inside parseList.
+	var root string
+	if rootOut, err := exec.Command("ghq", "root").Output(); err == nil {
+		root = strings.TrimSpace(string(rootOut))
+	}
 	out, err := exec.Command("ghq", "list", "-p").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ghq list -p: %w", err)
 	}
-	return parseList(string(out)), nil
+	repos := parseList(string(out), root)
+	// Strip git worktrees that don't follow the `<repo>@<branch>` naming
+	// convention (e.g. created with `git worktree add ../<repo>-<topic>`).
+	// parseList handles the `@`-named ones by string scan; this catches
+	// the rest by looking at `.git` itself: a directory means a real
+	// checkout, a regular file containing `gitdir:` means a worktree
+	// pointer. ghq list happily surfaces both forms as siblings.
+	out2 := repos[:0]
+	for _, r := range repos {
+		if isGitWorktree(r.Path) {
+			continue
+		}
+		out2 = append(out2, r)
+	}
+	return out2, nil
+}
+
+// isGitWorktree reports whether repoPath's `.git` is a worktree pointer
+// file (rather than a directory). Returns false for non-git directories
+// and on stat errors so unreadable entries are surfaced as-is rather than
+// silently dropped.
+func isGitWorktree(repoPath string) bool {
+	info, err := os.Lstat(filepath.Join(repoPath, ".git"))
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 // parseList converts `ghq list -p` output into Repo entries. Each line is an
 // absolute path; we derive Name (last 3 segments) and Basename from the path.
 //
-// gw_add-style worktrees live alongside the main repo with `<basename>@<branch>`
+// gw_add-style worktrees live alongside the main repo with `<repo>@<branch>`
 // paths and are dropped here so the picker only offers main repos. Worktrees
 // are reachable via `:<branch>` checkout-mode in dispatch instead.
-func parseList(out string) []Repo {
+//
+// ghqRoot, when non-empty, scopes the worktree scan to ghq-root-relative
+// segments. Empty ghqRoot triggers a length-bounded fallback scan to avoid
+// false positives from `@` in ancestor directories like `/Users/foo@bar/`.
+func parseList(out, ghqRoot string) []Repo {
+	rootPrefix := ""
+	if ghqRoot != "" {
+		rootPrefix = strings.TrimRight(filepath.ToSlash(ghqRoot), "/") + "/"
+	}
 	var repos []Repo
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		basename := filepath.Base(line)
-		if strings.Contains(basename, "@") {
+		if isWorktreePath(line, rootPrefix) {
 			continue
 		}
 		repos = append(repos, Repo{
 			Path:     line,
 			Name:     deriveName(line),
-			Basename: basename,
+			Basename: filepath.Base(line),
 		})
 	}
 	return repos
+}
+
+// isWorktreePath reports whether path looks like a gw_add-style worktree
+// (`<repo>@<branch>` somewhere in its trailing segments). Branch names may
+// contain '/' (e.g. `feat/foo`), so the '@' marker can land on a parent
+// segment rather than the basename — `filepath.Base` alone misses these.
+func isWorktreePath(path, rootPrefix string) bool {
+	clean := filepath.ToSlash(path)
+	var rel string
+	if rootPrefix != "" && strings.HasPrefix(clean, rootPrefix) {
+		rel = strings.TrimPrefix(clean, rootPrefix)
+	} else {
+		// Fallback when ghq root is unknown: inspect just the trailing 3
+		// segments. Main repos end in host/owner/repo (no '@'), and
+		// worktrees with up to 2-segment branch names still surface the
+		// '@' within this window. Wider windows risk catching '@' in
+		// ancestor directories like a user's home folder.
+		parts := strings.Split(clean, "/")
+		start := max(0, len(parts)-3)
+		rel = strings.Join(parts[start:], "/")
+	}
+	for seg := range strings.SplitSeq(rel, "/") {
+		if strings.Contains(seg, "@") {
+			return true
+		}
+	}
+	return false
 }
 
 // deriveName takes an absolute path like /Users/sho/ghq/github.com/foo/bar and

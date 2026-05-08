@@ -816,12 +816,18 @@ var (
 	stylePrompt = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
 	styleFaint  = lipgloss.NewStyle().Faint(true)
 	styleCursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	// styleCursorBlock highlights the rune at the prompt cursor with
-	// reverse video so the rune itself stays visible. Earlier we inserted
-	// a `▏` glyph between runes, but in fonts where U+258F falls back to
-	// a full-cell block the rune at cursorOffset visually disappears
-	// behind the block. Reverse video sidesteps that font dependency.
-	styleCursorBlock = lipgloss.NewStyle().Reverse(true)
+	// styleCursorBlock highlights the rune at the prompt cursor as a
+	// solid colored block. Earlier iterations used `▏` (font-dependent —
+	// fell back to a full block in some fonts and hid the next rune) and
+	// then plain Reverse(true) (theme-dependent — on a transparent /
+	// low-contrast dark background the inverted cell barely changed
+	// brightness, so the cursor was hard to spot). Painting an explicit
+	// blue background with white foreground gives the same visibility
+	// regardless of the terminal's colour profile or transparency.
+	styleCursorBlock = lipgloss.NewStyle().
+				Background(lipgloss.Color("4")).
+				Foreground(lipgloss.Color("15")).
+				Bold(true)
 	styleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
 	styleSuccess     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	// styleActive highlights the selected launcher in the toggle pair

@@ -28,20 +28,44 @@ func TestMain(m *testing.M) {
 // visual layout can be asserted as plain runes.
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-// reverseRE matches lipgloss reverse-video spans (the prompt block
-// cursor) so tests can keep cursor position observable after stripping
-// other SGR escapes. Non-greedy on a non-ESC class so the match cannot
-// run past the closing `\x1b[0m` into adjacent styled spans.
-var reverseRE = regexp.MustCompile(`\x1b\[7m([^\x1b]*)\x1b\[0?m`)
-
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
-// renderForTest replaces the reverse-video cursor span with `<X>` so the
-// prompt cursor's position is asserted as plain text alongside the
-// surrounding runes.
+// renderForTest wraps the prompt block-cursor span with `<X>` markers so
+// the cursor's position is observable as plain text after the rest of
+// the SGR escapes are stripped. Computes the cursor span's prefix and
+// suffix from a live `styleCursorBlock.Render(\x00)` call so the test
+// helper stays correct regardless of which SGR codes lipgloss chooses
+// for the configured colour profile (4-bit `\x1b[44m` vs 256-colour
+// `\x1b[48;5;n` vs RGB `\x1b[48;2;r;g;b`).
 func renderForTest(s string) string {
-	s = reverseRE.ReplaceAllString(s, "<$1>")
-	return stripANSI(s)
+	sample := styleCursorBlock.Render("\x00")
+	sentinel := strings.IndexByte(sample, 0)
+	if sentinel <= 0 || sentinel >= len(sample)-1 {
+		return stripANSI(s)
+	}
+	prefix, suffix := sample[:sentinel], sample[sentinel+1:]
+
+	var b strings.Builder
+	for {
+		i := strings.Index(s, prefix)
+		if i < 0 {
+			b.WriteString(s)
+			break
+		}
+		b.WriteString(s[:i])
+		rest := s[i+len(prefix):]
+		j := strings.Index(rest, suffix)
+		if j < 0 {
+			b.WriteString(prefix)
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString("<")
+		b.WriteString(rest[:j])
+		b.WriteString(">")
+		s = rest[j+len(suffix):]
+	}
+	return stripANSI(b.String())
 }
 
 // fakeRunner records every call so assertions can verify side-effects.

@@ -10,6 +10,12 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 
 ![tmux-sidebar の表示イメージ](docs/images/sidebar.png)
 
+*常駐 sidebar pane: 全 session/window と agent state を一覧表示*
+
+![tmux-sidebar new の popup picker](docs/images/picker.png)
+
+*popup picker (`tmux-sidebar new`): repo + launcher + prompt のワンフロー作成*
+
 ## Features
 
 - 全セッション・ウィンドウを階層表示（agent がいないウィンドウも含む）

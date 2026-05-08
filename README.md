@@ -8,19 +8,7 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 > **Note**: lifecycle 操作（`d`/`D`）と popup picker (`tmux-sidebar new`) も含めて実装済み。
 > 詳細は [docs/spec.md](docs/spec.md) を参照。
 
-```
-┌──────────────────────┬──────────────────────────────────────────┐
-│ Sessions             │                                          │
-│ ─────────────────────│                                          │
-│ ishii1648_dotfiles   │         作業ペイン                        │
-│   1: nvim            │                                          │
-│ ishii1648_work       │                                          │
-│ ▶ 1: main  [c]🔄3m   │                                          │
-│   2: fish            │                                          │
-│ infra                │                                          │
-│   1: deploy          │                                          │
-└──────────────────────┴──────────────────────────────────────────┘
-```
+![tmux-sidebar の表示イメージ](docs/images/sidebar.png)
 
 ## Features
 

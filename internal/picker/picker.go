@@ -65,6 +65,11 @@ type Model struct {
 	// shift+enter / alt+enter / ctrl+j when the terminal differentiates
 	// them from plain Enter.
 	prompt string
+	// promptCursor is the insertion point as a rune index into prompt.
+	// 0 ≤ promptCursor ≤ len([]rune(prompt)). All editing operations
+	// (insert / delete / arrow keys) use rune indices so multi-byte input
+	// like Japanese is moved as one unit.
+	promptCursor int
 
 	width  int
 	height int
@@ -151,6 +156,7 @@ func (m *Model) handleRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.step = stepPrompt
 		m.prompt = ""
+		m.promptCursor = 0
 		return m, nil
 	case tea.KeyUp, tea.KeyCtrlP:
 		m.moveCursor(-1)
@@ -180,7 +186,7 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// arrives as KeyEnter and submits — the user can then fall back to
 	// paste for multi-line input.
 	if isNewlineKey(msg) {
-		m.prompt += "\n"
+		m.insertAtCursor("\n")
 		return m, nil
 	}
 	switch msg.Type {
@@ -192,13 +198,30 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyEnter:
 		return m, m.execDispatch()
-	case tea.KeyBackspace:
-		if r := []rune(m.prompt); len(r) > 0 {
-			m.prompt = string(r[:len(r)-1])
+	case tea.KeyLeft, tea.KeyCtrlB:
+		if m.promptCursor > 0 {
+			m.promptCursor--
 		}
 		return m, nil
+	case tea.KeyRight, tea.KeyCtrlF:
+		if m.promptCursor < promptRuneLen(m.prompt) {
+			m.promptCursor++
+		}
+		return m, nil
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.promptCursor = 0
+		return m, nil
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.promptCursor = promptRuneLen(m.prompt)
+		return m, nil
+	case tea.KeyBackspace:
+		m.deleteBeforeCursor()
+		return m, nil
+	case tea.KeyDelete:
+		m.deleteAtCursor()
+		return m, nil
 	case tea.KeySpace:
-		m.prompt += " "
+		m.insertAtCursor(" ")
 		return m, nil
 	case tea.KeyRunes:
 		// bracketed paste delivers the whole pasted blob (including line
@@ -212,10 +235,71 @@ func (m *Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.Paste {
 			s = normalizeNewlines(s)
 		}
-		m.prompt += s
+		m.insertAtCursor(s)
 		return m, nil
 	}
 	return m, nil
+}
+
+// promptRuneLen returns the rune count of m.prompt — the maximum valid
+// cursor position. Centralised so insert / move / delete operations can't
+// drift on what "end of buffer" means.
+func promptRuneLen(s string) int {
+	return len([]rune(s))
+}
+
+// insertAtCursor inserts s at the current cursor position and advances the
+// cursor to the end of the inserted text (rune-aware).
+func (m *Model) insertAtCursor(s string) {
+	if s == "" {
+		return
+	}
+	runes := []rune(m.prompt)
+	c := m.promptCursor
+	if c < 0 {
+		c = 0
+	}
+	if c > len(runes) {
+		c = len(runes)
+	}
+	insert := []rune(s)
+	out := make([]rune, 0, len(runes)+len(insert))
+	out = append(out, runes[:c]...)
+	out = append(out, insert...)
+	out = append(out, runes[c:]...)
+	m.prompt = string(out)
+	m.promptCursor = c + len(insert)
+}
+
+// deleteBeforeCursor removes the rune immediately to the left of the
+// cursor (Backspace). No-op when the cursor is at position 0.
+func (m *Model) deleteBeforeCursor() {
+	if m.promptCursor <= 0 {
+		return
+	}
+	runes := []rune(m.prompt)
+	if m.promptCursor > len(runes) {
+		m.promptCursor = len(runes)
+		return
+	}
+	c := m.promptCursor
+	m.prompt = string(runes[:c-1]) + string(runes[c:])
+	m.promptCursor = c - 1
+}
+
+// deleteAtCursor removes the rune to the right of the cursor (Delete /
+// forward delete). No-op when the cursor is at the end of the buffer.
+func (m *Model) deleteAtCursor() {
+	runes := []rune(m.prompt)
+	if m.promptCursor >= len(runes) {
+		return
+	}
+	c := m.promptCursor
+	if c < 0 {
+		c = 0
+	}
+	m.prompt = string(runes[:c]) + string(runes[c+1:])
+	// cursor stays at c — the rune that was at c+1 is now at c
 }
 
 // normalizeNewlines collapses any combination of CR and LF into LF so a
@@ -514,7 +598,7 @@ func (m *Model) viewPrompt() string {
 	sb.WriteString(styleFaint.Render("  "+strings.Repeat("─", clamp(m.width, 30, 80))) + "\n")
 	sb.WriteString("\n")
 
-	sb.WriteString(renderPromptInput(m.prompt, m.width))
+	sb.WriteString(renderPromptInput(m.prompt, m.promptCursor, m.width))
 
 	// Show a hint only for `:<branch>` checkout mode — that branch name is
 	// exactly what dispatch will use, so it's worth previewing. The default
@@ -544,9 +628,13 @@ func (m *Model) viewPrompt() string {
 // Wrap is performed at runewidth boundaries so CJK / wide chars don't spill
 // past the popup edge. width<=0 disables wrap (initial render before
 // WindowSizeMsg arrives); the line is emitted verbatim and the terminal's
-// implicit wrap handles overflow as before. The cursor `▏` is drawn only on
-// the very last segment.
-func renderPromptInput(prompt string, width int) string {
+// implicit wrap handles overflow as before. cursor is a rune index into
+// prompt; the `▏` glyph is drawn between runes at that position. At a
+// soft-wrap boundary (where one segment's end equals the next segment's
+// start in the same logical line) the cursor renders at the *start* of
+// the next segment so the next inserted character lands where the user
+// expects it.
+func renderPromptInput(prompt string, cursor int, width int) string {
 	// contentWidth is sized against the *widest* prefix (continuation = 6
 	// cols) so a soft-wrapped line never overruns the popup. Using the
 	// first-segment width (4 cols) here would let continuation lines spill
@@ -562,22 +650,67 @@ func renderPromptInput(prompt string, width int) string {
 
 	type segment struct {
 		text       string
+		runeOffset int  // start position in the full prompt (rune index)
+		runeLen    int  // number of runes in `text`
 		isFirst    bool // first segment of the whole buffer
 		hardBreak  bool // first segment of a logical line (after \n)
 	}
 	var segments []segment
+	runePos := 0
 	for li, logical := range strings.Split(prompt, "\n") {
 		pieces := []string{logical}
 		if contentWidth > 0 {
 			pieces = wrapByWidth(logical, contentWidth)
 		}
+		linePos := runePos
 		for pi, p := range pieces {
+			pLen := len([]rune(p))
 			segments = append(segments, segment{
-				text:      p,
-				isFirst:   li == 0 && pi == 0,
-				hardBreak: pi == 0,
+				text:       p,
+				runeOffset: linePos,
+				runeLen:    pLen,
+				isFirst:    li == 0 && pi == 0,
+				hardBreak:  pi == 0,
 			})
+			linePos += pLen
 		}
+		// +1 advances past the '\n' between logical lines. The trailing
+		// increment after the last line is harmless: no further segments
+		// are appended so runePos isn't read again.
+		runePos = linePos + 1
+	}
+
+	// Locate the cursor segment. At a soft-wrap boundary (cursor sits at
+	// the join between two segments of the same logical line) prefer the
+	// next segment so the caret visually lands where the next typed rune
+	// will appear, not at the far end of the previous wrapped line.
+	cursorSeg := -1
+	cursorOffset := 0
+	for i, s := range segments {
+		if s.runeOffset > cursor {
+			break
+		}
+		if cursor > s.runeOffset+s.runeLen {
+			continue
+		}
+		// cursor falls within [runeOffset, runeOffset+runeLen]
+		if cursor == s.runeOffset+s.runeLen && i+1 < len(segments) {
+			next := segments[i+1]
+			// next.runeOffset == s.runeOffset+s.runeLen ⇒ same logical
+			// line (soft wrap). Hard breaks bump the offset by 1 for the
+			// '\n', so they don't trigger this branch.
+			if next.runeOffset == s.runeOffset+s.runeLen {
+				continue
+			}
+		}
+		cursorSeg = i
+		cursorOffset = cursor - s.runeOffset
+		break
+	}
+	if cursorSeg < 0 && len(segments) > 0 {
+		// Out-of-range cursor (defensive): pin to end of last segment.
+		cursorSeg = len(segments) - 1
+		cursorOffset = segments[cursorSeg].runeLen
 	}
 
 	var b strings.Builder
@@ -592,9 +725,19 @@ func renderPromptInput(prompt string, width int) string {
 			prefix = "      "
 		}
 		b.WriteString(prefix)
-		b.WriteString(seg.text)
-		if i == len(segments)-1 {
+		if i == cursorSeg {
+			runes := []rune(seg.text)
+			if cursorOffset < 0 {
+				cursorOffset = 0
+			}
+			if cursorOffset > len(runes) {
+				cursorOffset = len(runes)
+			}
+			b.WriteString(string(runes[:cursorOffset]))
 			b.WriteString("▏")
+			b.WriteString(string(runes[cursorOffset:]))
+		} else {
+			b.WriteString(seg.text)
 		}
 		b.WriteString("\n")
 	}

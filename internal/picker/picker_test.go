@@ -346,6 +346,192 @@ func TestFuzzyFilterAndCursorReset(t *testing.T) {
 	}
 }
 
+// TestPromptCursorLeftRightMovesAndInserts exercises the left/right arrow
+// keys in stepPrompt. The pre-fix code ignored these keys entirely and the
+// cursor was pinned to the end of the buffer, so users could not edit
+// earlier characters or insert in the middle of an existing prompt.
+func TestPromptCursorLeftRightMovesAndInserts(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
+	for _, r := range []rune("abc") {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if m.promptCursor != 3 {
+		t.Fatalf("after typing abc cursor = %d want 3", m.promptCursor)
+	}
+	// Move cursor left twice → between 'a' and 'b'.
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft})
+	if m.promptCursor != 1 {
+		t.Fatalf("after 2x Left cursor = %d want 1", m.promptCursor)
+	}
+	// Insert 'X' at the cursor → prompt should be "aXbc".
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	if m.prompt != "aXbc" {
+		t.Errorf("prompt = %q want \"aXbc\"", m.prompt)
+	}
+	if m.promptCursor != 2 {
+		t.Errorf("cursor = %d want 2 (after the inserted X)", m.promptCursor)
+	}
+	// Right past end is clamped — cursor should stop at len("aXbc")=4.
+	for i := 0; i < 10; i++ {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRight})
+	}
+	if m.promptCursor != 4 {
+		t.Errorf("after right past end cursor = %d want 4", m.promptCursor)
+	}
+	// Left past start is clamped at 0.
+	for i := 0; i < 10; i++ {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft})
+	}
+	if m.promptCursor != 0 {
+		t.Errorf("after left past start cursor = %d want 0", m.promptCursor)
+	}
+}
+
+// TestPromptCursorBackspaceAndDelete exercises Backspace and Delete with a
+// mid-buffer cursor — both must respect the cursor position rather than
+// always trimming the tail of the buffer.
+func TestPromptCursorBackspaceAndDelete(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
+	for _, r := range []rune("abcde") {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	// Move cursor to between 'b' and 'c' (position 2).
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft})
+	if m.promptCursor != 2 {
+		t.Fatalf("cursor = %d want 2", m.promptCursor)
+	}
+	// Backspace removes 'b' — prompt becomes "acde", cursor decrements.
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.prompt != "acde" {
+		t.Errorf("after backspace prompt = %q want \"acde\"", m.prompt)
+	}
+	if m.promptCursor != 1 {
+		t.Errorf("after backspace cursor = %d want 1", m.promptCursor)
+	}
+	// Delete removes 'c' (the rune to the right) — prompt becomes "ade",
+	// cursor unchanged.
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyDelete})
+	if m.prompt != "ade" {
+		t.Errorf("after delete prompt = %q want \"ade\"", m.prompt)
+	}
+	if m.promptCursor != 1 {
+		t.Errorf("after delete cursor = %d want 1", m.promptCursor)
+	}
+	// Backspace at the start of the buffer is a no-op.
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyHome})
+	if m.promptCursor != 0 {
+		t.Fatalf("after Home cursor = %d want 0", m.promptCursor)
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.prompt != "ade" || m.promptCursor != 0 {
+		t.Errorf("backspace at start should be no-op; got prompt=%q cursor=%d", m.prompt, m.promptCursor)
+	}
+	// End jumps to len(prompt). Delete past end is a no-op.
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnd})
+	if m.promptCursor != 3 {
+		t.Fatalf("after End cursor = %d want 3", m.promptCursor)
+	}
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyDelete})
+	if m.prompt != "ade" || m.promptCursor != 3 {
+		t.Errorf("delete past end should be no-op; got prompt=%q cursor=%d", m.prompt, m.promptCursor)
+	}
+}
+
+// TestPromptCursorMultiByteMovement ensures arrow keys move by runes, not
+// bytes, so Japanese (3 UTF-8 bytes per rune) is not split mid-codepoint.
+func TestPromptCursorMultiByteMovement(t *testing.T) {
+	m := New(sampleRepos(), nil, &fakeRunner{})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyEnter}) // → prompt step
+	for _, r := range []rune("こんにちは") {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if m.promptCursor != 5 {
+		t.Fatalf("cursor = %d want 5", m.promptCursor)
+	}
+	// Two Lefts → cursor between に(2) and ち(3).
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft})
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft})
+	if m.promptCursor != 3 {
+		t.Fatalf("cursor = %d want 3", m.promptCursor)
+	}
+	// Insert 'X' between に and ち → "こんにXちは".
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	if m.prompt != "こんにXちは" {
+		t.Errorf("prompt = %q want %q", m.prompt, "こんにXちは")
+	}
+	if m.promptCursor != 4 {
+		t.Errorf("cursor = %d want 4", m.promptCursor)
+	}
+	// Backspace removes the multi-byte に, not just one byte.
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyLeft}) // → between に and X
+	m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.prompt != "こんXちは" {
+		t.Errorf("prompt = %q want %q", m.prompt, "こんXちは")
+	}
+}
+
+// TestRenderPromptInputCursorMidBuffer asserts the cursor glyph lands at
+// the right column when the cursor is *not* at the end of the buffer —
+// the case the pre-fix code couldn't render at all.
+func TestRenderPromptInputCursorMidBuffer(t *testing.T) {
+	cases := []struct {
+		name   string
+		prompt string
+		cursor int
+		width  int
+		want   string
+	}{
+		{
+			name:   "cursor at start of single-line buffer",
+			prompt: "hello",
+			cursor: 0,
+			width:  80,
+			want:   "  > ▏hello\n",
+		},
+		{
+			name:   "cursor in the middle of a single line",
+			prompt: "hello",
+			cursor: 2,
+			width:  80,
+			want:   "  > he▏llo\n",
+		},
+		{
+			name:   "cursor at soft-wrap boundary lands on next line",
+			prompt: "abcdefghijkl",
+			cursor: 8, // boundary between segments "abcdefgh" and "ijkl"
+			width:  14,
+			want:   "  > abcdefgh\n      ▏ijkl\n",
+		},
+		{
+			name:   "cursor at hard-break boundary lands at end of prev line",
+			prompt: "abc\ndef",
+			cursor: 3, // immediately before the '\n'
+			width:  80,
+			want:   "  > abc▏\n    │ def\n",
+		},
+		{
+			name:   "cursor at start of second logical line",
+			prompt: "abc\ndef",
+			cursor: 4, // immediately after the '\n'
+			width:  80,
+			want:   "  > abc\n    │ ▏def\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripANSI(renderPromptInput(tc.prompt, tc.cursor, tc.width))
+			if got != tc.want {
+				t.Errorf("renderPromptInput\n got=%q\nwant=%q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestPromptBackspaceMultiByteRune ensures backspace deletes one rune (not one
 // byte) so multi-byte input like Japanese is not corrupted into replacement
 // glyphs (e.g. ◆) on the next render.
@@ -434,7 +620,10 @@ func TestRenderPromptInputWrap(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := stripANSI(renderPromptInput(tc.prompt, tc.width))
+			// Existing cases assume the cursor is at the end of the
+			// buffer (legacy behavior before mid-line cursor support).
+			cursor := len([]rune(tc.prompt))
+			got := stripANSI(renderPromptInput(tc.prompt, cursor, tc.width))
 			if got != tc.want {
 				t.Errorf("renderPromptInput\n got=%q\nwant=%q", got, tc.want)
 			}
@@ -445,7 +634,7 @@ func TestRenderPromptInputWrap(t *testing.T) {
 func TestRenderPromptInputCursorOnLastSegmentOnly(t *testing.T) {
 	// Two soft-wrapped segments should yield exactly one cursor glyph,
 	// at the end of the trailing line.
-	out := stripANSI(renderPromptInput("abcdefghij", 14))
+	out := stripANSI(renderPromptInput("abcdefghij", 10, 14))
 	if n := strings.Count(out, "▏"); n != 1 {
 		t.Errorf("cursor count = %d want 1; output = %q", n, out)
 	}

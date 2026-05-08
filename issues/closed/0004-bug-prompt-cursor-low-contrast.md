@@ -1,6 +1,7 @@
 # popup picker の prompt 入力で block cursor のコントラスト不足によりカーソル位置が分からない
 
 Created: 2026-05-08
+Completed: 2026-05-08
 Model: Opus 4.7
 
 ## 概要
@@ -45,4 +46,15 @@ styleCursorBlock = lipgloss.NewStyle().
 
 ## 解決方法
 
-(close 時に追記)
+コミット ae02f96 で `styleCursorBlock` を明示的な fg/bg 色付きブロックに変更。
+
+変更ファイル:
+
+- `internal/picker/picker.go`:
+  - `styleCursorBlock = lipgloss.NewStyle().Background(lipgloss.Color("4")).Foreground(lipgloss.Color("15")).Bold(true)`
+  - prompt prefix と同系統の blue 背景 + bright white 前景 + bold で半透明テーマや low-contrast 設定でも確実に視認できる
+- `internal/picker/picker_test.go`:
+  - `renderForTest` を「`styleCursorBlock.Render("\x00")` の戻り値から動的に prefix/suffix を切り出して cursor span を検出する」方式に書き換え。SGR 表現 (4-bit `\x1b[44m` / 256-color `\x1b[48;5;n` / RGB `\x1b[48;2;...`) に依存しない
+  - reverse-video 専用の regex を削除
+
+これにより `#0003` で達成した「rune が見える」要件を保ちつつ、UX 上の本質的要件「カーソル位置が一目で分かる」を満たした。

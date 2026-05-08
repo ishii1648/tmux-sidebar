@@ -32,7 +32,7 @@
 
 ## issues について
 
-GitHub Issues は使わず、`issues/` 以下に markdown で管理する。命名規則・フォーマット・ワークフローの詳細は [issues/README.md](issues/README.md) を参照。
+GitHub Issues は使わず、`issues/` 以下に markdown で管理する。命名規則・フォーマット・ワークフローの詳細は [issues/CLAUDE.md](issues/CLAUDE.md) を参照。
 
 ## 実装後の動作確認
 

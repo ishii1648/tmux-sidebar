@@ -734,8 +734,18 @@ func renderPromptInput(prompt string, cursor int, width int) string {
 				cursorOffset = len(runes)
 			}
 			b.WriteString(string(runes[:cursorOffset]))
-			b.WriteString("▏")
-			b.WriteString(string(runes[cursorOffset:]))
+			if cursorOffset < len(runes) {
+				// Block cursor: reverse-video the rune at the cursor so
+				// the rune stays visible regardless of font support for
+				// dedicated cursor glyphs.
+				b.WriteString(styleCursorBlock.Render(string(runes[cursorOffset])))
+				b.WriteString(string(runes[cursorOffset+1:]))
+			} else {
+				// No rune to highlight (cursor at end of buffer / hard
+				// break / empty trailing segment) — fall back to the
+				// thin vertical bar so the caret is still indicated.
+				b.WriteString("▏")
+			}
 		} else {
 			b.WriteString(seg.text)
 		}
@@ -803,11 +813,17 @@ func (m *Model) viewportRows() int {
 
 // styles
 var (
-	stylePrompt  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	styleFaint   = lipgloss.NewStyle().Faint(true)
-	styleCursor  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	styleError   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
-	styleSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	stylePrompt = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
+	styleFaint  = lipgloss.NewStyle().Faint(true)
+	styleCursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
+	// styleCursorBlock highlights the rune at the prompt cursor with
+	// reverse video so the rune itself stays visible. Earlier we inserted
+	// a `▏` glyph between runes, but in fonts where U+258F falls back to
+	// a full-cell block the rune at cursorOffset visually disappears
+	// behind the block. Reverse video sidesteps that font dependency.
+	styleCursorBlock = lipgloss.NewStyle().Reverse(true)
+	styleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+	styleSuccess     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	// styleActive highlights the selected launcher in the toggle pair
 	// (dispatch_launcher.fish uses bold bright-green for the same role).
 	styleActive = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("10"))

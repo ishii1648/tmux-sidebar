@@ -8,15 +8,41 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ishii1648/tmux-sidebar/internal/dispatch"
 	"github.com/ishii1648/tmux-sidebar/internal/repo"
+	"github.com/muesli/termenv"
 )
+
+// TestMain pins lipgloss's color profile so styled spans (notably the
+// reverse-video block cursor) emit SGR escapes inside `go test`, where
+// stdout isn't a TTY and lipgloss would otherwise downgrade to ASCII and
+// drop styling. Tests still call stripANSI / renderForTest to assert
+// against plain text.
+func TestMain(m *testing.M) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	os.Exit(m.Run())
+}
 
 // ansiRE strips lipgloss-emitted SGR escapes so renderPromptInput's
 // visual layout can be asserted as plain runes.
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
+// reverseRE matches lipgloss reverse-video spans (the prompt block
+// cursor) so tests can keep cursor position observable after stripping
+// other SGR escapes. Non-greedy on a non-ESC class so the match cannot
+// run past the closing `\x1b[0m` into adjacent styled spans.
+var reverseRE = regexp.MustCompile(`\x1b\[7m([^\x1b]*)\x1b\[0?m`)
+
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+// renderForTest replaces the reverse-video cursor span with `<X>` so the
+// prompt cursor's position is asserted as plain text alongside the
+// surrounding runes.
+func renderForTest(s string) string {
+	s = reverseRE.ReplaceAllString(s, "<$1>")
+	return stripANSI(s)
+}
 
 // fakeRunner records every call so assertions can verify side-effects.
 type fakeRunner struct {
@@ -491,26 +517,26 @@ func TestRenderPromptInputCursorMidBuffer(t *testing.T) {
 			prompt: "hello",
 			cursor: 0,
 			width:  80,
-			want:   "  > ▏hello\n",
+			want:   "  > <h>ello\n",
 		},
 		{
 			name:   "cursor in the middle of a single line",
 			prompt: "hello",
 			cursor: 2,
 			width:  80,
-			want:   "  > he▏llo\n",
+			want:   "  > he<l>lo\n",
 		},
 		{
 			name:   "cursor at soft-wrap boundary lands on next line",
 			prompt: "abcdefghijkl",
 			cursor: 8, // boundary between segments "abcdefgh" and "ijkl"
 			width:  14,
-			want:   "  > abcdefgh\n      ▏ijkl\n",
+			want:   "  > abcdefgh\n      <i>jkl\n",
 		},
 		{
 			name:   "cursor at hard-break boundary lands at end of prev line",
 			prompt: "abc\ndef",
-			cursor: 3, // immediately before the '\n'
+			cursor: 3, // immediately before the '\n' — no rune at cursor, falls back to ▏
 			width:  80,
 			want:   "  > abc▏\n    │ def\n",
 		},
@@ -519,12 +545,12 @@ func TestRenderPromptInputCursorMidBuffer(t *testing.T) {
 			prompt: "abc\ndef",
 			cursor: 4, // immediately after the '\n'
 			width:  80,
-			want:   "  > abc\n    │ ▏def\n",
+			want:   "  > abc\n    │ <d>ef\n",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := stripANSI(renderPromptInput(tc.prompt, tc.cursor, tc.width))
+			got := renderForTest(renderPromptInput(tc.prompt, tc.cursor, tc.width))
 			if got != tc.want {
 				t.Errorf("renderPromptInput\n got=%q\nwant=%q", got, tc.want)
 			}

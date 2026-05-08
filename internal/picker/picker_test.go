@@ -472,6 +472,129 @@ func TestViewPromptSoftWrapSnapshot(t *testing.T) {
 	}
 }
 
+// TestComputeRepoViewportKeepsCursorVisible exercises the pure window
+// calculation directly so each scroll case is asserted in isolation. The
+// viewport is the fix for "cursor invisible past XX more"; before the
+// change, the cursor could move past maxRows but the renderer always
+// rendered items[0..maxRows], so the active row disappeared from view.
+func TestComputeRepoViewportKeepsCursorVisible(t *testing.T) {
+	tests := []struct {
+		name        string
+		cursor      int
+		total       int
+		maxRows     int
+		savedStart  int
+		wantStart   int
+		wantEnd     int
+		wantHasUp   bool
+		wantHasDown bool
+	}{
+		{
+			name: "all fit no markers", cursor: 2, total: 5, maxRows: 10, savedStart: 0,
+			wantStart: 0, wantEnd: 5, wantHasUp: false, wantHasDown: false,
+		},
+		{
+			name: "cursor at top with overflow", cursor: 0, total: 20, maxRows: 5, savedStart: 0,
+			wantStart: 0, wantEnd: 4, wantHasUp: false, wantHasDown: true,
+		},
+		{
+			name: "cursor moves below window scrolls down", cursor: 4, total: 20, maxRows: 5, savedStart: 0,
+			// hasUp + hasDown both reserved → 3 item slots, cursor must
+			// be the last visible row.
+			wantStart: 2, wantEnd: 5, wantHasUp: true, wantHasDown: true,
+		},
+		{
+			name: "cursor at bottom no down marker", cursor: 19, total: 20, maxRows: 5, savedStart: 0,
+			// At the last item: down marker drops, freeing one row.
+			wantStart: 16, wantEnd: 20, wantHasUp: true, wantHasDown: false,
+		},
+		{
+			name: "cursor moves above window scrolls up", cursor: 0, total: 20, maxRows: 5, savedStart: 10,
+			wantStart: 0, wantEnd: 4, wantHasUp: false, wantHasDown: true,
+		},
+		{
+			name: "cursor inside saved window is sticky", cursor: 12, total: 20, maxRows: 5, savedStart: 10,
+			wantStart: 10, wantEnd: 13, wantHasUp: true, wantHasDown: true,
+		},
+		{
+			name: "stale savedStart past end clamps", cursor: 0, total: 5, maxRows: 10, savedStart: 50,
+			wantStart: 0, wantEnd: 5, wantHasUp: false, wantHasDown: false,
+		},
+		{
+			name: "single-item past viewport is reachable", cursor: 4, total: 5, maxRows: 4, savedStart: 0,
+			// total > maxRows by exactly one — cursor must still land
+			// inside the visible slice without the renderer hiding it.
+			wantStart: 2, wantEnd: 5, wantHasUp: true, wantHasDown: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			start, end, hasUp, hasDown := computeRepoViewport(tc.cursor, tc.total, tc.maxRows, tc.savedStart)
+			if start != tc.wantStart || end != tc.wantEnd || hasUp != tc.wantHasUp || hasDown != tc.wantHasDown {
+				t.Errorf("computeRepoViewport(cursor=%d,total=%d,maxRows=%d,saved=%d) = (%d,%d,%v,%v) want (%d,%d,%v,%v)",
+					tc.cursor, tc.total, tc.maxRows, tc.savedStart,
+					start, end, hasUp, hasDown,
+					tc.wantStart, tc.wantEnd, tc.wantHasUp, tc.wantHasDown)
+			}
+			if tc.cursor < tc.total {
+				if tc.cursor < start || tc.cursor >= end {
+					t.Errorf("cursor=%d not visible in [%d,%d)", tc.cursor, start, end)
+				}
+			}
+		})
+	}
+}
+
+// TestViewRepoScrollsCursorIntoView is the integration counterpart: drive
+// the picker past the visible window via key presses and assert the
+// rendered output contains the cursor row plus an "↑ N more" marker. The
+// pre-fix renderer would emit "↓ N more" with the cursor invisible.
+func TestViewRepoScrollsCursorIntoView(t *testing.T) {
+	repos := make([]repo.Repo, 0, 30)
+	for i := 0; i < 30; i++ {
+		// Names sort by Basename → use zero-padded suffix so the
+		// observed order matches the index here.
+		base := "repo-" + zeroPad(i)
+		repos = append(repos, repo.Repo{
+			Path:     "/r/" + base,
+			Name:     "github.com/x/" + base,
+			Basename: base,
+		})
+	}
+	m := New(repos, nil, &fakeRunner{})
+	// Force a small window so the scrolling threshold is easy to hit.
+	m.height = 9 // viewportRows = 9 - 5 = 4
+	// Move cursor past maxRows so the renderer must scroll to keep it
+	// visible. After 10 KeyDown presses cursor=10, well beyond the
+	// initial 4-row window.
+	for i := 0; i < 10; i++ {
+		m, _ = updateAsModel(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if m.cursor != 10 {
+		t.Fatalf("cursor = %d want 10", m.cursor)
+	}
+	out := stripANSI(m.viewRepo())
+	cursorLine := "▶ github.com/x/repo-" + zeroPad(10)
+	if !strings.Contains(out, cursorLine) {
+		t.Errorf("cursor row missing from view; output:\n%s", out)
+	}
+	if !strings.Contains(out, "↑ ") {
+		t.Errorf("expected up marker since window scrolled; output:\n%s", out)
+	}
+	if !strings.Contains(out, "↓ ") {
+		t.Errorf("expected down marker (still 19 items below); output:\n%s", out)
+	}
+}
+
+func zeroPad(i int) string {
+	if i < 10 {
+		return "0" + string(rune('0'+i))
+	}
+	tens := i / 10
+	ones := i % 10
+	return string(rune('0'+tens)) + string(rune('0'+ones))
+}
+
 // updateAsModel calls Update and casts the returned tea.Model back to *Model.
 func updateAsModel(m *Model, msg tea.Msg) (*Model, tea.Cmd) {
 	out, cmd := m.Update(msg)

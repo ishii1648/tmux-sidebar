@@ -54,10 +54,11 @@ type Model struct {
 	repos    []repo.Repo
 	filtered []repo.Repo
 
-	step     step
-	query    string
-	cursor   int
-	launcher dispatch.Launcher // current launcher selection (claude / codex)
+	step         step
+	query        string
+	cursor       int
+	scrollOffset int               // first visible repo row index in viewRepo
+	launcher     dispatch.Launcher // current launcher selection (claude / codex)
 
 	// prompt is the in-progress prompt body when step==stepPrompt.
 	// Multi-line is supported via paste (LF preserved) and via
@@ -318,6 +319,8 @@ func (m *Model) execDispatch() tea.Cmd {
 }
 
 // applyFilter recomputes m.filtered from m.query and clamps the cursor.
+// Scroll offset resets here too: a fresh filter produces a fresh result
+// list, so any previously-saved viewport position no longer makes sense.
 func (m *Model) applyFilter() {
 	m.filtered = repo.Filter(m.repos, m.query)
 	if m.cursor >= len(m.filtered) {
@@ -326,6 +329,7 @@ func (m *Model) applyFilter() {
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
+	m.scrollOffset = 0
 }
 
 func (m *Model) moveCursor(delta int) {
@@ -364,12 +368,25 @@ func (m *Model) viewRepo() string {
 	sb.WriteString("  " + renderLauncherChoice(m.launcher) + "\n")
 	sb.WriteString(styleFaint.Render(strings.Repeat("─", clamp(m.width, 40, 100))) + "\n")
 	sb.WriteString(stylePrompt.Render("> ") + m.query + "▏\n")
-	maxRows := m.viewportRows()
-	for i, r := range m.filtered {
-		if i >= maxRows {
-			sb.WriteString(styleFaint.Render(fmt.Sprintf("  ↓ %d more", len(m.filtered)-maxRows)) + "\n")
-			break
+
+	total := len(m.filtered)
+	if total == 0 {
+		sb.WriteString(styleFaint.Render("  (no matching repos)") + "\n")
+		if m.errMsg != "" {
+			sb.WriteString(styleError.Render(m.errMsg) + "\n")
 		}
+		return sb.String()
+	}
+
+	maxRows := m.viewportRows()
+	start, end, hasUp, hasDown := computeRepoViewport(m.cursor, total, maxRows, m.scrollOffset)
+	m.scrollOffset = start
+
+	if hasUp {
+		sb.WriteString(styleFaint.Render(fmt.Sprintf("  ↑ %d more", start)) + "\n")
+	}
+	for i := start; i < end; i++ {
+		r := m.filtered[i]
 		cursor := "  "
 		if i == m.cursor {
 			cursor = styleCursor.Render("▶ ")
@@ -382,13 +399,100 @@ func (m *Model) viewRepo() string {
 			sb.WriteString(cursor + label + "\n")
 		}
 	}
-	if len(m.filtered) == 0 {
-		sb.WriteString(styleFaint.Render("  (no matching repos)") + "\n")
+	if hasDown {
+		sb.WriteString(styleFaint.Render(fmt.Sprintf("  ↓ %d more", total-end)) + "\n")
 	}
+
 	if m.errMsg != "" {
 		sb.WriteString(styleError.Render(m.errMsg) + "\n")
 	}
 	return sb.String()
+}
+
+// computeRepoViewport decides which slice of m.filtered to render so the
+// cursor stays visible, and reports whether "↑ N more" / "↓ N more"
+// markers should be drawn above / below the slice.
+//
+// savedStart is the previous scroll offset; it provides hysteresis so the
+// window does not jump around when the cursor moves within the visible
+// range. Markers consume one row each, so the effective item capacity is
+// maxRows - (1 if hasUp) - (1 if hasDown). Capacity depends on start
+// (because hasDown depends on what fits below), so the descent loop
+// iterates a few times until stable. It always converges within a couple
+// of passes; the iteration cap is just a defensive guard.
+func computeRepoViewport(cursor, total, maxRows, savedStart int) (start, end int, hasUp, hasDown bool) {
+	if total <= 0 {
+		return 0, 0, false, false
+	}
+	if total <= maxRows {
+		return 0, total, false, false
+	}
+
+	// capacity returns the number of item rows available given a start
+	// offset, after reserving rows for whichever markers are needed.
+	capacity := func(s int) int {
+		c := maxRows
+		if s > 0 {
+			c-- // room for "↑ N more"
+		}
+		if s+c < total {
+			c-- // room for "↓ N more"
+		}
+		if c < 1 {
+			c = 1
+		}
+		return c
+	}
+
+	start = savedStart
+	if start < 0 {
+		start = 0
+	}
+	if start > total-1 {
+		start = total - 1
+	}
+
+	// Cursor moved above the saved window: scroll up so it becomes the
+	// first visible row.
+	if cursor < start {
+		start = cursor
+	}
+	// Cursor moved below the saved window: scroll down so it becomes the
+	// last visible row. capacity changes with start (down-marker may
+	// flip), so iterate to a fixed point.
+	for iter := 0; iter < 5; iter++ {
+		c := capacity(start)
+		if cursor < start+c {
+			break
+		}
+		newStart := cursor - c + 1
+		if newStart <= start {
+			break
+		}
+		start = newStart
+	}
+	if start < 0 {
+		start = 0
+	}
+
+	hasUp = start > 0
+	slots := maxRows
+	if hasUp {
+		slots--
+	}
+	end = start + slots
+	if end < total {
+		// Items remain below the slice — reserve a row for the down
+		// marker.
+		slots--
+		end = start + slots
+		hasDown = true
+	}
+	if end > total {
+		end = total
+		hasDown = false
+	}
+	return
 }
 
 // viewPrompt renders the dispatch prompt input. Layout mirrors

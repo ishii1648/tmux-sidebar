@@ -30,6 +30,10 @@
 
 判断に迷ったら「半年後の自分が `git log` ではなく文書で読みたい情報か？」を基準にする。
 
+## issues について
+
+GitHub Issues は使わず、`issues/` 以下に markdown で管理する。命名規則・フォーマット・ワークフローの詳細は [issues/CLAUDE.md](issues/CLAUDE.md) を参照。
+
 ## 実装後の動作確認
 
 実装・修正が完了したら、必ず `/verify-implementation` を実行して動作確認を行ってから完了を報告すること。

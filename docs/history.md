@@ -797,3 +797,53 @@ doctor の追加検査:
 
 - 既存ユーザの settings.json に inline shell snippet が残っている場合、`tmux-sidebar doctor --yes` を 1 回走らせて subcommand 形式に置き換える必要がある。リリースノートで案内する
 - Codex CLI が将来 hook 機構を提供したとき、stdin JSON のシェイプが Claude Code と異なる場合は `internal/hook.readPayload` を agent kind で分岐する必要が出る可能性がある。現時点では Codex 側の hook protocol が未確立のため、stdin が来なければ env / `os.Getwd()` にフォールバックする現挙動で十分
+
+---
+
+## サーバ境界制御 / MRU 自動ソートの取り下げ（2026-05-08）
+
+control surface 拡張の初版検討で「採用しない・延期する項目」として TODO.md 末尾の表に列挙していたうち、history.md の他セクションでまだ rationale を残していなかった 2 項目を、TODO.md 廃止に合わせてここに転記する。背景は §105「read-only navigation から control surface への scope 拡張」を参照。
+
+### server 境界制御（attach / detach / new-server）の取り下げ
+
+- attach / detach / new-server は **sidebar が起動する前の世界** で、cross-context navigation の対象外。tmw / 起動 profile / dotfiles 側の責務として明確に分離する
+- sidebar pane は server attach 済みの状態を前提に動作するため、その前段の制御を sidebar UI に持ち込んでも常駐の利得がない
+- 同種の「sidebar の手前の世界」（ghq repo 探索 → 新規 session 起動）は popup picker (`tmux-sidebar new`) として独立エントリポイントに切り出している。server 境界もそれと同じく外部ツール側の責務に留める
+
+### session 並びの MRU 自動ソート（保留扱い）
+
+- カーソル追従ロジック（select-window のたびに sidebar が SIGUSR1 で再描画してカーソルを当てる）と相性が悪い。「いま見ている session が突然動く」UX 混乱が出る
+- 「直近触った session」を上部に持ってくる需要は pinned_sessions で吸収できる範囲が大きい。MRU 自動化が拾えるのは pin していない session 群の中での優先度だが、ここは元々「列挙順 + `j` / `k` 連打」で足りている
+- 実装は「session ごとの last-attached time を state file から取り、unpinned 群を再ソート」だが、確信を持って入れられる UX 設計に至っていないため**却下ではなく保留**。需要が顕在化した時点で再検討する
+
+---
+
+## TODO.md の廃止（2026-05-08）
+
+`docs/TODO.md` を削除し、内容を以下に分配した。
+
+- Phase 1〜5 の完了チェックリスト: 削除（git log と spec.md / design.md で結果は追える）
+- 「採用しない・延期する項目」表: 大半は history.md の既存セクション（§105 / §147 / §171 / §193 / §215 / §238 / §280）で rationale を保持済み。未カバーの `server 境界制御` と `MRU 自動ソート` は本ファイルの直前セクションに追記
+- 「実装順序の根拠」ブロック: §238「multi-select / vim 風ジャンプの取り下げ」と §280「Phase 5 全削除」の再採番表で実質カバー済みのため削除
+
+### 動機
+
+- TODO.md は当初 control surface 拡張の進行管理として作成したが、Phase 1〜5 が全て `[x]` 完了済みになり、実装トラッキングとしての役割を終えていた
+- 「採用しない・延期する項目」表は実質的に rationale の墓場であり、本来 history.md（append-only な経緯）に置くべき性質。CLAUDE.md の 3 本柱（spec / design / history）にも TODO.md は含まれておらず、運用ルール上も孤立していた
+- 前向きな実装計画は今後 `issues/` ディレクトリ（per-issue markdown、SEQUENCE 採番）で扱うため、global な TODO.md を維持する意味がなくなった
+
+### 採用しなかった代替
+
+- **TODO.md を archive として残す**: 中身が完了済みチェックボックスと history と重複する rationale だけになっており、リンク切れと混乱の温床になる。完全に消すほうが誠実
+- **完了チェックリストを history.md に転記**: 「何をやったか」は git log + 現在の spec / design がスナップショットとして示しており、history.md は「方針反転や却下した代替」を残す場であって完了タスクの墓場ではない
+- **TODO.md を per-phase に分割して残す**: Phase 単位の生きた issue が今後発生するなら `issues/` で扱う方針と整合しない
+
+### 影響範囲
+
+- 削除: `docs/TODO.md`
+- 修正: `README.md` の TODO.md リンク行を削除
+- 残置: history.md 既存エントリ（"TODO.md: ..." の記述）は append-only ルールに従い書き換えない（過去時点での編集箇所として正しい）
+
+### 残課題
+
+なし。3 本柱（spec / design / history）+ issues/ の体制に収束した。

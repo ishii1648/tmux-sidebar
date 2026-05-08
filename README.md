@@ -6,7 +6,7 @@ tmux の **cross-context 軸（session / window）** を司る常駐 control sur
 新規 session 生成は別エントリポイントの popup picker (`tmux-sidebar new`、tmux.conf bind-key 経由で起動) で repo + launcher + prompt をワンフローで決められる。
 
 > **Note**: lifecycle 操作（`d`/`D`）と popup picker (`tmux-sidebar new`) も含めて実装済み。
-> 詳細は [docs/spec.md](docs/spec.md) と [docs/TODO.md](docs/TODO.md) を参照。
+> 詳細は [docs/spec.md](docs/spec.md) を参照。
 
 ```
 ┌──────────────────────┬──────────────────────────────────────────┐

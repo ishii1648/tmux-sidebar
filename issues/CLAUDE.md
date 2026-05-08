@@ -49,20 +49,11 @@ Model: <model-name> <version>  ← 例: Opus 4.7 / GPT-5.4
 
 ## 変更箇所
 
-(任意。複数ファイル・複数パッケージにまたがる場合のみ。着手前に書くと AI への実装委譲がしやすい)
-
-| パッケージ / ファイル | 変更内容 |
-|---|---|
-| `internal/picker/picker.go` | scrollOffset 追加、viewRepo 書き換え |
-| `internal/picker/picker_test.go` | viewport テスト追加 |
+(任意。複数ファイル・複数パッケージにまたがる場合のみ。パッケージ / ファイル単位で変更内容を表にする)
 
 ## 実装チェックリスト
 
-(任意。複数ステップに分かれる場合のみ。着手前に書くと AI への実装委譲がしやすい)
-
-- [ ] computeRepoViewport ヘルパー実装
-- [ ] applyFilter で scrollOffset リセット
-- [ ] e2e: 16 行超えで cursor 可視
+(任意。複数ステップに分かれる場合のみ。チェックボックス箇条書きで段階を列挙する)
 
 ## 解決方法
 

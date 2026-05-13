@@ -856,3 +856,57 @@ TODO.md 末尾の「採用しない・延期する項目」表のうち、純粋
 - `issues/pending/0006-feat-undo-close.md` — window / session の undo close
 
 判定基準: 「却下 rationale」は history、「外部依存 / 設計判断待ちで凍結中」は pending issue。`gg` / `G` のような "実需が出れば追加" 系は demand-driven なので history のみに残す（pending issue にすると forward-looking 案件として見えるが実体は rejection）。
+
+---
+
+## Claude Code Agent View 登場時の方針判断（2026-05-13）
+
+Claude Code v2.1.139 で **Agent View** (`claude agents`) が導入された。これは tmux に紐付かない supervisor process 経由のバックグラウンドセッションを 1 画面で監視・ディスパッチする UI で、tmux-sidebar と機能が部分的に重なる:
+
+- バックグラウンドセッションを一覧表示する viewer
+- prompt 入力でのディスパッチ
+- セッション状態 (working / needs input / idle / completed / failed / stopped) の可視化
+- worktree の自動分離 (`.claude/worktrees/<auto>`)
+- セッション命名の auto-naming (Haiku クラスモデル)
+
+これを機に本ツールのどこを置き換える / 廃止するかを検討した結果、**リサーチプレビュー期間中は経過観察に徹し、現在の仕組みを維持し、最低限の衝突回避 (spec.md への分担明文化) のみを行う** に決めた。
+
+### 検討候補と判定
+
+| 候補 | 判定 | 受け皿 |
+|---|---|---|
+| `internal/dispatch/branch.go` の `ClaudeNamer` (`claude -p`) を Haiku 直叩き / Agent View 命名に寄せる | pending | `issues/pending/0007-design-rethink-claude-p-branch-naming.md` |
+| `internal/dispatch` の Claude launcher を `claude --bg` (supervisor model) に置き換え | pending | `issues/pending/0008-design-claude-launcher-vs-bg-supervisor.md` |
+| Claude 状態取得を hook ベース (`/tmp/agent-pane-state`) から `~/.claude/jobs/<id>/state.json` に寄せる | pending | `issues/pending/0009-design-claude-state-from-supervisor-jobs.md` |
+| popup picker と `claude agents` の役割整理 (案 D 採用、spec への明文化) | 実施 | `issues/closed/0010-design-popup-picker-vs-agent-view-dispatch.md` + `docs/spec.md` の「Agent View との分担」節 |
+
+### 採用しなかった代替
+
+- **Claude launcher の全面廃止 / Agent View 一本化**: ghq の `<host>/<owner>/<repo>` 3 階層 namespace を Agent View が解けない (`@<repo>` は basename 解決のみ)、Codex CLI が supervisor model を持たない、`disableAgentView` を強制する組織で fall back 経路が必要、リサーチプレビューに依存することになる、の 4 点で却下
+- **`claude --bg` の wrapper として popup picker を残す案 (#0010 案 C)**: `@<repo>` の階層パス対応がない見込みで wrapper として破綻、`claude --bg` の CLI スキーマが安定 API として保証されていない、で却下
+- **ghq そのものを捨てて Agent View 中心の repo レイアウトに移行**: repo 物理配置の一斉移行はリスクが高く、ghq の生態系 (`ghq get`、`peco`/`fzf` 統合、フォーク運用) を同時に手放すことになる、で却下
+
+### 衝突しないことを確認した点
+
+`tmux-sidebar` と Agent View は以下のリソースで衝突しない:
+
+| リソース | tmux-sidebar | Agent View |
+|---|---|---|
+| 状態ファイル | `/tmp/agent-pane-state/pane_N` | `~/.claude/jobs/<id>/state.json`, `~/.claude/daemon/roster.json` |
+| Worktree | `<main>@<branch-dirname>` (兄弟ディレクトリ) | `.claude/worktrees/<auto>` (project-local) |
+| Transcript 読み取り | `~/.claude/projects/` (read-only) | 同上 (read-only) |
+| settings.json hook | `tmux-sidebar hook` を追記 | Agent View 自体は触らない (supervisor が state.json を直接書く) |
+| Claude プロセス本体 | tmux pane 内 | supervisor 親 |
+
+同じ Claude セッションが両方の view に同時に現れることもない (tmux pane 内起動 vs `claude --bg` 起動は排他)。
+
+### 再評価トリガ
+
+将来 pending を解除して再評価する条件を記録する:
+
+- Agent View が research preview から GA になる (公式 changelog / docs での明示)
+- `~/.claude/jobs/<id>/state.json` と `daemon/roster.json` のスキーマが public stable と明記される
+- `@<repo>` の解決が `<host>/<owner>/<repo>` のような階層パスに対応する
+- `claude --bg` の標準出力スキーマと `--permission-mode bypassPermissions` / `auto` の非対話受け渡しが解禁される
+- `disableAgentView` を強制する組織でも壊れない fall back 経路が公式に用意される
+- ユーザから「sidebar に `claude --bg` 由来のセッションも出してほしい」「Claude 命名と sidebar の branch 名を揃えてほしい」等の具体的要望が出る

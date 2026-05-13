@@ -32,7 +32,15 @@
 
 ## issues について
 
-GitHub Issues は使わず、`issues/` 以下に markdown で管理する。命名規則・フォーマット・ワークフローの詳細は [issues/CLAUDE.md](issues/CLAUDE.md) を参照。
+issue は **すべて `issues/` 以下の markdown ファイル** で管理する。命名規則・フォーマット・ワークフローの詳細は [issues/CLAUDE.md](issues/CLAUDE.md) を参照。
+
+**禁止事項**:
+
+- ユーザが「issue を追加して」「issue 作って」等と言ったら、**常に `issues/` ディレクトリへの markdown 追加** と解釈する。「GitHub issue を作って」と明示されない限り例外なし。
+- GitHub Issues を作らない。`gh issue create` / `mcp__github__issue_write` などの GitHub Issues 系コマンド・MCP ツールも使わない（`gh pr` / PR 系の MCP は対象外）。
+- GitHub MCP ツールが環境で利用可能でも、issue 操作には呼ばない。
+
+`issues/` 以下のファイルは **1 issue 1 commit** で `issues/SEQUENCE` の +1 と同時にコミットする（[issues/CLAUDE.md](issues/CLAUDE.md) のワークフロー表を参照）。
 
 ## 実装後の動作確認
 

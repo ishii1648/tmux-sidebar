@@ -28,33 +28,40 @@ Model: Opus 4.7
   - **重複セッション検出 → switch-client** (claude agents は claude セッションのみ)
   - **`:<branch>` checkout モード** (既存 branch を idle で開く)
   - **tmux session 名で重複ハンドリング** (`SessionExplicit` 等)
+- **Agent View の dispatch スコープ制約** (公式 docs「特定のディレクトリにディスパッチする」節):
+  - dispatch は「開いたディレクトリ + その直接の子 (`@<repo>` の basename match)」に縛られる
+  - ghq の `<host>/<owner>/<repo>` 3 階層を flat に横断する手段が無い
+  - 結果として「Claude を ghq 配下の任意 repo にディスパッチしたい」ニーズは popup picker でしか満たせない
+  - list 自体は machine-wide (`~/.claude/jobs/` 経由) で見えるが、dispatcher と viewer は分離されている
+- launcher 対称性 (Claude/Codex を同一 UX で扱う) は `tmux-sidebar new` の核心価値。Agent View 側は Claude 専用なので、popup を Codex 専用化すると非対称が生まれる。
 
 ## 対応方針
 
-| 案 | 内容 | メリット | デメリット |
-|---|---|---|---|
-| A. 現状維持 | popup picker は両 launcher を引き続きサポート | 既存ユーザ体験を変えない | 機能重複が増える、ユーザに「どっち使うべき?」を強いる |
-| B. Codex 専用化 | popup picker から Claude launcher 選択肢を消し、Claude は `claude agents` に誘導 | UI 分担が明確、コードがシンプル | Claude ユーザは ghq 経由の repo 選択を失う、`:<branch>` checkout モードも失う |
-| C. Wrapper 化 | Claude 選択時は内部で `claude --bg "@<repo> <prompt>"` 相当を発火 | ghq 列挙 + supervisor 利点の両取り | `@<repo>` 解決が `ghq list -p` 配下のパスと衝突しないか要検証 |
-| D. 差別化を明文化 | spec.md に「popup picker と claude agents の使い分け表」を追記し、両者を並走 | 仕様の交通整理ができる | コードは変わらない (case A と同等) |
+**採用: 案 D — 差別化を spec.md に明文化** (2026-05-13 確定)。
 
-#0008 (Claude launcher を `claude --bg` に寄せる) と方針整合が必要。0008 で「Claude 経路は廃止」を選ぶなら本 issue も自動的に B / C 寄りに倒れる。
+Agent View がリサーチプレビュー段階であること、ghq の 3 階層 namespace を Agent View が解けないこと、launcher 対称性 (Codex 含む) と tmux native 統合の独自価値、`disableAgentView` の組織制約への耐性、これらを総合して **コードは変えず、`docs/spec.md` で「`tmux-sidebar new` = repo 横断 dispatcher、`claude agents` = repo 内 dispatcher」の住み分けを宣言する** に倒す。#0007 / #0008 / #0009 を pending にしたのと整合する「経過観察 + 最低限の衝突回避」方針の一部。
+
+棄却した案:
+
+| 案 | 棄却理由 |
+|---|---|
+| A. 現状維持 (spec 沈黙) | ユーザが「どっち使うべき?」で迷う状態を放置してしまう。最低限の衝突回避としての明文化は必要 |
+| B. Codex 専用化 | ghq 横断 dispatch の手段が消える、launcher 対称性が崩れる、リサーチプレビューに依存する判断になる |
+| C. `claude --bg` の wrapper 化 | `@<repo>` が ghq の `<host>/<owner>/<repo>` を解けない見込みで wrapper として破綻、リサーチプレビューに依存する |
+
+将来 Agent View が GA になり `@<host>/<owner>/<repo>` を解くようになったら本 issue を reopen して再評価する。
 
 ## 変更箇所
 
-B / C を採る場合:
+案 D 採用に伴うコード変更はなし。ドキュメントのみ:
 
-- `internal/picker/picker.go` — Claude launcher 分岐を削除 or `claude --bg` 呼び出しへ
-- `internal/picker/picker_test.go` — Tab toggle のテストを更新
-- `internal/dispatch/dispatch.go` — Claude 経路 (#0008 と連動)
-- `docs/spec.md` の「Popup picker mode」節 — launcher 選択ステップの記述
-- `README.md` の Features 一覧から claude 経路の説明を調整
-- `docs/history.md` — 方針反転として append
+- `docs/spec.md` — 「Agent View との分担」節を新設、`tmux-sidebar new` (= repo 横断 dispatcher) と `claude agents` (= repo 内 dispatcher) の使い分け早見表を追加
+- `README.md` — Features 一覧の Popup picker 説明に「Agent View では出来ない ghq 横断 dispatch を担う」一文を添える (任意、spec への導線として)
+- `docs/history.md` — Agent View 登場時に「ghq 中心構造の再評価を保留し、リサーチプレビュー期間中は経過観察 + 衝突回避に徹する」と append (3 つの pending issue #0007〜#0009 と合わせて、方針を一括記録)
 
 ## 実装チェックリスト
 
-- [ ] #0008 (Claude launcher の去就) と整合する方針を決定
-- [ ] `claude agents` の `@<repo>` 解決ルールが ghq の repo パスを引けるか実機確認
-- [ ] picker に残す独自機能 (`:<branch>` checkout, dim 重複検出, codex) のスペックを再確認
-- [ ] spec.md の Popup picker mode 節を更新
-- [ ] 案 A or D 採用なら spec に「使い分け早見表」を追加
+- [ ] `docs/spec.md` に「Agent View との分担」節を追加 (使い分け早見表、住み分け宣言)
+- [ ] `docs/history.md` に経過観察方針を append (#0007〜#0009 の pending 化と並べて、Agent View 全体への姿勢として記録)
+- [ ] `README.md` の Features 説明を必要に応じて補強
+- [ ] 再評価トリガを spec / history に明記 (Agent View GA、`@<host>/<owner>/<repo>` の階層解決対応、`disableAgentView` の市場浸透度)

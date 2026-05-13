@@ -47,3 +47,13 @@ popup の fire-and-forget 体験 (Enter から <300ms で popup が閉じる、`
 - [ ] 4 案から方針を決定
 - [ ] 必要なら `ClaudeNamer` を差し替え or 削除
 - [ ] `docs/design.md` / `docs/history.md` を更新
+
+## pending 理由
+
+2026-05-13: Agent View はリサーチプレビュー段階で、`claude -p --model <haiku-id>` の安定 ID、エージェントビューが生成した session 名を外部から読む API、いずれも未確定。GA / 安定 API 化を待ってから再評価する。観察ポイント:
+
+- `claude -p --model` のフラグ仕様と Haiku モデル ID が安定したか
+- Agent View が `~/.claude/jobs/<id>/state.json` 等で命名済みの値を public に公開するか
+- 現行の `ClaudeNamer` 経由で観測可能な実害 (`claude -p` のクォータ消費が顕在化する、命名失敗率が上がる、など) が出るか
+
+それまでは現状の `ClaudeNamer` → slugify フォールバックを維持する (#0008 で決めた「Claude launcher 経路を tmux session 内起動のまま残す」方針と整合)。

@@ -56,3 +56,14 @@ Model: Opus 4.7
 - [ ] `tmux-sidebar hook` をすぐ廃止しない (互換期間が必要)
 - [ ] `docs/spec.md` / `docs/design.md` を更新
 - [ ] 方針反転を伴うので `docs/history.md` も更新
+
+## pending 理由
+
+2026-05-13: Agent View はリサーチプレビュー段階で、`~/.claude/jobs/<id>/state.json` のスキーマも `~/.claude/daemon/roster.json` の構造も public な安定 API として保証されていない。現状の hook ベースは Claude / Codex 両 launcher を同一フォーマット (`pane_N`) で扱える launcher 対称性を持ち、リソース衝突もない (#0009 検討で確認: 別ファイル / 別パスなので並存可能)。観察ポイント:
+
+- `~/.claude/jobs/<id>/state.json` のスキーマが changelog で public stable と明記されるか
+- `daemon/roster.json` が外部読み取り用途として公開されるか
+- 「Claude セッションのうち bg 経由で起動されたもの」を sidebar に表示する需要が出るか (現状は tmux pane 内で `claude` を起動するモデルが主なのでニーズが顕在化していない)
+- `CLAUDE_CONFIG_DIR` を変更するユーザからの追従要望
+
+再評価のトリガは「Agent View の GA」+「state.json スキーマの安定アナウンス」。それまでは hook ベースを維持し、Codex 経路と対称に保つ。

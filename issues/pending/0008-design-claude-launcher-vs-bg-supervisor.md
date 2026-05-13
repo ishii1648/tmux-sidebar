@@ -52,3 +52,14 @@ Claude Code v2.1.139+ で **エージェントビュー** が追加され、`cla
 - [ ] 4 案から方針決定
 - [ ] Codex 経路に影響しないことをテストで担保
 - [ ] `docs/{spec,design,history}.md` を更新
+
+## pending 理由
+
+2026-05-13: Agent View はリサーチプレビュー段階。`claude --bg` の出力フォーマット、`--permission-mode` のインタラクティブ受諾制約、auto-worktree のパス規約 (`.claude/worktrees/`)、`disableAgentView` での無効化 — いずれも安定 API として保証されていない。launcher 対称性 (Claude/Codex 両 launcher を同じ UX で扱う)、tmux native との一体感 (`switch-client` / `kill-window` / pin)、ghq 横断 dispatch (#0010 参照) の価値を踏まえ、現状の tmux session 内起動モデルを維持する。観察ポイント:
+
+- `claude --bg` の標準出力スキーマ (現状 `backgrounded · <id>`) が安定するか
+- `--permission-mode bypassPermissions` / `auto` の非対話受け渡しが解禁されるか
+- supervisor 経由のセッションが tmux 側で attach できる経路 (`claude attach <id>`) の互換性
+- `disableAgentView` を強制している組織で fall back する公式パスが用意されるか
+
+再評価のトリガは「Agent View の GA アナウンス」と「`claude --bg` の CLI スキーマが changelog で stable と明記されること」。それまでは現状の tmux session 内 `claude` 起動を維持する。

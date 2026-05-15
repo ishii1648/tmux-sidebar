@@ -3,6 +3,23 @@
 Created: 2026-05-15
 Model: Opus 4.7
 
+## 原因（特定済み）
+
+Claude Code 本体の regression。Anthropic 側で既に issue 化されている: [anthropics/claude-code#58909](https://github.com/anthropics/claude-code/issues/58909) — *"2.1.141: Notification:permission_prompt hook event stops firing during active thinking (regression from 2.1.139)"*。
+
+報告者が 2.1.141 バイナリをリバースして特定した root cause: `permission_prompt` の Notification 発火は 6 秒の user-idle ゲート (`NIK = 6000`) で守られているが、2.1.141 で追加された amber-spinner heartbeat（thinking 10 秒経過時の警告）が同じ control-request 経路を経由して `lastInteractionTime` を都度リセットするため、thinking 中は idle window が永久に閉じず発火に到達しない。
+
+2026-05-16 にこちらで二分検証を実施し regression boundary を確定（下表）:
+
+| Claude Code | `permission_prompt` 発火 |
+|---|---|
+| 2.1.138 | ✅ |
+| 2.1.140 | ✅ |
+| 2.1.141 | ❌（regression 導入） |
+| 2.1.142 | ❌ |
+
+→ tmux-sidebar 側は upstream fix を待ちつつ、版に依存しない fallback 経路（C 案）を別途用意するのが筋。
+
 ## 概要
 
 `docs/spec.md:182-186` は permission/ask 状態のバッジを `💬` で表示すると規定している。これを成立させる前提は、Claude Code が permission UI を出した瞬間に `Notification` hook event (matcher `permission_prompt` / `elicitation_dialog`) を発火し、ユーザの hook が `/tmp/agent-pane-state/pane_N` の 1 行目を `permission` / `ask` に書き換えることである。

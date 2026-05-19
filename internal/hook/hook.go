@@ -99,6 +99,11 @@ func Write(opts Options) error {
 	payload := readPayload(opts.Stdin)
 
 	statusPath := filepath.Join(dir, fmt.Sprintf("pane_%d", num))
+	// Read previous status before overwriting so we can keep
+	// pane_N_started sticky across running→running transitions
+	// (PreToolUse fires once per tool, but elapsed should accumulate
+	// over the whole turn).
+	prevStatus := readStatusLine(statusPath)
 	body := opts.Status + "\n" + kind + "\n"
 	if err := os.WriteFile(statusPath, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", statusPath, err)
@@ -110,9 +115,14 @@ func Write(opts Options) error {
 			now = opts.Now
 		}
 		startedPath := filepath.Join(dir, fmt.Sprintf("pane_%d_started", num))
-		startedBody := strconv.FormatInt(now().Unix(), 10) + "\n"
-		if err := os.WriteFile(startedPath, []byte(startedBody), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", startedPath, err)
+		// Only stamp pane_N_started on the *entry* into running, not on
+		// every PreToolUse during a turn. Otherwise the sidebar's elapsed
+		// timer resets to 0s on every tool call.
+		if prevStatus != string(state.StatusRunning) {
+			startedBody := strconv.FormatInt(now().Unix(), 10) + "\n"
+			if err := os.WriteFile(startedPath, []byte(startedBody), 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", startedPath, err)
+			}
 		}
 
 		// pane_N_path: write only on first running transition so the path
@@ -163,6 +173,18 @@ func paneNumber(paneID string) (int, error) {
 		return 0, fmt.Errorf("parse pane id %q: %w", paneID, err)
 	}
 	return n, nil
+}
+
+// readStatusLine returns the trimmed first line of pane_N (the status word),
+// or "" if the file is missing or empty. Used to detect running→running
+// transitions so pane_N_started stays sticky.
+func readStatusLine(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	return strings.TrimSpace(line)
 }
 
 // readPayload best-effort parses Claude Code hook JSON from stdin. Returns

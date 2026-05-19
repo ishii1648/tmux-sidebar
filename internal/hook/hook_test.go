@@ -41,6 +41,73 @@ func TestWriteRunningClaude(t *testing.T) {
 	}
 }
 
+func TestWriteRunningStickyStarted(t *testing.T) {
+	// Repeated `running` writes (one per PreToolUse hook) must not reset
+	// pane_N_started — the sidebar's elapsed timer is supposed to span the
+	// whole turn, not restart on every tool call.
+	dir := t.TempDir()
+	first := time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC)
+	if err := Write(Options{
+		Status:   "running",
+		PaneID:   "%42",
+		StateDir: dir,
+		Now:      func() time.Time { return first },
+	}); err != nil {
+		t.Fatalf("first Write: %v", err)
+	}
+
+	later := first.Add(30 * time.Second)
+	if err := Write(Options{
+		Status:   "running",
+		PaneID:   "%42",
+		StateDir: dir,
+		Now:      func() time.Time { return later },
+	}); err != nil {
+		t.Fatalf("second Write: %v", err)
+	}
+
+	wantStarted := fmt.Sprintf("%d\n", first.Unix())
+	if got := readFile(t, filepath.Join(dir, "pane_42_started")); got != wantStarted {
+		t.Errorf("pane_42_started after second running write = %q, want %q (sticky on running→running)", got, wantStarted)
+	}
+}
+
+func TestWriteRunningRestampsAfterIdle(t *testing.T) {
+	// idle → running is a fresh turn boundary; pane_N_started should
+	// reflect the new turn's start time.
+	dir := t.TempDir()
+	first := time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC)
+	if err := Write(Options{
+		Status:   "running",
+		PaneID:   "%42",
+		StateDir: dir,
+		Now:      func() time.Time { return first },
+	}); err != nil {
+		t.Fatalf("running#1: %v", err)
+	}
+	if err := Write(Options{
+		Status:   "idle",
+		PaneID:   "%42",
+		StateDir: dir,
+	}); err != nil {
+		t.Fatalf("idle: %v", err)
+	}
+	later := first.Add(5 * time.Minute)
+	if err := Write(Options{
+		Status:   "running",
+		PaneID:   "%42",
+		StateDir: dir,
+		Now:      func() time.Time { return later },
+	}); err != nil {
+		t.Fatalf("running#2: %v", err)
+	}
+
+	wantStarted := fmt.Sprintf("%d\n", later.Unix())
+	if got := readFile(t, filepath.Join(dir, "pane_42_started")); got != wantStarted {
+		t.Errorf("pane_42_started after idle→running = %q, want %q (re-stamped on fresh turn)", got, wantStarted)
+	}
+}
+
 func TestWriteIdleCodex(t *testing.T) {
 	dir := t.TempDir()
 	if err := Write(Options{

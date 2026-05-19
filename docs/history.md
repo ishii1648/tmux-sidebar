@@ -800,6 +800,57 @@ doctor の追加検査:
 
 ---
 
+## PostToolUse hook を retire し turn 境界を Stop に集約（2026-05-19）
+
+### それまでの方針
+
+ADR-063 / setup.md §8 で agent state writer の hook event を `PreToolUse=running` / `PostToolUse=idle` / `Stop=idle` の 3 点で揃えていた。doctor も `requiredClaudeHooks` / `requiredCodexHooks` でこの 3 つを必須として install / upgrade する設計。「tool 実行直前 = running、tool 実行直後 = idle、turn 終了 = idle」というモデルで、tool 単位の細かい粒度を取りに行っていた。
+
+### 反転の動機
+
+issues/0011 で 2.1.142 の `permission_prompt` Notification regression を回避するために Claude Code を 2.1.138 まで downgrade した結果、`PostToolUse → idle` の挙動が user-visible に問題化した:
+
+- Claude は 1 turn 中に複数 tool を連続で呼ぶことが多い（読み込み → 編集 → ビルド → テスト等）
+- 各 tool 終了直後に PostToolUse が発火し、状態ファイルが `idle` を書く
+- しかし Claude は次の tool を準備中で turn 全体としては idle ではない（thinking フェーズ）
+- 結果として sidebar の `🔄` バッジが turn 中に何度も消える / 復帰する flicker が見える
+- `pane_N_started` も `running` の度に上書きされるので elapsed timer が tool 毎に 0 に戻る
+
+「state が安定しない」「アイコンが消える」というユーザ報告の根本原因はこの 2 点。新 Claude Code 版で目立たなかったのは PostToolUse の発火タイミングや stdin の同期性が微妙に違っていた可能性があるが、根本的には PostToolUse=idle 自体が turn level の状態モデルと噛み合っていなかった。
+
+### 採用した方式
+
+- writer (`internal/hook/hook.go`): `running → running` 遷移時には `pane_N_started` を維持し、`idle → running` の新規 turn 境界でのみ epoch を更新する（sticky started）。これで PostToolUse を残したまま動かしても elapsed リセットだけは消える保険にもなる
+- 必須 hook event を `PreToolUse=running` / `Stop=idle` の 2 つに削減（PostToolUse を retire）
+- doctor: `staleEvents = []string{"PostToolUse"}` を導入し、`tmux-sidebar hook ...` が残っている stale event を検出 → `--yes` で purge する（同じ event に共存する Skill matcher 等の独立 hook は保護）
+- setup.md §8 から PostToolUse の例を削除し、retire の理由を「PostToolUse を hook しない理由」コラムで明示
+
+### 採用しなかった代替
+
+| 代替 | 却下理由 |
+|---|---|
+| writer 側で debounce / sticky idle（PostToolUse を残したまま「idle 書き込みを N 秒遅延、次の running で取り消し」する） | reader/writer 間の暗黙的な時間状態が増えて debug しづらい。tmux-sidebar 単体の TUI には timer-driven な「予約された書き込み」概念がない |
+| `UserPromptSubmit=running` / `Stop=idle` の 2 hook 構成にして PreToolUse も外す | tool ベースの粒度が無くなり「Claude が submit したけどまだ tool が走っていない pure thinking フェーズ」が running になる。実害は無いが running の意味が曖昧になる。PreToolUse 残しの方が「実際に tool を実行している」と spec の semantics と一致する |
+| spec を書き換えて idle 表示の bagde を `…` 等で明示し、flicker を「正しい挙動」に位置付ける | 1 turn 中の thinking と turn 終了の idle を sidebar 上で区別する affordance は spec 上存在しない（badge は 4 状態 + 非表示の 5 値）。spec を後退させずに源流を直すべき |
+| Claude Code 側の hook 仕様変更を待つ | upstream に「PostToolUse は thinking の合間に発火するが turn 境界ではない」というドキュメントは既にある。実装ではなく我々の使い方の問題 |
+
+### 影響範囲
+
+- `internal/hook/hook.go`: sticky started ロジックを追加（`readStatusLine` ヘルパ + running 遷移時の prev チェック）
+- `internal/hook/hook_test.go`: `TestWriteRunningStickyStarted` / `TestWriteRunningRestampsAfterIdle` を追加
+- `internal/doctor/doctor.go`: `requiredClaudeHooks` / `requiredCodexHooks` から PostToolUse を削除、`staleEvents` 配列と `isTmuxSidebarHookCmd` / `purgeStaleHooks` を追加、`hookFix.purge` フラグで `applySettingsFixes` を分岐
+- `internal/doctor/doctor_test.go`: 必須 hook 数 / Codex kind mismatch テストを 2 つに、purge を検証する `TestCheckAgentSettings_PurgesStalePostToolUse` を追加
+- `docs/setup.md` §8: 例から PostToolUse を削除、retire 理由のコラムを追加、doctor チェック一覧に「廃止 hook 検出」を追加
+- `~/.claude/settings.json`（dotfiles）: 既存ユーザは `tmux-sidebar doctor --yes` で自動 upgrade されるが、本リポジトリの作業環境では手動で settings.json から `PostToolUse → tmux-sidebar hook idle` を削除済み
+
+### 残課題
+
+- Stop hook が何らかの理由で発火しなかった場合（crash, kill -9, terminal closed, etc.）に状態ファイルが `running` のまま固定される。これは PostToolUse=idle を持っていた頃も `pane_N_started` の epoch が新しいので「直近の tool が長時間 running」と誤認される性質はあったが、現在は turn 全体が running 表示なので影響度がやや大きい。fallback として 10 分以上 running の表示を別バッジ（`⚠`）に降格する等は今後の検討余地（issue を立てる候補）
+- 同じ flicker 問題が Codex CLI にもあるかは未検証。Codex の hook 発火頻度 / 粒度を実機で確認してから判断
+
+
+---
+
 ## サーバ境界制御 / MRU 自動ソートの取り下げ（2026-05-08）
 
 control surface 拡張の初版検討で「採用しない・延期する項目」として TODO.md 末尾の表に列挙していたうち、history.md の他セクションでまだ rationale を残していなかった 2 項目を、TODO.md 廃止に合わせてここに転記する。背景は §105「read-only navigation から control surface への scope 拡張」を参照。

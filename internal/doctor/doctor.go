@@ -65,10 +65,13 @@ func (c checkResult) render() string {
 
 // ── settings.json hook fix ────────────────────────────────────────────────────
 
-// hookFix describes a Claude Code settings.json hook to add.
+// hookFix describes a Claude Code settings.json hook to add — or, when
+// `purge` is set, an event whose `tmux-sidebar hook` entries should be
+// removed without adding anything back (used to retire PostToolUse=idle).
 type hookFix struct {
 	event   string
 	command string
+	purge   bool
 }
 
 // stateRunningCmd / stateIdleCmd return the `tmux-sidebar hook` invocations
@@ -90,12 +93,24 @@ func inlineShellHookSig(cmd string) bool {
 	return strings.Contains(cmd, "pane_${num}") && strings.Contains(cmd, "printf")
 }
 
+// isTmuxSidebarHookCmd reports whether cmd is a `tmux-sidebar hook ...`
+// invocation. Used to find stale entries on retired events (PostToolUse)
+// without disturbing unrelated user hooks on the same event.
+func isTmuxSidebarHookCmd(cmd string) bool {
+	return strings.HasPrefix(strings.TrimSpace(cmd), "tmux-sidebar hook ")
+}
+
 // requiredClaudeHooks lists the Claude Code settings.json hooks doctor
-// maintains. Mirrors setup.md §8: PreToolUse=running, PostToolUse=idle,
-// Stop=idle.
+// maintains. Mirrors setup.md §8: PreToolUse=running, Stop=idle.
+//
+// PostToolUse is intentionally NOT required: it fires after every individual
+// tool call, but Claude is typically still mid-turn (thinking, queueing the
+// next tool). Writing `idle` on PostToolUse causes the sidebar badge to
+// flicker off between tool calls and resets the elapsed timer; the turn-level
+// boundary that the sidebar wants is Stop. Existing `PostToolUse: hook idle`
+// entries are detected and purged by checkAgentSettings / applySettingsFixes.
 var requiredClaudeHooks = []hookFix{
 	{event: "PreToolUse", command: stateRunningCmd()},
-	{event: "PostToolUse", command: stateIdleCmd()},
 	{event: "Stop", command: stateIdleCmd()},
 }
 
@@ -103,9 +118,14 @@ var requiredClaudeHooks = []hookFix{
 // gets `--kind codex` so pane_N's agent line is written correctly.
 var requiredCodexHooks = []hookFix{
 	{event: "PreToolUse", command: "tmux-sidebar hook running --kind codex"},
-	{event: "PostToolUse", command: "tmux-sidebar hook idle --kind codex"},
 	{event: "Stop", command: "tmux-sidebar hook idle --kind codex"},
 }
+
+// staleEvents lists events that doctor used to require but no longer does.
+// Settings carrying a `tmux-sidebar hook ...` invocation on one of these
+// events are flagged for removal so the writer/reader contract matches the
+// current setup.md.
+var staleEvents = []string{"PostToolUse"}
 
 // agentTarget bundles a settings file location with the hooks doctor expects
 // inside it. The same checks (event missing / legacy state dir / inline shell
@@ -265,6 +285,38 @@ func upsertHookGroup(existing json.RawMessage, command string) json.RawMessage {
 // upsertHookGroup so that unrelated existing hooks are preserved.
 func newHookGroupJSON(command string) json.RawMessage {
 	return upsertHookGroup(nil, command)
+}
+
+// purgeStaleHooks drops `tmux-sidebar hook ...` entries (plus the legacy
+// shell snippets) from existing while preserving unrelated user hooks on the
+// same event. Returns nil when nothing should remain on this event so the
+// caller can drop the key entirely.
+func purgeStaleHooks(existing json.RawMessage) json.RawMessage {
+	groups := unmarshalHookGroups(existing)
+	purged := make([]hookGroupJSON, 0, len(groups))
+	for _, g := range groups {
+		var keep []hookEntryJSON
+		for _, h := range g.Hooks {
+			if isTmuxSidebarHookCmd(h.Command) {
+				continue
+			}
+			if strings.Contains(h.Command, legacyStateDir) {
+				continue
+			}
+			if inlineShellHookSig(h.Command) {
+				continue
+			}
+			keep = append(keep, h)
+		}
+		if len(keep) > 0 {
+			purged = append(purged, hookGroupJSON{Matcher: g.Matcher, Hooks: keep})
+		}
+	}
+	if len(purged) == 0 {
+		return nil
+	}
+	data, _ := json.Marshal(purged)
+	return data
 }
 
 // ── tmux.conf parsing ─────────────────────────────────────────────────────────
@@ -495,6 +547,22 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 		return
 	}
 	hooks := getHooksMap(raw)
+
+	for _, ev := range staleEvents {
+		if !hookEventPresent(hooks, ev) {
+			continue
+		}
+		for _, c := range extractHookCommands(hooks, ev) {
+			if isTmuxSidebarHookCmd(c) {
+				results = append(results, checkResult{
+					label: ev, sev: sevWarn,
+					detail: "stale `" + strings.TrimSpace(c) + "` — Claude is mid-turn on " + ev + " and the badge flickers; remove",
+				})
+				fixes = append(fixes, hookFix{event: ev, purge: true})
+				break
+			}
+		}
+	}
 
 	for _, fix := range target.requiredHooks {
 		switch {
@@ -851,6 +919,14 @@ func applySettingsFixes(path string, fixes []hookFix) error {
 	hooks := getHooksMap(raw)
 
 	for _, fix := range fixes {
+		if fix.purge {
+			if v := purgeStaleHooks(hooks[fix.event]); v != nil {
+				hooks[fix.event] = v
+			} else {
+				delete(hooks, fix.event)
+			}
+			continue
+		}
 		hooks[fix.event] = upsertHookGroup(hooks[fix.event], fix.command)
 	}
 

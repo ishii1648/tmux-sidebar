@@ -127,7 +127,9 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 | `pane_N_path` | agent セッションの起動ディレクトリ。サイドバーの Git/PR 表示はこのパスを基準にする |
 | `pane_N_session_id` | agent session の UUID。サイドバー右下の prompt プレビューを引くキーになる |
 
-これらの状態ファイルを書き出すために `tmux-sidebar hook <status>` サブコマンドが用意されています。サブコマンドは `$TMUX_PANE` から pane 番号を取り出し、agent が stdin に渡す JSON ペイロード（`session_id` / `cwd` を共通フィールドとして含む）をパースして `pane_N` / `pane_N_started` / `pane_N_path` / `pane_N_session_id` を一貫した形式で書き出します。`pane_N_path` は最初に `running` に遷移したときだけ書かれ、以降は上書きされません。`<status>` には `running` / `idle` / `permission` / `ask` のいずれかを指定します。
+これらの状態ファイルを書き出すために `tmux-sidebar hook <status>` サブコマンドが用意されています。サブコマンドは `$TMUX_PANE` から pane 番号を取り出し、agent が stdin に渡す JSON ペイロード（`session_id` / `cwd` を共通フィールドとして含む）をパースして `pane_N` / `pane_N_started` / `pane_N_path` / `pane_N_session_id` を一貫した形式で書き出します。`pane_N_path` は最初に `running` に遷移したときだけ書かれ、以降は上書きされません。`pane_N_started` は `running` への新規遷移時のみ更新され、turn 中の連続した `running` 書き込み（PreToolUse が複数 tool で発火する場合）では維持されます。`<status>` には `running` / `idle` / `permission` / `ask` のいずれかを指定します。
+
+> **PostToolUse を hook しない理由**: Claude Code は 1 turn 中に複数 tool を順次呼ぶ。PostToolUse は各 tool 終了直後に発火するが、その時点で Claude は次の tool を準備中（thinking）であり turn 全体としては idle ではない。ここで `idle` を書くと badge が消える瞬間が turn 中に何度も発生し、ユーザは「state が安定しない」と認識する。turn の境界として信頼できるのは `Stop` だけなので、`Stop` に集約する。`tmux-sidebar doctor --yes` は `PostToolUse → tmux-sidebar hook idle` を検出した場合に自動で削除する（同じ event に共存する Skill matcher 等の独立 hook は保護される）。
 
 ### Claude Code
 
@@ -141,14 +143,6 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
         "matcher": "",
         "hooks": [
           { "type": "command", "command": "tmux-sidebar hook running" }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "",
-        "hooks": [
-          { "type": "command", "command": "tmux-sidebar hook idle" }
         ]
       }
     ],
@@ -179,14 +173,6 @@ Codex CLI の hook 設定は `~/.codex/hooks.json` に置きます（`~/.codex/c
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "matcher": "",
-        "hooks": [
-          { "type": "command", "command": "tmux-sidebar hook idle --kind codex" }
-        ]
-      }
-    ],
     "Stop": [
       {
         "matcher": "",
@@ -205,9 +191,10 @@ Codex CLI の hook 設定は `~/.codex/hooks.json` に置きます（`~/.codex/c
 
 `tmux-sidebar doctor` は両 agent の settings ファイルを検査し、以下を報告します：
 
-- 必要な hook event（`PreToolUse` / `PostToolUse` / `Stop`）が未設定 → WARN
+- 必要な hook event（`PreToolUse` / `Stop`）が未設定 → WARN
 - 旧 inline shell 形式が残っている → WARN（`--yes` でサブコマンド形式へ自動置換）
 - legacy state dir (`/tmp/claude-pane-state`) を参照している → WARN（同上）
+- 廃止された `PostToolUse → tmux-sidebar hook idle` が残っている → WARN（同上、同じ event に共存する独立 hook は保護される）
 
 `tmux-sidebar doctor --yes` で auto-fix を実行できます。
 

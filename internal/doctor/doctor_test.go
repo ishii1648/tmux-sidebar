@@ -168,7 +168,8 @@ func TestInlineShellHookSig(t *testing.T) {
 }
 
 func TestRequiredClaudeHooksMatchReadme(t *testing.T) {
-	want := map[string]bool{"PreToolUse": false, "PostToolUse": false, "Stop": false}
+	// PostToolUse was retired: see staleEvents + setup.md §8.
+	want := map[string]bool{"PreToolUse": false, "Stop": false}
 	for _, h := range requiredClaudeHooks {
 		if _, ok := want[h.event]; !ok {
 			t.Errorf("unexpected event in requiredClaudeHooks: %s", h.event)
@@ -189,7 +190,7 @@ func TestRequiredClaudeHooksMatchReadme(t *testing.T) {
 }
 
 func TestRequiredCodexHooksUseKindFlag(t *testing.T) {
-	want := map[string]bool{"PreToolUse": false, "PostToolUse": false, "Stop": false}
+	want := map[string]bool{"PreToolUse": false, "Stop": false}
 	for _, h := range requiredCodexHooks {
 		if _, ok := want[h.event]; !ok {
 			t.Errorf("unexpected event in requiredCodexHooks: %s", h.event)
@@ -703,12 +704,11 @@ func TestCheckAgentSettings_CodexKindMismatch(t *testing.T) {
 	if err := os.MkdirAll(codexDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Each event has a `tmux-sidebar hook` call WITHOUT --kind codex.
+	// Each required event has a `tmux-sidebar hook` call WITHOUT --kind codex.
 	settings := map[string]any{
 		"hooks": map[string]any{
-			"PreToolUse":  []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running"}}}},
-			"PostToolUse": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
-			"Stop":        []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
+			"PreToolUse": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running"}}}},
+			"Stop":       []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
 		},
 	}
 	b, _ := json.Marshal(settings)
@@ -723,8 +723,87 @@ func TestCheckAgentSettings_CodexKindMismatch(t *testing.T) {
 			t.Errorf("expected kind-mismatch warning for %s, got %+v", r.label, r)
 		}
 	}
-	if len(fixes) != 3 {
-		t.Errorf("expected 3 fixes queued, got %d", len(fixes))
+	if len(fixes) != len(requiredCodexHooks) {
+		t.Errorf("expected %d fixes queued, got %d", len(requiredCodexHooks), len(fixes))
+	}
+}
+
+func TestCheckAgentSettings_PurgesStalePostToolUse(t *testing.T) {
+	// PostToolUse=hook idle causes badge flicker mid-turn; doctor should
+	// flag it as stale and queue a purge fix while leaving unrelated hooks
+	// (e.g. a Skill counter script) intact.
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse":  []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running"}}}},
+			"PostToolUse": []map[string]any{
+				{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}},
+				{"matcher": "Skill", "hooks": []map[string]any{{"type": "command", "command": "~/.claude/scripts/skill-counter.sh"}}},
+			},
+			"Stop": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
+		},
+	}
+	b, _ := json.Marshal(settings)
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := agentTarget{kind: "claude", titlePrefix: "Claude", pathFn: claudeSettingsPath, requiredHooks: requiredClaudeHooks}
+	_, fixes := checkAgentSettings(target)
+
+	var purgeFix *hookFix
+	for i := range fixes {
+		if fixes[i].event == "PostToolUse" && fixes[i].purge {
+			purgeFix = &fixes[i]
+		}
+	}
+	if purgeFix == nil {
+		t.Fatalf("expected a purge fix for PostToolUse, got fixes=%+v", fixes)
+	}
+
+	if err := applySettingsFixes(settingsPath, fixes); err != nil {
+		t.Fatalf("applySettingsFixes: %v", err)
+	}
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "tmux-sidebar hook idle") &&
+		strings.Contains(string(data), `"PostToolUse"`) {
+		// We can't grep PostToolUse → hook idle directly without a real parser, but the
+		// Skill entry must survive and the tmux-sidebar hook idle on PostToolUse must
+		// not. Parse and assert structurally.
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatal(err)
+		}
+		hooks := getHooksMap(result)
+		for _, c := range extractHookCommands(hooks, "PostToolUse") {
+			if isTmuxSidebarHookCmd(c) {
+				t.Errorf("PostToolUse still has tmux-sidebar hook entry: %q", c)
+			}
+		}
+	}
+	// The Skill matcher entry should be preserved.
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	hooks := getHooksMap(result)
+	var skillFound bool
+	for _, c := range extractHookCommands(hooks, "PostToolUse") {
+		if strings.Contains(c, "skill-counter") {
+			skillFound = true
+		}
+	}
+	if !skillFound {
+		t.Errorf("Skill matcher entry was dropped from PostToolUse; got: %s", string(data))
 	}
 }
 

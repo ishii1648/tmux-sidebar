@@ -127,3 +127,53 @@ func TestPinnedConfigPath_NotEmpty(t *testing.T) {
 		t.Error("PinnedConfigPath returned empty string (HOME unavailable?)")
 	}
 }
+
+// ── launcher ────────────────────────────────────────────────────────────────
+
+func TestLoadLauncher_EnvWinsOverFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".config", "tmux-sidebar"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".config", "tmux-sidebar", "launcher"), []byte("claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMUX_SIDEBAR_LAUNCHER", "codex")
+	if got := LoadLauncher(); got != "codex" {
+		t.Errorf("LoadLauncher with env=codex, file=claude = %q, want %q", got, "codex")
+	}
+}
+
+func TestLoadLauncher_FileFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("TMUX_SIDEBAR_LAUNCHER", "")
+	if err := os.MkdirAll(filepath.Join(dir, ".config", "tmux-sidebar"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".config", "tmux-sidebar", "launcher"), []byte("  Codex \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadLauncher(); got != "codex" {
+		t.Errorf("LoadLauncher = %q, want %q (file value, normalized)", got, "codex")
+	}
+}
+
+func TestLoadLauncher_UnsetReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("TMUX_SIDEBAR_LAUNCHER", "")
+	if got := LoadLauncher(); got != "" {
+		t.Errorf("LoadLauncher with no env/file = %q, want empty", got)
+	}
+}
+
+func TestLoadLauncher_InvalidIgnored(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("TMUX_SIDEBAR_LAUNCHER", "gemini")
+	if got := LoadLauncher(); got != "" {
+		t.Errorf("LoadLauncher with invalid env = %q, want empty", got)
+	}
+}

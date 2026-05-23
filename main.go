@@ -583,6 +583,7 @@ func runNew(_ []string) error {
 	}
 
 	model := picker.New(repos, openSessionNames, picker.ExecRunner{})
+	model.SetDefaultLauncher(config.LoadLauncher())
 	// No alt-screen: the popup itself owns its terminal canvas; alt-screen
 	// inside a popup leaves stale escape sequences when display-popup tears
 	// it down.

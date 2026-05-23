@@ -101,6 +101,19 @@ func New(repos []repo.Repo, openSessionNames []string, runner Runner) *Model {
 	return m
 }
 
+// SetDefaultLauncher overrides the initial launcher selection. Accepts
+// "claude" or "codex" (case-insensitive). Unknown values are ignored so a
+// stale config file cannot lock the user out of the picker. Tab still flips
+// between the two at runtime regardless of which one started selected.
+func (m *Model) SetDefaultLauncher(name string) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "claude":
+		m.launcher = dispatch.LauncherClaude
+	case "codex":
+		m.launcher = dispatch.LauncherCodex
+	}
+}
+
 // Init implements tea.Model.
 func (m *Model) Init() tea.Cmd { return nil }
 

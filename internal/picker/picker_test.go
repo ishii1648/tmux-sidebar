@@ -183,6 +183,27 @@ func TestPickerDispatchFlowClaude(t *testing.T) {
 	}
 }
 
+func TestPickerSetDefaultLauncher(t *testing.T) {
+	cases := []struct {
+		in   string
+		want dispatch.Launcher
+	}{
+		{"codex", dispatch.LauncherCodex},
+		{"  Claude\n", dispatch.LauncherClaude},
+		{"", dispatch.LauncherClaude},      // unknown → keeps factory default
+		{"gemini", dispatch.LauncherClaude}, // invalid → keeps factory default
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			m := New(sampleRepos(), nil, &fakeRunner{})
+			m.SetDefaultLauncher(tc.in)
+			if m.launcher != tc.want {
+				t.Errorf("SetDefaultLauncher(%q) → launcher=%q, want %q", tc.in, m.launcher, tc.want)
+			}
+		})
+	}
+}
+
 func TestPickerTabTogglesLauncherStepRepo(t *testing.T) {
 	m := New(sampleRepos(), nil, &fakeRunner{})
 	if m.launcher != dispatch.LauncherClaude {

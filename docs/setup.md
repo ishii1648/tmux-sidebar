@@ -221,6 +221,7 @@ Codex CLI の hook 設定は `~/.codex/hooks.json` に置きます（`~/.codex/c
 |---|---|
 | `pinned_sessions` | サイドバー上部に **持ち上げる** session（行順 = 表示順） |
 | `hidden_sessions` | サイドバーから **完全に隠す** session |
+| `launcher` | popup picker (`tmux-sidebar new`) の初期 launcher（`claude` / `codex`、既定 `claude`） |
 
 ### `pinned_sessions`
 
@@ -248,6 +249,17 @@ tmux-sidebar
 scratch
 tmw-popup
 ```
+
+### `launcher`
+
+popup picker を開いたときに最初に選択されている launcher を固定する。`Tab` で実行時に切り替えられる点は変わらない。普段 codex を主に使うなら以下のように書いておくと毎回 `Tab` を押さなくて済む。
+
+```
+# ~/.config/tmux-sidebar/launcher
+codex
+```
+
+ワンショットで上書きしたい場合は環境変数 `TMUX_SIDEBAR_LAUNCHER=codex tmux-sidebar new` も使える（環境変数 > ファイル > 既定 `claude` の順）。不正な値は無視される。
 
 ### 反映タイミング
 

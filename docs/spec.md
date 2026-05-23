@@ -193,6 +193,7 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 |---|---|
 | `hidden_sessions` | 表示しない session 名 |
 | `pinned_sessions` | pin する session 名（行順 = 表示順） |
+| `launcher` | popup picker (`tmux-sidebar new`) の初期 launcher 選択。`claude` または `codex` を 1 行で記述（既定: `claude`）。`Tab` で実行時にいつでも切り替えられる。`TMUX_SIDEBAR_LAUNCHER` が優先される。不正値は無視され既定にフォールバック |
 
 設定方法・記述例は [docs/setup.md](setup.md) を参照。
 
@@ -223,6 +224,7 @@ dispatch / popup picker のフローはローカルの CLI を直接呼び出す
 | `TMUX_SIDEBAR_STATE_DIR` | state file directory（既定 `/tmp/agent-pane-state`） |
 | `TMUX_SIDEBAR_WIDTH` | sidebar 幅（列数、既定 `40`、最小 `20`） |
 | `TMUX_SIDEBAR_NO_ALT_SCREEN` | 設定で alt-screen 無効化（E2E 用） |
+| `TMUX_SIDEBAR_LAUNCHER` | popup picker の初期 launcher (`claude` / `codex`、既定 `claude`)。`launcher` config file より優先 |
 
 ## Subcommands
 

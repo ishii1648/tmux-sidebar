@@ -47,6 +47,46 @@ func WidthConfigPath() string {
 	return filepath.Join(home, ".config", "tmux-sidebar", "width")
 }
 
+// LauncherConfigPath returns the path to the default-launcher config file.
+// Example: ~/.config/tmux-sidebar/launcher
+func LauncherConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "tmux-sidebar", "launcher")
+}
+
+// LoadLauncher returns the default picker launcher ("claude" or "codex"),
+// resolved from TMUX_SIDEBAR_LAUNCHER (env) or ~/.config/tmux-sidebar/launcher
+// (file). Returns "" when unset or invalid so callers can fall back to their
+// own default. Comparison is case-insensitive; surrounding whitespace is
+// trimmed.
+func LoadLauncher() string {
+	if v := normalizeLauncher(os.Getenv("TMUX_SIDEBAR_LAUNCHER")); v != "" {
+		return v
+	}
+	path := LauncherConfigPath()
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return normalizeLauncher(string(data))
+}
+
+func normalizeLauncher(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "claude":
+		return "claude"
+	case "codex":
+		return "codex"
+	}
+	return ""
+}
+
 // Config holds the per-machine configuration for tmux-sidebar.
 type Config struct {
 	// HiddenSessions is a set of session names to exclude from the sidebar.

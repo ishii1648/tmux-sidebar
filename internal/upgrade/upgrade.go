@@ -122,7 +122,17 @@ func Run(currentVersion string) error {
 // fetchLatestRelease queries the GitHub API for the latest release.
 func fetchLatestRelease() (*githubRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", repoOwner, repoName)
-	resp, err := http.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "tmux-sidebar")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token := githubToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +147,15 @@ func fetchLatestRelease() (*githubRelease, error) {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return &release, nil
+}
+
+// githubToken returns the GitHub auth token from the environment, preferring
+// GITHUB_TOKEN over GH_TOKEN. Returns "" when neither is set.
+func githubToken() string {
+	if t := os.Getenv("GITHUB_TOKEN"); t != "" {
+		return t
+	}
+	return os.Getenv("GH_TOKEN")
 }
 
 // downloadToTemp downloads the given URL into a temporary file and returns its path.

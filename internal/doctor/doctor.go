@@ -69,6 +69,7 @@ func (c checkResult) render() string {
 type hookFix struct {
 	event   string
 	command string
+	remove  bool
 }
 
 // stateRunningCmd / stateIdleCmd return the `tmux-sidebar hook` invocations
@@ -99,11 +100,12 @@ var requiredClaudeHooks = []hookFix{
 	{event: "Stop", command: stateIdleCmd()},
 }
 
-// requiredCodexHooks: same events / semantics as Claude, but the subcommand
-// gets `--kind codex` so pane_N's agent line is written correctly.
+// requiredCodexHooks: Codex keeps running until Stop. A PostToolUse idle hook
+// flickers the sidebar while Codex is still mid-turn, so doctor removes stale
+// PostToolUse idle hooks separately instead of requiring one.
 var requiredCodexHooks = []hookFix{
 	{event: "PreToolUse", command: "tmux-sidebar hook running --kind codex"},
-	{event: "PostToolUse", command: "tmux-sidebar hook idle --kind codex"},
+	{event: "PermissionRequest", command: "tmux-sidebar hook permission --kind codex"},
 	{event: "Stop", command: "tmux-sidebar hook idle --kind codex"},
 }
 
@@ -257,6 +259,30 @@ func upsertHookGroup(existing json.RawMessage, command string) json.RawMessage {
 		Hooks:   []hookEntryJSON{{Type: "command", Command: command}},
 	})
 	data, _ := json.Marshal(purged)
+	return data
+}
+
+// removeHookCommand removes one command from a hook event while preserving
+// unrelated hooks. It returns nil when the event has no hooks left.
+func removeHookCommand(existing json.RawMessage, command string) json.RawMessage {
+	groups := unmarshalHookGroups(existing)
+	var keptGroups []hookGroupJSON
+	for _, g := range groups {
+		var keptHooks []hookEntryJSON
+		for _, h := range g.Hooks {
+			if strings.TrimSpace(h.Command) == strings.TrimSpace(command) {
+				continue
+			}
+			keptHooks = append(keptHooks, h)
+		}
+		if len(keptHooks) > 0 {
+			keptGroups = append(keptGroups, hookGroupJSON{Matcher: g.Matcher, Hooks: keptHooks})
+		}
+	}
+	if len(keptGroups) == 0 {
+		return nil
+	}
+	data, _ := json.Marshal(keptGroups)
 	return data
 }
 
@@ -548,7 +574,25 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 			}
 		}
 	}
+	if target.kind == "codex" && fileExists {
+		for _, command := range extractHookCommands(hooks, "PostToolUse") {
+			if !isStaleCodexPostToolUse(command) {
+				continue
+			}
+			results = append(results, checkResult{
+				label:  "PostToolUse",
+				sev:    sevWarn,
+				detail: "stale `" + command + "` — Codex is still mid-turn on PostToolUse; remove to avoid badge flicker",
+			})
+			fixes = append(fixes, hookFix{event: "PostToolUse", command: command, remove: true})
+		}
+	}
 	return
+}
+
+func isStaleCodexPostToolUse(command string) bool {
+	c := strings.TrimSpace(command)
+	return c == "tmux-sidebar hook idle" || c == "tmux-sidebar hook idle --kind codex"
 }
 
 // checkLegacyClaudeHooks emits an info line when a stale UserPromptSubmit hook
@@ -851,6 +895,15 @@ func applySettingsFixes(path string, fixes []hookFix) error {
 	hooks := getHooksMap(raw)
 
 	for _, fix := range fixes {
+		if fix.remove {
+			updated := removeHookCommand(hooks[fix.event], fix.command)
+			if updated == nil {
+				delete(hooks, fix.event)
+			} else {
+				hooks[fix.event] = updated
+			}
+			continue
+		}
 		hooks[fix.event] = upsertHookGroup(hooks[fix.event], fix.command)
 	}
 
@@ -971,10 +1024,14 @@ func Run(autoApply bool) error {
 	for _, p := range pending {
 		totalFixes += len(p.fixes)
 	}
-	fmt.Printf("%d agent hook(s) to add or upgrade:\n", totalFixes)
+	fmt.Printf("%d agent hook change(s) to apply:\n", totalFixes)
 	for _, p := range pending {
 		for _, fix := range p.fixes {
-			fmt.Printf("  + [%s] %s\n", p.target.kind, fix.event)
+			prefix := "+"
+			if fix.remove {
+				prefix = "-"
+			}
+			fmt.Printf("  %s [%s] %s\n", prefix, p.target.kind, fix.event)
 		}
 	}
 	fmt.Println()

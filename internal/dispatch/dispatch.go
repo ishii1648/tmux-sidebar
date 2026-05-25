@@ -15,6 +15,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,6 +23,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ishii1648/tmux-sidebar/internal/hook"
+	"github.com/ishii1648/tmux-sidebar/internal/state"
 )
 
 // Launcher is the agent runtime to start in the new pane.
@@ -242,6 +246,11 @@ func Launch(opts Options, namer Namer) (*Result, error) {
 
 	windowIndex := readWindowIndex(paneID)
 
+	// Make the sidebar show the launcher tag as soon as the pane exists.
+	// Agent hooks will refine the state later; this initial write covers the
+	// startup gap before the first hook can fire.
+	_ = writeInitialPaneState(paneID, workDir, opts.Launcher, opts.NoPrompt)
+
 	// Switch the calling client before the codex wait below — otherwise
 	// `waitForAttachedClient` polls forever (no client is on this brand-new
 	// session yet). See ADR-065: codex needs the OSC 11 background-color
@@ -438,6 +447,33 @@ func sendLauncherKeys(paneID, workDir, promptFile string, launcher Launcher, noP
 		return fmt.Errorf("unsupported launcher: %s", launcher)
 	}
 	return exec.Command("tmux", "send-keys", "-t", paneID, line, "Enter").Run()
+}
+
+func writeInitialPaneState(paneID, workDir string, launcher Launcher, noPrompt bool) error {
+	kind := string(launcher)
+	switch launcher {
+	case LauncherClaude, LauncherCodex:
+	default:
+		return fmt.Errorf("unsupported launcher: %s", launcher)
+	}
+
+	status := string(state.StatusRunning)
+	if noPrompt {
+		status = string(state.StatusIdle)
+	}
+
+	payload, err := json.Marshal(struct {
+		Cwd string `json:"cwd"`
+	}{Cwd: workDir})
+	if err != nil {
+		return err
+	}
+	return hook.Write(hook.Options{
+		Status: status,
+		Kind:   kind,
+		PaneID: paneID,
+		Stdin:  strings.NewReader(string(payload)),
+	})
 }
 
 // shellQuote single-quotes s and escapes embedded single quotes. Inputs are

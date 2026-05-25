@@ -179,11 +179,11 @@ Codex CLI の hook 設定は `~/.codex/hooks.json` に置きます（`~/.codex/c
         ]
       }
     ],
-    "PostToolUse": [
+    "PermissionRequest": [
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "tmux-sidebar hook idle --kind codex" }
+          { "type": "command", "command": "tmux-sidebar hook permission --kind codex" }
         ]
       }
     ],
@@ -199,13 +199,16 @@ Codex CLI の hook 設定は `~/.codex/hooks.json` に置きます（`~/.codex/c
 }
 ```
 
+`PermissionRequest` は Codex が承認待ちで止まった時に `permission` を書き、sidebar では `💬` として表示されます。`PostToolUse` で `idle` に戻す設定は入れません。Codex は tool 実行後も応答生成中のことがあり、この時点で idle にすると sidebar の running バッジが一瞬消えます。
+
 > Codex CLI は `~/.codex/hooks.json`（user-level）と `<repo>/.codex/hooks.json`（project-level、要 trust）を両方読み込みます。両方の event protocol（stdin の `session_id` / `cwd`）は Claude Code と共通です。
 
 ### doctor による自動チェック
 
 `tmux-sidebar doctor` は両 agent の settings ファイルを検査し、以下を報告します：
 
-- 必要な hook event（`PreToolUse` / `PostToolUse` / `Stop`）が未設定 → WARN
+- 必要な hook event（Claude: `PreToolUse` / `PostToolUse` / `Stop`, Codex: `PreToolUse` / `PermissionRequest` / `Stop`）が未設定 → WARN
+- Codex の stale な `PostToolUse` idle hook が残っている → WARN（`--yes` で削除）
 - 旧 inline shell 形式が残っている → WARN（`--yes` でサブコマンド形式へ自動置換）
 - legacy state dir (`/tmp/claude-pane-state`) を参照している → WARN（同上）
 

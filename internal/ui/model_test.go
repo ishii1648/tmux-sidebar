@@ -379,7 +379,7 @@ func TestView_ContainsStateBadges(t *testing.T) {
 	elapsed := 3 * time.Minute
 	runState := state.PaneState{Status: state.StatusRunning, Elapsed: elapsed}
 	idleState := state.PaneState{Status: state.StatusIdle}
-	permState := state.PaneState{Status: state.StatusPermission}
+	permState := state.PaneState{Status: state.StatusPermission, Agent: state.AgentCodex}
 	askState := state.PaneState{Status: state.StatusAsk}
 
 	items := []ListItem{
@@ -401,6 +401,9 @@ func TestView_ContainsStateBadges(t *testing.T) {
 	permCount := strings.Count(view, "💬")
 	if permCount < 2 {
 		t.Errorf("View should contain at least 2 💬 badges (permission + ask), got %d:\n%s", permCount, view)
+	}
+	if !strings.Contains(view, "[x]💬") {
+		t.Errorf("Codex permission state should render as [x]💬:\n%s", view)
 	}
 }
 
@@ -858,8 +861,8 @@ func TestWrapText_EmptyAndNewlines(t *testing.T) {
 }
 
 func TestBreakWord_SplitsAtBoundary(t *testing.T) {
-	word := "あいうえおかきくけこ" // 10 chars = 20 visual cols
-	lines := breakWord(word, 10)     // max 5 chars per line
+	word := "あいうえおかきくけこ"         // 10 chars = 20 visual cols
+	lines := breakWord(word, 10) // max 5 chars per line
 	if len(lines) != 2 {
 		t.Fatalf("expected 2 lines, got %d: %v", len(lines), lines)
 	}

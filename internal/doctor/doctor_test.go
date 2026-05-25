@@ -139,6 +139,25 @@ func TestUpsertHookGroup_NoDuplicate(t *testing.T) {
 	}
 }
 
+func TestRemoveHookCommand_PreservesUnrelated(t *testing.T) {
+	existing := json.RawMessage(`[{"matcher":"","hooks":[{"type":"command","command":"tmux-sidebar hook idle --kind codex"},{"type":"command","command":"echo keep"}]}]`)
+	out := removeHookCommand(existing, "tmux-sidebar hook idle --kind codex")
+	groups := unmarshalHookGroups(out)
+	if len(groups) != 1 || len(groups[0].Hooks) != 1 {
+		t.Fatalf("expected one unrelated hook to remain, got %s", string(out))
+	}
+	if got := groups[0].Hooks[0].Command; got != "echo keep" {
+		t.Errorf("remaining command = %q, want echo keep", got)
+	}
+}
+
+func TestRemoveHookCommand_DropsEmptyEvent(t *testing.T) {
+	existing := json.RawMessage(`[{"matcher":"","hooks":[{"type":"command","command":"tmux-sidebar hook idle --kind codex"}]}]`)
+	if out := removeHookCommand(existing, "tmux-sidebar hook idle --kind codex"); out != nil {
+		t.Errorf("expected nil when all hooks are removed, got %s", string(out))
+	}
+}
+
 // ── stateRunningCmd / stateIdleCmd ────────────────────────────────────────────
 
 func TestStateCommandsAreSubcommand(t *testing.T) {
@@ -189,7 +208,7 @@ func TestRequiredClaudeHooksMatchReadme(t *testing.T) {
 }
 
 func TestRequiredCodexHooksUseKindFlag(t *testing.T) {
-	want := map[string]bool{"PreToolUse": false, "PostToolUse": false, "Stop": false}
+	want := map[string]bool{"PreToolUse": false, "PermissionRequest": false, "Stop": false}
 	for _, h := range requiredCodexHooks {
 		if _, ok := want[h.event]; !ok {
 			t.Errorf("unexpected event in requiredCodexHooks: %s", h.event)
@@ -706,9 +725,9 @@ func TestCheckAgentSettings_CodexKindMismatch(t *testing.T) {
 	// Each event has a `tmux-sidebar hook` call WITHOUT --kind codex.
 	settings := map[string]any{
 		"hooks": map[string]any{
-			"PreToolUse":  []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running"}}}},
-			"PostToolUse": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
-			"Stop":        []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
+			"PreToolUse":        []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running"}}}},
+			"PermissionRequest": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook permission"}}}},
+			"Stop":              []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle"}}}},
 		},
 	}
 	b, _ := json.Marshal(settings)
@@ -728,13 +747,61 @@ func TestCheckAgentSettings_CodexKindMismatch(t *testing.T) {
 	}
 }
 
+func TestCheckAgentSettings_CodexStalePostToolUseQueuedForRemoval(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	codexDir := filepath.Join(dir, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse":        []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running --kind codex"}}}},
+			"PermissionRequest": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook permission --kind codex"}}}},
+			"PostToolUse":       []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle --kind codex"}}}},
+			"Stop":              []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle --kind codex"}}}},
+		},
+	}
+	b, _ := json.Marshal(settings)
+	path := filepath.Join(codexDir, "hooks.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := agentTarget{kind: "codex", titlePrefix: "Codex", pathFn: codexSettingsPath, requiredHooks: requiredCodexHooks}
+	results, fixes := checkAgentSettings(target)
+	var stale checkResult
+	for _, r := range results {
+		if r.label == "PostToolUse" {
+			stale = r
+		}
+	}
+	if stale.sev != sevWarn || !strings.Contains(stale.detail, "stale") {
+		t.Fatalf("expected stale PostToolUse warning, got %+v", stale)
+	}
+	if len(fixes) != 1 || !fixes[0].remove || fixes[0].event != "PostToolUse" {
+		t.Fatalf("expected one remove fix for PostToolUse, got %+v", fixes)
+	}
+
+	if err := applySettingsFixes(path, fixes); err != nil {
+		t.Fatalf("applySettingsFixes: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "PostToolUse") {
+		t.Errorf("PostToolUse should be removed, got %s", string(data))
+	}
+}
+
 // ── tmux version parsing ─────────────────────────────────────────────────────
 
 func TestParseTmuxVersion(t *testing.T) {
 	cases := []struct {
-		in        string
-		maj, min  int
-		ok        bool
+		in       string
+		maj, min int
+		ok       bool
 	}{
 		{"tmux 3.4", 3, 4, true},
 		{"tmux 3.2a", 3, 2, true},

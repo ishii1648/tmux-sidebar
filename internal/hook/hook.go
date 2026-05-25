@@ -99,20 +99,23 @@ func Write(opts Options) error {
 	payload := readPayload(opts.Stdin)
 
 	statusPath := filepath.Join(dir, fmt.Sprintf("pane_%d", num))
+	prevStatus := readExistingStatus(statusPath)
 	body := opts.Status + "\n" + kind + "\n"
 	if err := os.WriteFile(statusPath, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", statusPath, err)
 	}
 
 	if opts.Status == string(state.StatusRunning) {
-		now := time.Now
-		if opts.Now != nil {
-			now = opts.Now
-		}
 		startedPath := filepath.Join(dir, fmt.Sprintf("pane_%d_started", num))
-		startedBody := strconv.FormatInt(now().Unix(), 10) + "\n"
-		if err := os.WriteFile(startedPath, []byte(startedBody), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", startedPath, err)
+		if prevStatus != state.StatusRunning || !fileExists(startedPath) {
+			now := time.Now
+			if opts.Now != nil {
+				now = opts.Now
+			}
+			startedBody := strconv.FormatInt(now().Unix(), 10) + "\n"
+			if err := os.WriteFile(startedPath, []byte(startedBody), 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", startedPath, err)
+			}
 		}
 
 		// pane_N_path: write only on first running transition so the path
@@ -148,6 +151,25 @@ func Write(opts Options) error {
 	}
 
 	return nil
+}
+
+func readExistingStatus(path string) state.Status {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return state.StatusUnknown
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	switch state.Status(strings.TrimSpace(line)) {
+	case state.StatusRunning, state.StatusIdle, state.StatusPermission, state.StatusAsk:
+		return state.Status(strings.TrimSpace(line))
+	default:
+		return state.StatusUnknown
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // paneNumber strips the leading "%" from a tmux pane id and returns the

@@ -59,6 +59,58 @@ func TestWriteIdleCodex(t *testing.T) {
 	}
 }
 
+func TestWriteRunningDoesNotResetStartedWhenAlreadyRunning(t *testing.T) {
+	dir := t.TempDir()
+	startedPath := filepath.Join(dir, "pane_8_started")
+	if err := os.WriteFile(filepath.Join(dir, "pane_8"), []byte("running\ncodex\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(startedPath, []byte("100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Unix(200, 0)
+	if err := Write(Options{
+		Status:   "running",
+		Kind:     "codex",
+		PaneID:   "%8",
+		StateDir: dir,
+		Now:      func() time.Time { return now },
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if got := readFile(t, startedPath); got != "100\n" {
+		t.Errorf("pane_8_started = %q, want original timestamp", got)
+	}
+}
+
+func TestWriteRunningResetsStartedAfterIdle(t *testing.T) {
+	dir := t.TempDir()
+	startedPath := filepath.Join(dir, "pane_8_started")
+	if err := os.WriteFile(filepath.Join(dir, "pane_8"), []byte("idle\ncodex\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(startedPath, []byte("100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Unix(200, 0)
+	if err := Write(Options{
+		Status:   "running",
+		Kind:     "codex",
+		PaneID:   "%8",
+		StateDir: dir,
+		Now:      func() time.Time { return now },
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if got := readFile(t, startedPath); got != "200\n" {
+		t.Errorf("pane_8_started = %q, want refreshed timestamp", got)
+	}
+}
+
 func TestWritePathWriteOnce(t *testing.T) {
 	dir := t.TempDir()
 	pathFile := filepath.Join(dir, "pane_3_path")

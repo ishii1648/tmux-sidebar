@@ -1863,3 +1863,42 @@ func TestHasFreshSession(t *testing.T) {
 		t.Errorf("hasFreshSession(nil) should be false")
 	}
 }
+
+// ── gitDataMsg eviction ───────────────────────────────────────────────────────
+
+// A window whose path no longer resolves (deleted worktree) is listed in
+// gitDataMsg.stale and must be evicted, while filtered-out windows that were
+// never re-fetched (absent from both data and stale) keep their cached entry.
+func TestGitDataMsg_EvictsStaleAndKeepsFilteredOut(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.gitData["@1"] = gitInfo{branch: "feat/x", prState: "draft", prNumber: 12} // will go stale
+	m.gitData["@2"] = gitInfo{branch: "feat/y", prState: "open", prNumber: 34}  // filtered-out, untouched
+
+	m.Update(gitDataMsg{
+		data:  map[string]gitInfo{}, // @1 fetch failed (path gone), so no fresh data
+		stale: []string{"@1"},
+	})
+
+	if _, ok := m.gitData["@1"]; ok {
+		t.Errorf("@1 should be evicted from gitData when listed as stale")
+	}
+	if got, ok := m.gitData["@2"]; !ok || got.prNumber != 34 {
+		t.Errorf("@2 (filtered-out) should be preserved, got %+v ok=%v", got, ok)
+	}
+}
+
+// A fresh fetch overwrites the cached entry even if the same window was
+// previously cached with a different PR state.
+func TestGitDataMsg_FreshDataOverwrites(t *testing.T) {
+	m := newTestModel(sampleItems(), 1, true)
+	m.gitData["@1"] = gitInfo{branch: "feat/x", prState: "open", prNumber: 12}
+
+	m.Update(gitDataMsg{
+		data:  map[string]gitInfo{"@1": {branch: "feat/x", prState: "merged", prNumber: 12}},
+		stale: nil,
+	})
+
+	if got := m.gitData["@1"]; got.prState != "merged" {
+		t.Errorf("@1 prState = %q, want merged", got.prState)
+	}
+}

@@ -337,6 +337,7 @@ sidebar は tmux 標準のキーバインドを上書きしない。`prefix+s`, 
 - tmux hook が未設定でも基本表示は動くが、window/session 変更の反映は最大 10 秒遅れる
 - `client-resized` hook の幅値と runtime config の幅値は自動同期されない
 - `gh pr view` は環境の GitHub 認証状態に依存する
+- PR バッジの `gitData` キャッシュは visible window のみ更新する（merge 方式）。pane の cwd が解決できなくなった（worktree 削除等）visible window はキャッシュから掃除し、stale なバッジを残さない
 - prompt preview は `pane_N_session_id` と transcript 実体（index 経由 or projects walk fallback で解決）が両方揃った場合のみ
 - 完全な undo close は提供しない（kill 直前 confirm + scrollback 退避 path 通知のみ）
 - popup picker は tmux popup の機能に依存する（tmux 3.2 以上）

@@ -146,8 +146,12 @@ type switchWindowMsg struct {
 type gitTickMsg time.Time
 
 // gitDataMsg carries refreshed git/PR info for all visible windows.
+// stale lists visible window IDs whose path could no longer be resolved
+// (e.g. the worktree was deleted after a merge); their cached entries are
+// dropped so a stale PR badge does not linger indefinitely.
 type gitDataMsg struct {
-	data map[string]gitInfo // keyed by window ID
+	data  map[string]gitInfo // keyed by window ID
+	stale []string           // window IDs to evict from gitData
 }
 
 // killResultMsg is sent after a kill-window/kill-session attempt finishes.
@@ -462,6 +466,7 @@ func (m *Model) loadGitInfo() tea.Cmd {
 	oldData := m.gitData // snapshot for branch comparison
 	return func() tea.Msg {
 		data := make(map[string]gitInfo)
+		var stale []string
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 
@@ -473,15 +478,21 @@ func (m *Model) loadGitInfo() tea.Cmd {
 			go func(item ListItem) {
 				defer wg.Done()
 				info := fetchGitInfo(client, item, oldData[item.Window.ID])
+				mu.Lock()
 				if info.branch != "" || info.prNumber != 0 {
-					mu.Lock()
 					data[item.Window.ID] = info
-					mu.Unlock()
+				} else {
+					// Path no longer resolves (deleted worktree, dead repo).
+					// Mark for eviction so a previously cached PR badge does
+					// not linger. Filtered-out windows are never visited here,
+					// so their cached data stays intact.
+					stale = append(stale, item.Window.ID)
 				}
+				mu.Unlock()
 			}(item)
 		}
 		wg.Wait()
-		return gitDataMsg{data: data}
+		return gitDataMsg{data: data, stale: stale}
 	}
 }
 
@@ -711,6 +722,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// so a full replace would discard PR data for filtered-out windows.
 		for k, v := range msg.data {
 			m.gitData[k] = v
+		}
+		// Evict windows whose path no longer resolves (e.g. worktree deleted
+		// after a merge) so a stale PR badge does not linger indefinitely.
+		for _, k := range msg.stale {
+			delete(m.gitData, k)
 		}
 		return m, nil
 

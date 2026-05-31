@@ -227,6 +227,12 @@ func extractHookCommands(hooks map[string]json.RawMessage, event string) []strin
 	return cmds
 }
 
+// normalizeCmd collapses runs of whitespace so two hook commands that differ
+// only in spacing compare equal.
+func normalizeCmd(cmd string) string {
+	return strings.Join(strings.Fields(cmd), " ")
+}
+
 // hookCmdParts parses a `tmux-sidebar hook <status> [--kind K] [flags]`
 // command into its (status, kind) identity. kind defaults to "claude" when
 // unspecified, mirroring hook.Write. ok is false for commands that are not a
@@ -590,13 +596,15 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 				if inlineShellHookSig(c) {
 					inlineShell = true
 				}
-				// Detect a `tmux-sidebar hook` call that doesn't match the
-				// canonical command for this event — either the wrong agent
-				// kind (e.g. Codex settings carrying `hook running` without
-				// --kind codex) or a stale flag set (e.g. Stop on `hook idle`
-				// without --reset). Doctor treats both as upgradable so pane_N
-				// and the running elapsed clock end up correct.
-				if strings.Contains(c, "tmux-sidebar hook") && !strings.Contains(c, fix.command) {
+				// Detect a `tmux-sidebar hook` call that isn't byte-for-byte the
+				// canonical command for this event (modulo whitespace) — wrong
+				// agent kind (e.g. Codex `hook running` without --kind codex), a
+				// missing flag (Stop without --reset), or a stray flag (a --reset
+				// that leaked onto PostToolUse, which would clear pane_N_started
+				// every tool and reintroduce the elapsed reset). A loose
+				// substring check would miss the stray-flag case, so compare the
+				// normalized forms exactly.
+				if _, _, ok := hookCmdParts(c); ok && normalizeCmd(c) != normalizeCmd(fix.command) {
 					subcommandMismatch = true
 				}
 			}
@@ -640,9 +648,14 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 	return
 }
 
+// isStaleCodexPostToolUse reports whether a Codex PostToolUse command writes
+// idle. Codex stays mid-turn after a tool, so any `tmux-sidebar hook idle`
+// here is stale regardless of kind or flags — including a stray `--reset`,
+// which would additionally clear pane_N_started every tool. Match by parsed
+// status so flag/kind variants don't slip through an exact-string check.
 func isStaleCodexPostToolUse(command string) bool {
-	c := strings.TrimSpace(command)
-	return c == "tmux-sidebar hook idle" || c == "tmux-sidebar hook idle --kind codex"
+	status, _, ok := hookCmdParts(command)
+	return ok && status == string(state.StatusIdle)
 }
 
 // checkLegacyClaudeHooks emits an info line when a stale UserPromptSubmit hook

@@ -797,6 +797,78 @@ func TestCheckAgentSettings_CodexKindMismatch(t *testing.T) {
 	}
 }
 
+// A stray --reset on Claude PostToolUse would clear pane_N_started every tool
+// and reintroduce the elapsed reset. The loose substring check missed it; the
+// normalized exact compare must flag it and auto-fix replaces it cleanly.
+func TestCheckAgentSettings_ClaudeStrayResetOnPostToolUse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse":  []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateRunningCmd()}}}},
+			"PostToolUse": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle --reset"}}}},
+			"Stop":        []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateStopCmd()}}}},
+		},
+	}
+	b, _ := json.Marshal(settings)
+	path := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := agentTarget{kind: "claude", titlePrefix: "Claude", pathFn: claudeSettingsPath, requiredHooks: requiredClaudeHooks}
+	results, fixes := checkAgentSettings(target)
+	var post checkResult
+	for _, r := range results {
+		if r.label == "PostToolUse" {
+			post = r
+		}
+	}
+	if post.sev != sevWarn || !strings.Contains(post.detail, "subcommand mismatch") {
+		t.Fatalf("expected PostToolUse mismatch warning, got %+v", post)
+	}
+	if len(fixes) != 1 || fixes[0].event != "PostToolUse" || fixes[0].remove {
+		t.Fatalf("expected one PostToolUse upgrade fix, got %+v", fixes)
+	}
+
+	if err := applySettingsFixes(path, fixes); err != nil {
+		t.Fatalf("applySettingsFixes: %v", err)
+	}
+	raw, _ := readRawSettings(path)
+	cmds := extractHookCommands(getHooksMap(raw), "PostToolUse")
+	if len(cmds) != 1 || cmds[0] != stateIdleCmd() {
+		t.Fatalf("PostToolUse should be exactly [%q], got %v", stateIdleCmd(), cmds)
+	}
+}
+
+func TestIsStaleCodexPostToolUse(t *testing.T) {
+	stale := []string{
+		"tmux-sidebar hook idle",
+		"tmux-sidebar hook idle --kind codex",
+		"tmux-sidebar hook idle --kind codex --reset",
+		"tmux-sidebar hook idle --reset",
+	}
+	for _, c := range stale {
+		if !isStaleCodexPostToolUse(c) {
+			t.Errorf("expected %q to be stale", c)
+		}
+	}
+	notStale := []string{
+		"tmux-sidebar hook running --kind codex",
+		"echo hello",
+		"agent-telemetry hook stop",
+	}
+	for _, c := range notStale {
+		if isStaleCodexPostToolUse(c) {
+			t.Errorf("expected %q NOT to be stale", c)
+		}
+	}
+}
+
 func TestCheckAgentSettings_CodexStalePostToolUseQueuedForRemoval(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

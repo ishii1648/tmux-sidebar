@@ -1,6 +1,7 @@
 # Claude の running バッジが tool 間で idle に戻り、permission 状態も張り付く
 
 Created: 2026-05-31
+Completed: 2026-05-31
 Model: Opus 4.8
 
 ## 概要
@@ -55,8 +56,22 @@ PreToolUse → running → Notification(permission) → 💬 → 承認 → tool
 
 ## 実装チェックリスト
 
-- [ ] Claude PostToolUse 必須 hook を `running` に変更
-- [ ] `upsertHookGroup` の purge 強化（status 跨ぎ移行で重複させない）
-- [ ] `docs/setup.md` / `docs/spec.md` / `docs/design.md` / `docs/history.md` を更新
-- [ ] `go test ./...` を実行
-- [ ] `/verify-implementation` で確認
+- [x] Claude PostToolUse 必須 hook を `running` に変更
+- [x] `upsertHookGroup` の purge 強化（status 跨ぎ移行で重複させない）
+- [x] `docs/setup.md` / `docs/spec.md` / `docs/design.md` / `docs/history.md` を更新
+- [x] `go test ./...` を実行
+- [x] `/verify-implementation` で確認
+
+## 解決方法
+
+`internal/doctor/doctor.go` の `requiredClaudeHooks` の `PostToolUse` を `stateIdleCmd()` から `stateRunningCmd()` に変更し、Claude の hook を「ターン中 = running、ターン終了 = idle」に統一した。
+
+- `internal/doctor/doctor.go`: `upsertHookGroup` の置換ロジックを「`command` が `tmux-sidebar hook` 系なら、canonical 以外の `tmux-sidebar hook` コマンドを全除去」に強化。これで `idle → running` の status 跨ぎ移行でも pane_N に 2 つの writer が残らない（unrelated な hook は保持）。
+- `hook.go` は変更不要（`running` 書き込み・started 保持はそのまま流用）。permission(`💬`) は status=permission のとき started を touch しないため、`PostToolUse → running` で running に戻っても経過時間が継続する。
+- `docs/setup.md`: Claude の PostToolUse 推奨設定を `tmux-sidebar hook running` に更新し、理由（flicker / confirm 強度 / permission クリア）を明記。
+- `docs/spec.md`: running バッジが 1 ターン点灯し続け、idle はターン終了時のみであることを明記。
+- `docs/design.md`: Claude/Codex の hook → status 対応を明記。
+- `docs/history.md`: 0015 の option 2（PostToolUse→idle 温存）から option 3（PostToolUse→running）への再変更を append。review-loop 後のユーザ指摘で permission 張り付き・flicker・confirm 強度の欠陥が判明した経緯と却下案（PostToolUse 削除）を記録。
+- 回帰テスト: `TestUpsertHookGroup_ReplacesDifferentStatus`（idle→running 置換）を追加、`TestCheckAgentSettings_ClaudeStrayResetOnPostToolUse` の期待値を `running` に更新、`TestStateCommandsAreSubcommand` 等は据え置き。
+
+検証として `go test ./...` 全 package OK、`doctor --yes` で旧 `PostToolUse: hook idle`（+ unrelated hook）が `hook running` 1 つに置換され unrelated が保持されることを確認、サイドバー描画に回帰なし。スコープは Claude のみで Codex は据え置き（PermissionRequest で permission を出せており issue 0013 の方針を尊重）。

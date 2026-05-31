@@ -1,6 +1,7 @@
 # Claude の running 経過時間が tool 実行のたびに 0s にリセットされる
 
 Created: 2026-05-31
+Completed: 2026-05-31
 Model: Opus 4.8
 
 ## 概要
@@ -61,9 +62,23 @@ if prevStatus != state.StatusRunning || !fileExists(startedPath) {
 
 ## 実装チェックリスト
 
-- [ ] `hook running` が idle→running でも `pane_N_started` を保持
-- [ ] `hook idle --reset` が `pane_N_started` を削除
-- [ ] doctor が Stop hook を `--reset` 付きに upgrade（旧 `hook idle` を重複させない）
-- [ ] `docs/setup.md` / `docs/design.md` / `docs/history.md` を更新
-- [ ] `go test ./...` を実行
-- [ ] `/verify-implementation` で実 sidebar の表示を確認
+- [x] `hook running` が idle→running でも `pane_N_started` を保持
+- [x] `hook idle --reset` が `pane_N_started` を削除
+- [x] doctor が Stop hook を `--reset` 付きに upgrade（旧 `hook idle` を重複させない）
+- [x] `docs/setup.md` / `docs/design.md` / `docs/history.md` を更新
+- [x] `go test ./...` を実行
+- [x] `/verify-implementation` で実 sidebar の表示を確認
+
+## 解決方法
+
+`internal/hook/hook.go` の `pane_N_started` 保持条件を「直前が running のときだけ保持」から「**ファイルが無いときだけ作成（あれば prevStatus に関わらず保持）**」へ変更し、`Options.ResetElapsed`（`--reset`）が指定されたときだけ削除するようにした。これにより 1 ターン中の `running→idle→running…` を跨いで経過時間が累積する。
+
+- `main.go`: `hook` サブコマンドに `--reset` フラグを追加（`runHook` で解析し `Options.ResetElapsed` に渡す）
+- `internal/doctor/doctor.go`: Claude/Codex の Stop 必須 hook を `tmux-sidebar hook idle --reset` / `--kind codex --reset` に更新。`upsertHookGroup` を同一 (status, kind) の旧コマンドを置換するよう改良し、旧 `hook idle` → `hook idle --reset` への upgrade で重複が出ないようにした。`hookCmdParts` ヘルパを追加。WARN 文言を `subcommand mismatch` に一般化
+- `docs/setup.md`: Claude/Codex の Stop hook 推奨設定を `--reset` 付きに更新、`pane_N_started` のライフサイクルを明記
+- `docs/spec.md`: running 経過時間が「1 ターンの累積」であることを明記
+- `docs/design.md`: `pane_N_started` のライフサイクルと `hook --reset` を明記
+- `docs/history.md`: started リセット契機の設計前提反転と却下案（Claude でも PostToolUse→idle をやめる案 / UserPromptSubmit でリセットする案）を append
+- 回帰テスト: `TestWriteRunningPreservesStartedAcrossIdle`（旧 `…ResetsStartedAfterIdle` を反転）/ `TestWriteResetClearsStarted` / `TestWriteResetMissingStartedIsNoError` / `TestUpsertHookGroup_ReplacesSameIdentity` / `TestHookCmdParts`
+
+検証として `go test ./...` を実行し、実バイナリで `running→idle→running→idle --reset→running` シーケンスを再現して保持・リセットを確認、`doctor --yes` で旧 Stop hook が `--reset` 付き 1 つに置換されることを確認した。

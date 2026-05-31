@@ -40,8 +40,9 @@ Subcommands:
   new                       Popup picker for new session (invoke via tmux bind-key + display-popup)
   dispatch <repo> [prompt] [flags]
                             Create a worktree + tmux session and start a launcher
-  hook <status> [--kind claude|codex]
-                            Write agent pane state (invoke from Claude Code / Codex hooks)
+  hook <status> [--kind claude|codex] [--reset]
+                            Write agent pane state (invoke from Claude Code / Codex hooks).
+                            --reset clears the running elapsed clock (use on the Stop hook).
   close                     Close sidebar if open
   toggle                    Open sidebar if closed, close if open
   focus-or-open             Focus sidebar if open, open if closed
@@ -713,9 +714,14 @@ func parseDispatchArgs(args []string) (dispatch.Options, error) {
 // Stdin: Claude Code passes a JSON payload containing `session_id` and `cwd`;
 // the hook package parses it best-effort. Codex CLI stdin (if any) that is
 // not valid JSON is ignored.
+//
+// --reset clears pane_N_started so the next running episode restarts its
+// elapsed clock from zero. The Stop hook uses it (`hook idle --reset`) so the
+// per-tool PostToolUse→idle→PreToolUse→running cycles within a turn don't.
 func runHook(args []string) error {
 	status := ""
 	kind := ""
+	reset := false
 	i := 0
 	for i < len(args) {
 		a := args[i]
@@ -728,6 +734,9 @@ func runHook(args []string) error {
 			i += 2
 		case strings.HasPrefix(a, "--kind="):
 			kind = strings.TrimPrefix(a, "--kind=")
+			i++
+		case a == "--reset":
+			reset = true
 			i++
 		case strings.HasPrefix(a, "--"):
 			return fmt.Errorf("unknown flag: %s", a)
@@ -744,9 +753,10 @@ func runHook(args []string) error {
 		return fmt.Errorf("status required (running|idle|permission|ask)")
 	}
 	return hook.Write(hook.Options{
-		Status: status,
-		Kind:   kind,
-		PaneID: os.Getenv("TMUX_PANE"),
-		Stdin:  os.Stdin,
+		Status:       status,
+		Kind:         kind,
+		PaneID:       os.Getenv("TMUX_PANE"),
+		Stdin:        os.Stdin,
+		ResetElapsed: reset,
 	})
 }

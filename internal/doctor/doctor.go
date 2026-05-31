@@ -82,6 +82,12 @@ type hookFix struct {
 func stateRunningCmd() string { return "tmux-sidebar hook running" }
 func stateIdleCmd() string    { return "tmux-sidebar hook idle" }
 
+// stateStopCmd returns the Stop-hook command. Stop ends the turn, so it adds
+// `--reset` to clear pane_N_started; PostToolUse idle (stateIdleCmd) keeps it
+// so the running elapsed clock survives the per-tool idle blips within a turn.
+func stateStopCmd() string      { return "tmux-sidebar hook idle --reset" }
+func stateStopCodexCmd() string { return "tmux-sidebar hook idle --kind codex --reset" }
+
 // inlineShellHookSig identifies hook commands that pre-date the
 // `tmux-sidebar hook` subcommand: doctor previously inlined a shell snippet
 // containing both `pane_${num}` and a printf invocation. Such commands are
@@ -97,7 +103,7 @@ func inlineShellHookSig(cmd string) bool {
 var requiredClaudeHooks = []hookFix{
 	{event: "PreToolUse", command: stateRunningCmd()},
 	{event: "PostToolUse", command: stateIdleCmd()},
-	{event: "Stop", command: stateIdleCmd()},
+	{event: "Stop", command: stateStopCmd()},
 }
 
 // requiredCodexHooks: Codex keeps running until Stop. A PostToolUse idle hook
@@ -106,7 +112,7 @@ var requiredClaudeHooks = []hookFix{
 var requiredCodexHooks = []hookFix{
 	{event: "PreToolUse", command: "tmux-sidebar hook running --kind codex"},
 	{event: "PermissionRequest", command: "tmux-sidebar hook permission --kind codex"},
-	{event: "Stop", command: "tmux-sidebar hook idle --kind codex"},
+	{event: "Stop", command: stateStopCodexCmd()},
 }
 
 // agentTarget bundles a settings file location with the hooks doctor expects
@@ -221,12 +227,49 @@ func extractHookCommands(hooks map[string]json.RawMessage, event string) []strin
 	return cmds
 }
 
+// hookCmdParts parses a `tmux-sidebar hook <status> [--kind K] [flags]`
+// command into its (status, kind) identity. kind defaults to "claude" when
+// unspecified, mirroring hook.Write. ok is false for commands that are not a
+// tmux-sidebar hook invocation (e.g. unrelated user hooks), which callers must
+// leave untouched.
+func hookCmdParts(cmd string) (status, kind string, ok bool) {
+	fields := strings.Fields(cmd)
+	if len(fields) < 3 || fields[0] != "tmux-sidebar" || fields[1] != "hook" {
+		return "", "", false
+	}
+	kind = "claude"
+	for i := 2; i < len(fields); i++ {
+		t := fields[i]
+		switch {
+		case t == "--kind":
+			if i+1 < len(fields) {
+				kind = fields[i+1]
+				i++
+			}
+		case strings.HasPrefix(t, "--kind="):
+			kind = strings.TrimPrefix(t, "--kind=")
+		case strings.HasPrefix(t, "--"):
+			// other flags (e.g. --reset) don't change command identity
+		case status == "":
+			status = t
+		}
+	}
+	if status == "" {
+		return "", "", false
+	}
+	return status, kind, true
+}
+
 // upsertHookGroup non-destructively inserts `command` into an event's hook-group
 // list. Existing entries that target legacyStateDir are dropped (obsolete after
-// ADR-063 Phase A); other unrelated hooks are kept intact. If the exact command
-// is already present (post-purge), the input is returned unchanged.
+// ADR-063 Phase A). Older `tmux-sidebar hook` commands with the same
+// (status, kind) identity as `command` but a different flag set are also
+// dropped so upgrades (e.g. `hook idle` → `hook idle --reset` on Stop) replace
+// rather than duplicate. Other unrelated hooks are kept intact. If the exact
+// command is already present (post-purge), the input is returned unchanged.
 func upsertHookGroup(existing json.RawMessage, command string) json.RawMessage {
 	groups := unmarshalHookGroups(existing)
+	wantStatus, wantKind, wantOK := hookCmdParts(command)
 
 	purged := make([]hookGroupJSON, 0, len(groups))
 	for _, g := range groups {
@@ -237,6 +280,11 @@ func upsertHookGroup(existing json.RawMessage, command string) json.RawMessage {
 			}
 			if inlineShellHookSig(h.Command) {
 				continue
+			}
+			if wantOK && strings.TrimSpace(h.Command) != strings.TrimSpace(command) {
+				if s, k, ok := hookCmdParts(h.Command); ok && s == wantStatus && k == wantKind {
+					continue
+				}
 			}
 			keep = append(keep, h)
 		}
@@ -533,7 +581,7 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 		default:
 			legacy := false
 			inlineShell := false
-			subcommandKindMismatch := false
+			subcommandMismatch := false
 			for _, c := range extractHookCommands(hooks, fix.event) {
 				if strings.Contains(c, legacyStateDir) {
 					legacy = true
@@ -542,12 +590,14 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 				if inlineShellHookSig(c) {
 					inlineShell = true
 				}
-				// Detect a subcommand call that targets the wrong agent kind
-				// (e.g. Codex settings carrying `tmux-sidebar hook running`
-				// without --kind codex). Doctor treats this as upgradable so
-				// pane_N's agent line ends up correct.
+				// Detect a `tmux-sidebar hook` call that doesn't match the
+				// canonical command for this event — either the wrong agent
+				// kind (e.g. Codex settings carrying `hook running` without
+				// --kind codex) or a stale flag set (e.g. Stop on `hook idle`
+				// without --reset). Doctor treats both as upgradable so pane_N
+				// and the running elapsed clock end up correct.
 				if strings.Contains(c, "tmux-sidebar hook") && !strings.Contains(c, fix.command) {
-					subcommandKindMismatch = true
+					subcommandMismatch = true
 				}
 			}
 			switch {
@@ -563,10 +613,10 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 					detail: "uses inline shell snippet — upgrade to `tmux-sidebar hook` subcommand",
 				})
 				fixes = append(fixes, fix)
-			case subcommandKindMismatch:
+			case subcommandMismatch:
 				results = append(results, checkResult{
 					label: fix.event, sev: sevWarn,
-					detail: "subcommand kind mismatch — should be `" + fix.command + "`",
+					detail: "subcommand mismatch — should be `" + fix.command + "`",
 				})
 				fixes = append(fixes, fix)
 			default:

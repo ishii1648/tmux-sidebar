@@ -185,6 +185,8 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 | `💬` | ask | ユーザ応答待ち（ask 用色） |
 | (非表示) | idle | バッジを描画しない |
 
+running の経過時間は **1 ターンの開始からの累積** で表示する。agent が tool ごとに running と idle を行き来しても（tool 間の idle blip）経過時間はリセットされず、ターンが終わる（Stop）まで計測し続ける。permission / ask の待機を挟んでも維持される。
+
 ## Configuration files
 
 すべて `~/.config/tmux-sidebar/` 配下、1 行 1 entry、`#` でコメント。

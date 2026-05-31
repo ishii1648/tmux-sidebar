@@ -158,6 +158,50 @@ func TestRemoveHookCommand_DropsEmptyEvent(t *testing.T) {
 	}
 }
 
+// upsertHookGroup must upgrade an older same-identity command in place rather
+// than leaving a duplicate. Stop migrates `hook idle` → `hook idle --reset`.
+func TestUpsertHookGroup_ReplacesSameIdentity(t *testing.T) {
+	existing := json.RawMessage(`[{"matcher":"","hooks":[{"type":"command","command":"tmux-sidebar hook idle"},{"type":"command","command":"echo keep"}]}]`)
+	out := upsertHookGroup(existing, "tmux-sidebar hook idle --reset")
+	groups := unmarshalHookGroups(out)
+	var cmds []string
+	for _, g := range groups {
+		for _, h := range g.Hooks {
+			cmds = append(cmds, h.Command)
+		}
+	}
+	want := map[string]bool{"echo keep": true, "tmux-sidebar hook idle --reset": true}
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands (no duplicate), got %v", cmds)
+	}
+	for _, c := range cmds {
+		if !want[c] {
+			t.Errorf("unexpected command %q in %v", c, cmds)
+		}
+	}
+}
+
+func TestHookCmdParts(t *testing.T) {
+	cases := []struct {
+		cmd          string
+		status, kind string
+		ok           bool
+	}{
+		{"tmux-sidebar hook idle", "idle", "claude", true},
+		{"tmux-sidebar hook idle --reset", "idle", "claude", true},
+		{"tmux-sidebar hook idle --kind codex --reset", "idle", "codex", true},
+		{"tmux-sidebar hook running --kind=codex", "running", "codex", true},
+		{"echo hello", "", "", false},
+		{"tmux-sidebar hook", "", "", false},
+	}
+	for _, c := range cases {
+		s, k, ok := hookCmdParts(c.cmd)
+		if s != c.status || k != c.kind || ok != c.ok {
+			t.Errorf("hookCmdParts(%q) = (%q,%q,%v), want (%q,%q,%v)", c.cmd, s, k, ok, c.status, c.kind, c.ok)
+		}
+	}
+}
+
 // ── stateRunningCmd / stateIdleCmd ────────────────────────────────────────────
 
 func TestStateCommandsAreSubcommand(t *testing.T) {
@@ -166,6 +210,12 @@ func TestStateCommandsAreSubcommand(t *testing.T) {
 	}
 	if got := stateIdleCmd(); got != "tmux-sidebar hook idle" {
 		t.Errorf("idle cmd = %q, want tmux-sidebar hook idle", got)
+	}
+	if got := stateStopCmd(); got != "tmux-sidebar hook idle --reset" {
+		t.Errorf("stop cmd = %q, want tmux-sidebar hook idle --reset", got)
+	}
+	if got := stateStopCodexCmd(); got != "tmux-sidebar hook idle --kind codex --reset" {
+		t.Errorf("stop codex cmd = %q, want tmux-sidebar hook idle --kind codex --reset", got)
 	}
 }
 
@@ -738,8 +788,8 @@ func TestCheckAgentSettings_CodexKindMismatch(t *testing.T) {
 	target := agentTarget{kind: "codex", titlePrefix: "Codex", pathFn: codexSettingsPath, requiredHooks: requiredCodexHooks}
 	results, fixes := checkAgentSettings(target)
 	for _, r := range results {
-		if r.sev != sevWarn || !strings.Contains(r.detail, "kind mismatch") {
-			t.Errorf("expected kind-mismatch warning for %s, got %+v", r.label, r)
+		if r.sev != sevWarn || !strings.Contains(r.detail, "subcommand mismatch") {
+			t.Errorf("expected subcommand-mismatch warning for %s, got %+v", r.label, r)
 		}
 	}
 	if len(fixes) != 3 {
@@ -759,7 +809,7 @@ func TestCheckAgentSettings_CodexStalePostToolUseQueuedForRemoval(t *testing.T) 
 			"PreToolUse":        []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running --kind codex"}}}},
 			"PermissionRequest": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook permission --kind codex"}}}},
 			"PostToolUse":       []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle --kind codex"}}}},
-			"Stop":              []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle --kind codex"}}}},
+			"Stop":              []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateStopCodexCmd()}}}},
 		},
 	}
 	b, _ := json.Marshal(settings)

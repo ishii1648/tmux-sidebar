@@ -129,6 +129,8 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 
 これらの状態ファイルを書き出すために `tmux-sidebar hook <status>` サブコマンドが用意されています。サブコマンドは `$TMUX_PANE` から pane 番号を取り出し、agent が stdin に渡す JSON ペイロード（`session_id` / `cwd` を共通フィールドとして含む）をパースして `pane_N` / `pane_N_started` / `pane_N_path` / `pane_N_session_id` を一貫した形式で書き出します。`pane_N_path` は最初に `running` に遷移したときだけ書かれ、以降は上書きされません。`<status>` には `running` / `idle` / `permission` / `ask` のいずれかを指定します。
 
+`pane_N_started`（running 経過時間の起点）は **1 ターンの間ずっと保持** されます。`running` は既存の `pane_N_started` があれば上書きせず保持するため、tool ごとの `PostToolUse → idle → PreToolUse → running` を跨いでも経過時間がリセットされません。ターン終了時の Stop hook に `--reset` を付けると `pane_N_started` が削除され、次のターンの running が新しい起点を作ります。**Stop hook には必ず `--reset` を付けてください**（付け忘れると経過時間が前のターンから累積し続けます）。
+
 ### Claude Code
 
 `~/.claude/settings.json` の `hooks` キーに以下を追加してください：
@@ -156,7 +158,7 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "tmux-sidebar hook idle" }
+          { "type": "command", "command": "tmux-sidebar hook idle --reset" }
         ]
       }
     ]
@@ -191,7 +193,7 @@ Codex CLI の hook 設定は `~/.codex/hooks.json` に置きます（`~/.codex/c
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "tmux-sidebar hook idle --kind codex" }
+          { "type": "command", "command": "tmux-sidebar hook idle --kind codex --reset" }
         ]
       }
     ]
@@ -199,7 +201,7 @@ Codex CLI の hook 設定は `~/.codex/hooks.json` に置きます（`~/.codex/c
 }
 ```
 
-`PermissionRequest` は Codex が承認待ちで止まった時に `permission` を書き、sidebar では `💬` として表示されます。`PostToolUse` で `idle` に戻す設定は入れません。Codex は tool 実行後も応答生成中のことがあり、この時点で idle にすると sidebar の running バッジが一瞬消えます。
+`PermissionRequest` は Codex が承認待ちで止まった時に `permission` を書き、sidebar では `💬` として表示されます。`PostToolUse` で `idle` に戻す設定は入れません。Codex は tool 実行後も応答生成中のことがあり、この時点で idle にすると sidebar の running バッジが一瞬消えます。Stop hook の `--reset` は Claude 同様に running 経過時間の起点をターン境界で区切るためのものです。
 
 > Codex CLI は `~/.codex/hooks.json`（user-level）と `<repo>/.codex/hooks.json`（project-level、要 trust）を両方読み込みます。両方の event protocol（stdin の `session_id` / `cwd`）は Claude Code と共通です。
 

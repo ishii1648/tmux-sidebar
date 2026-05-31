@@ -1,6 +1,7 @@
 # PR status が削除済み worktree の window で stale なまま無期限に残る
 
 Created: 2026-05-31
+Completed: 2026-05-31
 Model: Opus 4.8
 
 ## 概要
@@ -51,9 +52,21 @@ stale 化のメカニズムは次の 3 点の合わせ技:
 
 ## 実装チェックリスト
 
-- [ ] `gitDataMsg` に `stale []string` を追加
-- [ ] `loadGitInfo` で空 fetch の window ID を `stale` に収集
-- [ ] `gitDataMsg` ハンドラで `stale` のキーを削除
-- [ ] 回帰テスト追加（stale 削除 / filtered-out 保持）
-- [ ] `go test ./...`
-- [ ] `/verify-implementation`
+- [x] `gitDataMsg` に `stale []string` を追加
+- [x] `loadGitInfo` で空 fetch の window ID を `stale` に収集
+- [x] `gitDataMsg` ハンドラで `stale` のキーを削除
+- [x] 回帰テスト追加（stale 削除 / filtered-out 保持）
+- [x] `go test ./...`
+- [x] `/verify-implementation`
+
+## 解決方法
+
+`internal/ui/model.go` で `gitData` に「visible だが path 解決に失敗した window」の eviction 経路を追加した。
+
+- `gitDataMsg` に `stale []string` フィールドを追加。
+- `loadGitInfo`: 各 visible window の `fetchGitInfo` 結果が空（`branch == "" && prNumber == 0`）なら、その window ID を `stale` に収集する。`data` への採用条件は従来どおりで、空データは採用しない。
+- `gitDataMsg` ハンドラ: `data` を merge した後に `stale` の各キーを `delete(m.gitData, k)` する。filtered-out window はそもそも `loadGitInfo` で訪問されず `stale` にも入らないため、従来どおりキャッシュが保持される。
+- `internal/ui/model_test.go`: `TestGitDataMsg_EvictsStaleAndKeepsFilteredOut`（stale 削除 + filtered-out 保持）と `TestGitDataMsg_FreshDataOverwrites`（新データ上書き）を追加。
+- `docs/design.md`: 既知の制約に「path 解決不能になった visible window のバッジは掃除する」を追記。
+
+検証として `go test ./...` 全 package OK。修正版バイナリでサイドバーを開き、削除済み worktree を指す stale window（`impl-0052`/`impl-0054`）に PR バッジが出ず、worktree が存在する window（`#101`）は表示されることを確認した。

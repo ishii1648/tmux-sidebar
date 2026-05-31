@@ -185,7 +185,7 @@ sidebar 下部の preview area は cursor が指す window の agent transcript 
 | `💬` | ask | ユーザ応答待ち（ask 用色） |
 | (非表示) | idle | バッジを描画しない |
 
-running の経過時間は **1 ターンの開始からの累積** で表示する。agent が tool ごとに running と idle を行き来しても（tool 間の idle blip）経過時間はリセットされず、ターンが終わる（Stop）まで計測し続ける。permission / ask の待機を挟んでも維持される。
+running バッジは **1 ターンの間ずっと点灯** し続ける。Claude は tool 実行と応答生成を行き来するが、その全体が作業中なのでバッジは running のまま維持され、tool 完了ごとに idle へ戻る flicker は起こさない。idle になるのはターン終了（ユーザ応答待ち）のときだけ。経過時間も同様に **1 ターンの開始からの累積** で表示し、permission / ask の待機を挟んでもリセットされない。
 
 ## Configuration files
 

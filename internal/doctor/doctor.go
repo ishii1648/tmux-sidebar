@@ -100,9 +100,14 @@ func inlineShellHookSig(cmd string) bool {
 // requiredClaudeHooks lists the Claude Code settings.json hooks doctor
 // maintains. Mirrors setup.md §8: PreToolUse=running, PostToolUse=idle,
 // Stop=idle.
+// PostToolUse writes running (not idle): a Claude turn stays running across the
+// per-tool generation gaps, so idle would flicker the badge and also misreport
+// confirm strength on `d`/`D`. Writing running here keeps the badge stable and
+// clears any Notification-set permission badge once the tool completes. idle is
+// reached only at Stop (see stateStopCmd). See docs/history.md.
 var requiredClaudeHooks = []hookFix{
 	{event: "PreToolUse", command: stateRunningCmd()},
-	{event: "PostToolUse", command: stateIdleCmd()},
+	{event: "PostToolUse", command: stateRunningCmd()},
 	{event: "Stop", command: stateStopCmd()},
 }
 
@@ -268,14 +273,16 @@ func hookCmdParts(cmd string) (status, kind string, ok bool) {
 
 // upsertHookGroup non-destructively inserts `command` into an event's hook-group
 // list. Existing entries that target legacyStateDir are dropped (obsolete after
-// ADR-063 Phase A). Older `tmux-sidebar hook` commands with the same
-// (status, kind) identity as `command` but a different flag set are also
-// dropped so upgrades (e.g. `hook idle` → `hook idle --reset` on Stop) replace
-// rather than duplicate. Other unrelated hooks are kept intact. If the exact
-// command is already present (post-purge), the input is returned unchanged.
+// ADR-063 Phase A). When `command` is itself a `tmux-sidebar hook` invocation,
+// any OTHER `tmux-sidebar hook` command on the event is dropped too: an event
+// has exactly one canonical state-writer, so this replaces stale variants in
+// place (wrong kind, missing/stray flag, or a different status such as the
+// PostToolUse idle→running migration) rather than leaving two writers racing on
+// pane_N. Unrelated hooks are kept intact. If the exact command is already
+// present (post-purge), the input is returned unchanged.
 func upsertHookGroup(existing json.RawMessage, command string) json.RawMessage {
 	groups := unmarshalHookGroups(existing)
-	wantStatus, wantKind, wantOK := hookCmdParts(command)
+	_, _, wantOK := hookCmdParts(command)
 
 	purged := make([]hookGroupJSON, 0, len(groups))
 	for _, g := range groups {
@@ -287,8 +294,8 @@ func upsertHookGroup(existing json.RawMessage, command string) json.RawMessage {
 			if inlineShellHookSig(h.Command) {
 				continue
 			}
-			if wantOK && strings.TrimSpace(h.Command) != strings.TrimSpace(command) {
-				if s, k, ok := hookCmdParts(h.Command); ok && s == wantStatus && k == wantKind {
+			if wantOK && normalizeCmd(h.Command) != normalizeCmd(command) {
+				if _, _, ok := hookCmdParts(h.Command); ok {
 					continue
 				}
 			}

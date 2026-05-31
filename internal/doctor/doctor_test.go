@@ -181,6 +181,29 @@ func TestUpsertHookGroup_ReplacesSameIdentity(t *testing.T) {
 	}
 }
 
+// Migrating PostToolUse idle → running changes the status, so the same-identity
+// purge isn't enough: any non-canonical tmux-sidebar hook command on the event
+// must be dropped so two writers don't race on pane_N.
+func TestUpsertHookGroup_ReplacesDifferentStatus(t *testing.T) {
+	existing := json.RawMessage(`[{"matcher":"","hooks":[{"type":"command","command":"tmux-sidebar hook idle"},{"type":"command","command":"echo keep"}]}]`)
+	out := upsertHookGroup(existing, "tmux-sidebar hook running")
+	var cmds []string
+	for _, g := range unmarshalHookGroups(out) {
+		for _, h := range g.Hooks {
+			cmds = append(cmds, h.Command)
+		}
+	}
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands (no duplicate writer), got %v", cmds)
+	}
+	want := map[string]bool{"echo keep": true, "tmux-sidebar hook running": true}
+	for _, c := range cmds {
+		if !want[c] {
+			t.Errorf("unexpected command %q in %v", c, cmds)
+		}
+	}
+}
+
 func TestHookCmdParts(t *testing.T) {
 	cases := []struct {
 		cmd          string
@@ -797,9 +820,10 @@ func TestCheckAgentSettings_CodexKindMismatch(t *testing.T) {
 	}
 }
 
-// A stray --reset on Claude PostToolUse would clear pane_N_started every tool
-// and reintroduce the elapsed reset. The loose substring check missed it; the
-// normalized exact compare must flag it and auto-fix replaces it cleanly.
+// A stale idle (or stray --reset) on Claude PostToolUse must be flagged by the
+// normalized exact compare and replaced in place with the canonical command
+// (running) — the substring check missed it, and the replace must not leave a
+// second writer behind even though the status differs (idle → running).
 func TestCheckAgentSettings_ClaudeStrayResetOnPostToolUse(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -840,8 +864,8 @@ func TestCheckAgentSettings_ClaudeStrayResetOnPostToolUse(t *testing.T) {
 	}
 	raw, _ := readRawSettings(path)
 	cmds := extractHookCommands(getHooksMap(raw), "PostToolUse")
-	if len(cmds) != 1 || cmds[0] != stateIdleCmd() {
-		t.Fatalf("PostToolUse should be exactly [%q], got %v", stateIdleCmd(), cmds)
+	if len(cmds) != 1 || cmds[0] != stateRunningCmd() {
+		t.Fatalf("PostToolUse should be exactly [%q], got %v", stateRunningCmd(), cmds)
 	}
 }
 

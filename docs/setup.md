@@ -129,7 +129,7 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 
 これらの状態ファイルを書き出すために `tmux-sidebar hook <status>` サブコマンドが用意されています。サブコマンドは `$TMUX_PANE` から pane 番号を取り出し、agent が stdin に渡す JSON ペイロード（`session_id` / `cwd` を共通フィールドとして含む）をパースして `pane_N` / `pane_N_started` / `pane_N_path` / `pane_N_session_id` を一貫した形式で書き出します。`pane_N_path` は最初に `running` に遷移したときだけ書かれ、以降は上書きされません。`<status>` には `running` / `idle` / `permission` / `ask` のいずれかを指定します。
 
-`pane_N_started`（running 経過時間の起点）は **1 ターンの間ずっと保持** されます。`running` は既存の `pane_N_started` があれば上書きせず保持するため、tool ごとの `PostToolUse → idle → PreToolUse → running` を跨いでも経過時間がリセットされません。ターン終了時の Stop hook に `--reset` を付けると `pane_N_started` が削除され、次のターンの running が新しい起点を作ります。**Stop hook には必ず `--reset` を付けてください**（付け忘れると経過時間が前のターンから累積し続けます）。
+`pane_N_started`（running 経過時間の起点）は **1 ターンの間ずっと保持** されます。`running` は既存の `pane_N_started` があれば上書きせず保持するため、ターン中に permission(`💬`) などを挟んでも経過時間がリセットされません。ターン終了時の Stop hook に `--reset` を付けると `pane_N_started` が削除され、次のターンの running が新しい起点を作ります。**Stop hook には必ず `--reset` を付けてください**（付け忘れると経過時間が前のターンから累積し続けます）。
 
 ### Claude Code
 
@@ -150,7 +150,7 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "tmux-sidebar hook idle" }
+          { "type": "command", "command": "tmux-sidebar hook running" }
         ]
       }
     ],
@@ -165,6 +165,8 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
   }
 }
 ```
+
+`PostToolUse` は `idle` ではなく `running` を書きます。Claude は 1 ターンの間 tool 実行と応答生成を行き来しますが、その全体が「作業中」なので、tool 完了のたびに idle に戻すとバッジが flicker し、`d`/`D` の confirm 強度も「running 中なのに単純確認」になってしまいます。`running` を書けば tool 間もバッジが安定し、`Notification` hook で permission(`💬`) を出していた場合も tool 完了時に running へ戻ります。idle になるのは `Stop`（ターン終了＝ユーザ応答待ち）だけです。
 
 ### Codex CLI
 

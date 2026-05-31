@@ -85,7 +85,10 @@ func TestWriteRunningDoesNotResetStartedWhenAlreadyRunning(t *testing.T) {
 	}
 }
 
-func TestWriteRunningResetsStartedAfterIdle(t *testing.T) {
+// A turn stays "running" across the per-tool PostToolUse→idle→PreToolUse blips,
+// so an idle→running transition must preserve the existing started timestamp;
+// only the Stop hook (--reset) ends the turn and clears it.
+func TestWriteRunningPreservesStartedAcrossIdle(t *testing.T) {
 	dir := t.TempDir()
 	startedPath := filepath.Join(dir, "pane_8_started")
 	if err := os.WriteFile(filepath.Join(dir, "pane_8"), []byte("idle\ncodex\n"), 0o644); err != nil {
@@ -106,8 +109,60 @@ func TestWriteRunningResetsStartedAfterIdle(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	if got := readFile(t, startedPath); got != "200\n" {
-		t.Errorf("pane_8_started = %q, want refreshed timestamp", got)
+	if got := readFile(t, startedPath); got != "100\n" {
+		t.Errorf("pane_8_started = %q, want preserved original timestamp", got)
+	}
+}
+
+// The Stop hook passes ResetElapsed so the next running episode starts fresh.
+func TestWriteResetClearsStarted(t *testing.T) {
+	dir := t.TempDir()
+	startedPath := filepath.Join(dir, "pane_8_started")
+	if err := os.WriteFile(filepath.Join(dir, "pane_8"), []byte("running\nclaude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(startedPath, []byte("100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Write(Options{
+		Status:       "idle",
+		PaneID:       "%8",
+		StateDir:     dir,
+		ResetElapsed: true,
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if _, err := os.Stat(startedPath); !os.IsNotExist(err) {
+		t.Errorf("pane_8_started should be removed by --reset: stat err=%v", err)
+	}
+
+	// A following running transition must create a fresh timestamp.
+	now := time.Unix(500, 0)
+	if err := Write(Options{
+		Status:   "running",
+		PaneID:   "%8",
+		StateDir: dir,
+		Now:      func() time.Time { return now },
+	}); err != nil {
+		t.Fatalf("Write running: %v", err)
+	}
+	if got := readFile(t, startedPath); got != "500\n" {
+		t.Errorf("pane_8_started = %q, want fresh timestamp after reset", got)
+	}
+}
+
+// --reset on a missing started file must not error (absence is expected).
+func TestWriteResetMissingStartedIsNoError(t *testing.T) {
+	dir := t.TempDir()
+	if err := Write(Options{
+		Status:       "idle",
+		PaneID:       "%9",
+		StateDir:     dir,
+		ResetElapsed: true,
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
 }
 

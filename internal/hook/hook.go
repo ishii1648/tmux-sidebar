@@ -44,6 +44,13 @@ type Options struct {
 	// Now returns the current time. Tests inject a fixed clock; nil means
 	// time.Now.
 	Now func() time.Time
+
+	// ResetElapsed clears pane_N_started so the next running episode starts
+	// its elapsed clock from zero. Set by the Stop hook (`--reset`): Stop and
+	// PostToolUse both write "idle", but only Stop ends the turn, so only Stop
+	// resets the clock. Without this, every PostToolUse→idle→PreToolUse→running
+	// cycle within a single turn would otherwise reset the running badge.
+	ResetElapsed bool
 }
 
 // validKinds: empty defaults to claude.
@@ -99,15 +106,20 @@ func Write(opts Options) error {
 	payload := readPayload(opts.Stdin)
 
 	statusPath := filepath.Join(dir, fmt.Sprintf("pane_%d", num))
-	prevStatus := readExistingStatus(statusPath)
 	body := opts.Status + "\n" + kind + "\n"
 	if err := os.WriteFile(statusPath, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", statusPath, err)
 	}
 
+	startedPath := filepath.Join(dir, fmt.Sprintf("pane_%d_started", num))
+
 	if opts.Status == string(state.StatusRunning) {
-		startedPath := filepath.Join(dir, fmt.Sprintf("pane_%d_started", num))
-		if prevStatus != state.StatusRunning || !fileExists(startedPath) {
+		// Preserve an existing started timestamp regardless of the previous
+		// status: a turn stays "running" across the idle/permission blips
+		// between tool calls, so elapsed must accumulate over the whole turn
+		// and only reset at the turn boundary (Stop, via ResetElapsed below).
+		// Only write a fresh timestamp when none exists.
+		if !fileExists(startedPath) {
 			now := time.Now
 			if opts.Now != nil {
 				now = opts.Now
@@ -135,6 +147,13 @@ func Write(opts Options) error {
 				}
 			}
 		}
+	} else if opts.ResetElapsed {
+		// End of turn (Stop): drop the started timestamp so the next running
+		// episode starts its elapsed clock from zero. Absence is the expected
+		// state, so a missing file is not an error.
+		if err := os.Remove(startedPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", startedPath, err)
+		}
 	}
 
 	// session_id can update at any status (Claude Code rotates ids per
@@ -151,20 +170,6 @@ func Write(opts Options) error {
 	}
 
 	return nil
-}
-
-func readExistingStatus(path string) state.Status {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return state.StatusUnknown
-	}
-	line, _, _ := strings.Cut(string(data), "\n")
-	switch state.Status(strings.TrimSpace(line)) {
-	case state.StatusRunning, state.StatusIdle, state.StatusPermission, state.StatusAsk:
-		return state.Status(strings.TrimSpace(line))
-	default:
-		return state.StatusUnknown
-	}
 }
 
 func fileExists(path string) bool {

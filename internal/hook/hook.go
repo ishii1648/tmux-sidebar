@@ -45,11 +45,19 @@ type Options struct {
 	// time.Now.
 	Now func() time.Time
 
-	// ResetElapsed clears pane_N_started so the next running episode starts
-	// its elapsed clock from zero. Set by the Stop hook (`--reset`): Stop and
-	// PostToolUse both write "idle", but only Stop ends the turn, so only Stop
-	// resets the clock. Without this, every PostToolUse→idle→PreToolUse→running
-	// cycle within a single turn would otherwise reset the running badge.
+	// ResetElapsed re-anchors the running elapsed clock (pane_N_started) at a
+	// turn boundary. Its effect depends on Status:
+	//
+	//   - non-running ("idle --reset", the Stop hook): removes pane_N_started so
+	//     the next running episode starts from zero. Marks turn END.
+	//   - running ("running --reset", the UserPromptSubmit hook): overwrites
+	//     pane_N_started with "now" so each new user turn re-anchors the clock.
+	//     Marks turn START. This keeps elapsed correct even when the previous
+	//     turn ended without a Stop hook (Esc interrupt / crash) and left a
+	//     stale anchor for this turn to accumulate from. See issues/0018.
+	//
+	// Plain "running" (Pre/PostToolUse, no --reset) preserves an existing anchor
+	// so the clock survives the per-tool blips within a turn.
 	ResetElapsed bool
 }
 
@@ -114,12 +122,17 @@ func Write(opts Options) error {
 	startedPath := filepath.Join(dir, fmt.Sprintf("pane_%d_started", num))
 
 	if opts.Status == string(state.StatusRunning) {
-		// Preserve an existing started timestamp regardless of the previous
-		// status: a turn stays "running" across the idle/permission blips
-		// between tool calls, so elapsed must accumulate over the whole turn
-		// and only reset at the turn boundary (Stop, via ResetElapsed below).
-		// Only write a fresh timestamp when none exists.
-		if !fileExists(startedPath) {
+		// pane_N_started anchors the running elapsed clock.
+		//   running          — preserve an existing anchor: a turn stays
+		//                       "running" across the idle/permission blips between
+		//                       tool calls, so elapsed accumulates over the whole
+		//                       turn. Create one only when none exists.
+		//   running --reset  — force a fresh anchor at "now". UserPromptSubmit
+		//                       uses this so each new user turn re-anchors the
+		//                       clock, making elapsed robust to a previous turn
+		//                       that ended without a Stop hook (Esc interrupt /
+		//                       crash) and left a stale anchor. See issues/0018.
+		if opts.ResetElapsed || !fileExists(startedPath) {
 			now := time.Now
 			if opts.Now != nil {
 				now = opts.Now

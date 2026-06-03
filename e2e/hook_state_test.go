@@ -103,3 +103,42 @@ func TestHookClaudeTurnKeepsRunningBadge(t *testing.T) {
 		t.Fatalf("pane_%d_started = %q, want a fresh timestamp (not the old %d)", paneNum, got, seeded)
 	}
 }
+
+// TestHookUserPromptSubmitReanchorsAfterInterrupt reproduces issues/0018: a turn
+// that ended without a Stop hook (Esc interrupt / crash) leaves a stale
+// pane_N_started. The next user turn fires UserPromptSubmit (`running --reset`),
+// which must re-anchor the elapsed clock to "now" instead of accumulating the
+// idle gap into the badge.
+func TestHookUserPromptSubmitReanchorsAfterInterrupt(t *testing.T) {
+	env := newTestEnv(t)
+
+	env.newSession("dev")
+	env.newWindow("dev", "build")
+	paneNum := env.paneNumber("dev:1")
+
+	// Stale anchor: a previous turn started 4h ago and was interrupted (no Stop
+	// --reset ever ran), so pane_N_started is still pointing at the old origin.
+	stale := time.Now().Add(-4 * time.Hour).Unix()
+	env.setupStateFileStarted(paneNum, stale)
+
+	env.runSidebar("scratch")
+	if err := env.waitForText("scratch", "build", 5*time.Second); err != nil {
+		t.Fatalf("sidebar did not load sessions: %v", err)
+	}
+
+	// New user prompt → UserPromptSubmit re-anchors the clock.
+	env.hook(paneNum, "running", "--reset")
+
+	// The badge must NOT show the ~240m accumulated gap.
+	if err := env.waitForNoText("scratch", "🔄240m", 5*time.Second); err != nil {
+		t.Fatalf("badge still showed the stale accumulated elapsed: %v", err)
+	}
+	// And pane_N_started must have been overwritten, not preserved.
+	got, ok := env.startedValue(paneNum)
+	if !ok {
+		t.Fatalf("pane_%d_started should exist after running --reset", paneNum)
+	}
+	if got == strconv.FormatInt(stale, 10) {
+		t.Fatalf("pane_%d_started = %q, want re-anchored fresh timestamp (not the stale %d)", paneNum, got, stale)
+	}
+}

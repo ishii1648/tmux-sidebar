@@ -129,7 +129,14 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 
 これらの状態ファイルを書き出すために `tmux-sidebar hook <status>` サブコマンドが用意されています。サブコマンドは `$TMUX_PANE` から pane 番号を取り出し、agent が stdin に渡す JSON ペイロード（`session_id` / `cwd` を共通フィールドとして含む）をパースして `pane_N` / `pane_N_started` / `pane_N_path` / `pane_N_session_id` を一貫した形式で書き出します。`pane_N_path` は最初に `running` に遷移したときだけ書かれ、以降は上書きされません。`<status>` には `running` / `idle` / `permission` / `ask` のいずれかを指定します。
 
-`pane_N_started`（running 経過時間の起点）は **1 ターンの間ずっと保持** されます。`running` は既存の `pane_N_started` があれば上書きせず保持するため、ターン中に permission(`💬`) などを挟んでも経過時間がリセットされません。ターン終了時の Stop hook に `--reset` を付けると `pane_N_started` が削除され、次のターンの running が新しい起点を作ります。**Stop hook には必ず `--reset` を付けてください**（付け忘れると経過時間が前のターンから累積し続けます）。
+`pane_N_started`（running 経過時間の起点）は **1 ターンの間ずっと保持** されます。`running`（`--reset` なし）は既存の `pane_N_started` があれば上書きせず保持するため、ターン中に permission(`💬`) などを挟んでも経過時間がリセットされません。
+
+起点を区切る境界は 2 か所です:
+
+- **ターン開始**: `UserPromptSubmit` hook の `hook running --reset` が `pane_N_started` を「今」に張り直します。新しいユーザ入力ごとに起点が再設定されるため、前のターンが Esc 中断やクラッシュで Stop hook を発火せずに終わっても、次のターンが古い起点を引き継いで累積することがありません（issues/0018）。
+- **ターン終了**: `Stop` hook の `hook idle --reset` が `pane_N_started` を削除します。
+
+**`UserPromptSubmit` と `Stop` の両方に `--reset` を付けてください**。`UserPromptSubmit` を付け忘れると、中断ターンを跨いだときに経過時間が前のターンから累積し、巨大な値が表示されることがあります。
 
 ### Claude Code
 
@@ -138,6 +145,14 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 ```json
 {
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "tmux-sidebar hook running --reset" }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "",
@@ -166,7 +181,7 @@ bind-key -n <key> run-shell 'tmux-sidebar focus-or-open'
 }
 ```
 
-`PostToolUse` は `idle` ではなく `running` を書きます。Claude は 1 ターンの間 tool 実行と応答生成を行き来しますが、その全体が「作業中」なので、tool 完了のたびに idle に戻すとバッジが flicker し、`d`/`D` の confirm 強度も「running 中なのに単純確認」になってしまいます。`running` を書けば tool 間もバッジが安定し、`Notification` hook で permission(`💬`) を出していた場合も tool 完了時に running へ戻ります。idle になるのは `Stop`（ターン終了＝ユーザ応答待ち）だけです。
+`UserPromptSubmit` は `running --reset` を書きます。新しいユーザ入力 = 新ターンの起点なので、ここで `pane_N_started` を「今」に張り直すことで、前のターンが中断・クラッシュで Stop hook を発火せずに終わっても経過時間が累積しません（issues/0018）。`PostToolUse` は `idle` ではなく `running` を書きます。Claude は 1 ターンの間 tool 実行と応答生成を行き来しますが、その全体が「作業中」なので、tool 完了のたびに idle に戻すとバッジが flicker し、`d`/`D` の confirm 強度も「running 中なのに単純確認」になってしまいます。`running` を書けば tool 間もバッジが安定し、`Notification` hook で permission(`💬`) を出していた場合も tool 完了時に running へ戻ります。idle になるのは `Stop`（ターン終了＝ユーザ応答待ち）だけです。
 
 ### Codex CLI
 
@@ -211,7 +226,7 @@ Codex CLI の hook 設定は `~/.codex/hooks.json` に置きます（`~/.codex/c
 
 `tmux-sidebar doctor` は両 agent の settings ファイルを検査し、以下を報告します：
 
-- 必要な hook event（Claude: `PreToolUse` / `PostToolUse` / `Stop`, Codex: `PreToolUse` / `PermissionRequest` / `Stop`）が未設定 → WARN
+- 必要な hook event（Claude: `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`, Codex: `PreToolUse` / `PermissionRequest` / `Stop`）が未設定 → WARN
 - Codex の stale な `PostToolUse` idle hook が残っている → WARN（`--yes` で削除）
 - 旧 inline shell 形式が残っている → WARN（`--yes` でサブコマンド形式へ自動置換）
 - legacy state dir (`/tmp/claude-pane-state`) を参照している → WARN（同上）

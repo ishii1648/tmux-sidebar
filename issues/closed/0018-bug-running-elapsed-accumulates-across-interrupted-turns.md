@@ -1,6 +1,7 @@
 # running 経過時間が中断ターンを跨いで累積し、巨大な値になる
 
 Created: 2026-06-02
+Completed: 2026-06-02
 Model: Opus 4.8
 
 ## 概要
@@ -101,4 +102,17 @@ elapsed = `now(18:44:43) − started(14:28:53)` ≈ **256 分（4h16m）**。現
 
 ## 解決方法
 
-(close 時に追記)
+案 A2 を採用。`UserPromptSubmit` でターン開始時に `pane_N_started` を「今」に張り直すことで、前ターンが Stop hook を発火せず終わっても（Esc 中断・クラッシュ）次ターンが古い起点を引き継がないようにした。
+
+- `internal/hook/hook.go`: `ResetElapsed` のセマンティクスを status 依存に拡張。running かつ `--reset` のとき `pane_N_started` を現在時刻で**上書き**（再アンカー）し、非 running かつ `--reset` のときは従来どおり**削除**する。plain running（`--reset` なし）は既存値を保持。
+- `main.go`: `hook` サブコマンドのヘルプ・doc コメントを `running --reset`（UserPromptSubmit）/ `idle --reset`（Stop）の二境界に更新（既存の `--reset` フラグ解析を流用するので解析変更は不要）。
+- `internal/doctor/doctor.go`:
+  - `requiredClaudeHooks` に `UserPromptSubmit = tmux-sidebar hook running --reset` を追加（`stateTurnStartCmd`）。
+  - `UserPromptSubmit` を legacy 扱いしていた `checkLegacyClaudeHooks` を撤回・削除（deprecation の反転）。
+  - `checkAgentSettings` に「event は存在するが canonical な state-writer コマンドが無い」検出（`canonicalPresent`）を追加。これが無いと、`UserPromptSubmit` に別用途 hook（SSH banner 等）や `PostToolUse` に Skill counter だけがある実環境で doctor が誤って OK と判定し、`doctor --yes` が writer を入れられなかった。
+- docs: `setup.md`（Claude hook JSON に UserPromptSubmit 追加・ライフサイクル節更新・doctor 必須 event 一覧）、`design.md`（起点ライフサイクルと CLI 表）、`spec.md`（経過時間がユーザ入力ごとに張り直る保証）、`history.md`（前提反転と却下案を append）。
+- テスト: `hook_test.go`（`running --reset` の再アンカー・新規作成）、`doctor_test.go`（UserPromptSubmit 必須化・reset 欠落 upgrade・PreToolUse stray reset・state-writer 欠落検出）、`e2e/hook_state_test.go`（中断後の UserPromptSubmit 再アンカーを実 tmux で検証）。
+
+検証として `go test ./...`（全 package OK）、`go test -tags e2e`（`TestHookUserPromptSubmitReanchorsAfterInterrupt` 含め PASS）、`/verify-implementation`（サイドバー表示・doctor self-check）を実施。doctor self-check で実環境の `UserPromptSubmit` / `PostToolUse` が正しく WARN 表示され、`doctor --yes` で既存 hook を残しつつ writer を追加できる状態を確認した。
+
+スコープは Claude のみ（Codex は issue 0013 の方針を継続して据え置き。`hook` 本体は kind 非依存なので手動設定で同等の恩恵は得られる）。

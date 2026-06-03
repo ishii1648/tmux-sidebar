@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -237,6 +238,9 @@ func TestStateCommandsAreSubcommand(t *testing.T) {
 	if got := stateStopCmd(); got != "tmux-sidebar hook idle --reset" {
 		t.Errorf("stop cmd = %q, want tmux-sidebar hook idle --reset", got)
 	}
+	if got := stateTurnStartCmd(); got != "tmux-sidebar hook running --reset" {
+		t.Errorf("turn-start cmd = %q, want tmux-sidebar hook running --reset", got)
+	}
 	if got := stateStopCodexCmd(); got != "tmux-sidebar hook idle --kind codex --reset" {
 		t.Errorf("stop codex cmd = %q, want tmux-sidebar hook idle --kind codex --reset", got)
 	}
@@ -260,7 +264,7 @@ func TestInlineShellHookSig(t *testing.T) {
 }
 
 func TestRequiredClaudeHooksMatchReadme(t *testing.T) {
-	want := map[string]bool{"PreToolUse": false, "PostToolUse": false, "Stop": false}
+	want := map[string]bool{"UserPromptSubmit": false, "PreToolUse": false, "PostToolUse": false, "Stop": false}
 	for _, h := range requiredClaudeHooks {
 		if _, ok := want[h.event]; !ok {
 			t.Errorf("unexpected event in requiredClaudeHooks: %s", h.event)
@@ -833,9 +837,10 @@ func TestCheckAgentSettings_ClaudeStrayResetOnPostToolUse(t *testing.T) {
 	}
 	settings := map[string]any{
 		"hooks": map[string]any{
-			"PreToolUse":  []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateRunningCmd()}}}},
-			"PostToolUse": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle --reset"}}}},
-			"Stop":        []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateStopCmd()}}}},
+			"UserPromptSubmit": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateTurnStartCmd()}}}},
+			"PreToolUse":       []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateRunningCmd()}}}},
+			"PostToolUse":      []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook idle --reset"}}}},
+			"Stop":             []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateStopCmd()}}}},
 		},
 	}
 	b, _ := json.Marshal(settings)
@@ -866,6 +871,171 @@ func TestCheckAgentSettings_ClaudeStrayResetOnPostToolUse(t *testing.T) {
 	cmds := extractHookCommands(getHooksMap(raw), "PostToolUse")
 	if len(cmds) != 1 || cmds[0] != stateRunningCmd() {
 		t.Fatalf("PostToolUse should be exactly [%q], got %v", stateRunningCmd(), cmds)
+	}
+}
+
+// A bare UserPromptSubmit `running` (no --reset) must be upgraded in place to the
+// canonical `running --reset`, otherwise a new turn would not re-anchor
+// pane_N_started and the elapsed clock could accumulate across interrupted turns
+// (issues/0018).
+func TestCheckAgentSettings_ClaudeUserPromptSubmitMissingReset(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"UserPromptSubmit": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateRunningCmd()}}}},
+			"PreToolUse":       []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateRunningCmd()}}}},
+			"PostToolUse":      []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateRunningCmd()}}}},
+			"Stop":             []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateStopCmd()}}}},
+		},
+	}
+	b, _ := json.Marshal(settings)
+	path := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := agentTarget{kind: "claude", titlePrefix: "Claude", pathFn: claudeSettingsPath, requiredHooks: requiredClaudeHooks}
+	results, fixes := checkAgentSettings(target)
+	var ups checkResult
+	for _, r := range results {
+		if r.label == "UserPromptSubmit" {
+			ups = r
+		}
+	}
+	if ups.sev != sevWarn || !strings.Contains(ups.detail, "subcommand mismatch") {
+		t.Fatalf("expected UserPromptSubmit mismatch warning, got %+v", ups)
+	}
+	if len(fixes) != 1 || fixes[0].event != "UserPromptSubmit" || fixes[0].remove {
+		t.Fatalf("expected one UserPromptSubmit upgrade fix, got %+v", fixes)
+	}
+
+	if err := applySettingsFixes(path, fixes); err != nil {
+		t.Fatalf("applySettingsFixes: %v", err)
+	}
+	raw, _ := readRawSettings(path)
+	cmds := extractHookCommands(getHooksMap(raw), "UserPromptSubmit")
+	if len(cmds) != 1 || cmds[0] != stateTurnStartCmd() {
+		t.Fatalf("UserPromptSubmit should be exactly [%q], got %v", stateTurnStartCmd(), cmds)
+	}
+}
+
+// A stray `running --reset` on PreToolUse must be flagged and replaced with the
+// canonical `running`: with the issues/0018 semantics, `running --reset`
+// re-anchors pane_N_started every tool, resetting the elapsed clock to 0 each
+// time (the 0015 bug redux). The normalized exact compare catches it.
+func TestCheckAgentSettings_ClaudeStrayResetOnPreToolUse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"UserPromptSubmit": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateTurnStartCmd()}}}},
+			"PreToolUse":       []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "tmux-sidebar hook running --reset"}}}},
+			"PostToolUse":      []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateRunningCmd()}}}},
+			"Stop":             []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateStopCmd()}}}},
+		},
+	}
+	b, _ := json.Marshal(settings)
+	path := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := agentTarget{kind: "claude", titlePrefix: "Claude", pathFn: claudeSettingsPath, requiredHooks: requiredClaudeHooks}
+	results, fixes := checkAgentSettings(target)
+	var pre checkResult
+	for _, r := range results {
+		if r.label == "PreToolUse" {
+			pre = r
+		}
+	}
+	if pre.sev != sevWarn || !strings.Contains(pre.detail, "subcommand mismatch") {
+		t.Fatalf("expected PreToolUse mismatch warning, got %+v", pre)
+	}
+	if len(fixes) != 1 || fixes[0].event != "PreToolUse" || fixes[0].remove {
+		t.Fatalf("expected one PreToolUse upgrade fix, got %+v", fixes)
+	}
+
+	if err := applySettingsFixes(path, fixes); err != nil {
+		t.Fatalf("applySettingsFixes: %v", err)
+	}
+	raw, _ := readRawSettings(path)
+	cmds := extractHookCommands(getHooksMap(raw), "PreToolUse")
+	if len(cmds) != 1 || cmds[0] != stateRunningCmd() {
+		t.Fatalf("PreToolUse should be exactly [%q], got %v", stateRunningCmd(), cmds)
+	}
+}
+
+// A required event that already holds the user's own unrelated hooks (so
+// hookEventPresent is true) but lacks the canonical state-writer must still be
+// flagged and fixed — otherwise doctor reports OK and never installs the writer.
+// This is the common real case for UserPromptSubmit (an SSH banner hook) and
+// PostToolUse (a Skill counter).
+func TestCheckAgentSettings_ClaudeMissingWriterAmongUnrelatedHooks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{
+		"hooks": map[string]any{
+			// UserPromptSubmit has an unrelated hook but no tmux-sidebar writer.
+			"UserPromptSubmit": []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": "echo banner"}}}},
+			"PreToolUse":       []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateRunningCmd()}}}},
+			"PostToolUse":      []map[string]any{{"matcher": "Skill", "hooks": []map[string]any{{"type": "command", "command": "~/.claude/scripts/skill-call-counter.sh"}}}},
+			"Stop":             []map[string]any{{"matcher": "", "hooks": []map[string]any{{"type": "command", "command": stateStopCmd()}}}},
+		},
+	}
+	b, _ := json.Marshal(settings)
+	path := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := agentTarget{kind: "claude", titlePrefix: "Claude", pathFn: claudeSettingsPath, requiredHooks: requiredClaudeHooks}
+	results, fixes := checkAgentSettings(target)
+
+	byEvent := map[string]checkResult{}
+	for _, r := range results {
+		byEvent[r.label] = r
+	}
+	for _, ev := range []string{"UserPromptSubmit", "PostToolUse"} {
+		if byEvent[ev].sev != sevWarn || !strings.Contains(byEvent[ev].detail, "missing") {
+			t.Errorf("%s should warn about missing writer, got %+v", ev, byEvent[ev])
+		}
+	}
+	if byEvent["PreToolUse"].sev != sevOK || byEvent["Stop"].sev != sevOK {
+		t.Errorf("PreToolUse/Stop should be OK, got %+v / %+v", byEvent["PreToolUse"], byEvent["Stop"])
+	}
+	fixedEvents := map[string]bool{}
+	for _, f := range fixes {
+		fixedEvents[f.event] = true
+	}
+	if !fixedEvents["UserPromptSubmit"] || !fixedEvents["PostToolUse"] {
+		t.Fatalf("expected UserPromptSubmit and PostToolUse queued for fix, got %v", fixes)
+	}
+
+	if err := applySettingsFixes(path, fixes); err != nil {
+		t.Fatalf("applySettingsFixes: %v", err)
+	}
+	raw, _ := readRawSettings(path)
+	hooks := getHooksMap(raw)
+	ups := extractHookCommands(hooks, "UserPromptSubmit")
+	if !slices.Contains(ups, stateTurnStartCmd()) || !slices.Contains(ups, "echo banner") {
+		t.Errorf("UserPromptSubmit should keep banner + add writer, got %v", ups)
+	}
+	post := extractHookCommands(hooks, "PostToolUse")
+	if !slices.Contains(post, stateRunningCmd()) || !slices.Contains(post, "~/.claude/scripts/skill-call-counter.sh") {
+		t.Errorf("PostToolUse should keep counter + add writer, got %v", post)
 	}
 }
 

@@ -82,9 +82,16 @@ type hookFix struct {
 func stateRunningCmd() string { return "tmux-sidebar hook running" }
 func stateIdleCmd() string    { return "tmux-sidebar hook idle" }
 
+// stateTurnStartCmd returns the UserPromptSubmit-hook command. A new user prompt
+// starts a turn, so it adds `--reset` to re-anchor pane_N_started at "now". This
+// is what makes the running elapsed clock robust to a previous turn that ended
+// without a Stop hook (Esc interrupt / crash) and left a stale anchor. See
+// docs/history.md and issues/0018.
+func stateTurnStartCmd() string { return "tmux-sidebar hook running --reset" }
+
 // stateStopCmd returns the Stop-hook command. Stop ends the turn, so it adds
-// `--reset` to clear pane_N_started; PostToolUse idle (stateIdleCmd) keeps it
-// so the running elapsed clock survives the per-tool idle blips within a turn.
+// `--reset` to clear pane_N_started; the per-tool PreToolUse/PostToolUse running
+// writes keep it so the running elapsed clock survives the blips within a turn.
 func stateStopCmd() string      { return "tmux-sidebar hook idle --reset" }
 func stateStopCodexCmd() string { return "tmux-sidebar hook idle --kind codex --reset" }
 
@@ -98,14 +105,22 @@ func inlineShellHookSig(cmd string) bool {
 }
 
 // requiredClaudeHooks lists the Claude Code settings.json hooks doctor
-// maintains. Mirrors setup.md §8: PreToolUse=running, PostToolUse=idle,
-// Stop=idle.
+// maintains. Mirrors setup.md §8: UserPromptSubmit=running --reset,
+// PreToolUse=running, PostToolUse=running, Stop=idle --reset.
+//
 // PostToolUse writes running (not idle): a Claude turn stays running across the
 // per-tool generation gaps, so idle would flicker the badge and also misreport
 // confirm strength on `d`/`D`. Writing running here keeps the badge stable and
 // clears any Notification-set permission badge once the tool completes. idle is
-// reached only at Stop (see stateStopCmd). See docs/history.md.
+// reached only at Stop (see stateStopCmd).
+//
+// UserPromptSubmit writes running --reset: a new user prompt starts a turn, so it
+// re-anchors pane_N_started at "now" (see stateTurnStartCmd). This keeps the
+// elapsed clock correct even when the previous turn ended without a Stop hook
+// (Esc interrupt / crash) and left a stale anchor (issues/0018). See
+// docs/history.md.
 var requiredClaudeHooks = []hookFix{
+	{event: "UserPromptSubmit", command: stateTurnStartCmd()},
 	{event: "PreToolUse", command: stateRunningCmd()},
 	{event: "PostToolUse", command: stateRunningCmd()},
 	{event: "Stop", command: stateStopCmd()},
@@ -595,6 +610,7 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 			legacy := false
 			inlineShell := false
 			subcommandMismatch := false
+			canonicalPresent := false
 			for _, c := range extractHookCommands(hooks, fix.event) {
 				if strings.Contains(c, legacyStateDir) {
 					legacy = true
@@ -603,15 +619,20 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 				if inlineShellHookSig(c) {
 					inlineShell = true
 				}
+				if normalizeCmd(c) == normalizeCmd(fix.command) {
+					canonicalPresent = true
+					continue
+				}
 				// Detect a `tmux-sidebar hook` call that isn't byte-for-byte the
 				// canonical command for this event (modulo whitespace) — wrong
 				// agent kind (e.g. Codex `hook running` without --kind codex), a
-				// missing flag (Stop without --reset), or a stray flag (a --reset
-				// that leaked onto PostToolUse, which would clear pane_N_started
-				// every tool and reintroduce the elapsed reset). A loose
-				// substring check would miss the stray-flag case, so compare the
-				// normalized forms exactly.
-				if _, _, ok := hookCmdParts(c); ok && normalizeCmd(c) != normalizeCmd(fix.command) {
+				// missing flag (Stop or UserPromptSubmit without --reset), or a
+				// stray flag (a --reset that leaked onto Pre/PostToolUse, where
+				// `running --reset` would re-anchor pane_N_started every tool and
+				// reset the elapsed clock to 0 each time — the 0015 bug redux). A
+				// loose substring check would miss the stray-flag case, so compare
+				// the normalized forms exactly.
+				if _, _, ok := hookCmdParts(c); ok {
 					subcommandMismatch = true
 				}
 			}
@@ -632,6 +653,17 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 				results = append(results, checkResult{
 					label: fix.event, sev: sevWarn,
 					detail: "subcommand mismatch — should be `" + fix.command + "`",
+				})
+				fixes = append(fixes, fix)
+			case !canonicalPresent:
+				// The event has hooks (e.g. the user's own unrelated commands) but
+				// none of them is the canonical state-writer. hookEventPresent is
+				// true so the "not configured" case above doesn't fire; without
+				// this branch doctor would report OK and never install the writer.
+				// upsertHookGroup adds it alongside the existing hooks.
+				results = append(results, checkResult{
+					label: fix.event, sev: sevWarn,
+					detail: "missing `" + fix.command + "` — event has other hooks but not the state-writer",
 				})
 				fixes = append(fixes, fix)
 			default:
@@ -663,32 +695,6 @@ func checkAgentSettings(target agentTarget) (results []checkResult, fixes []hook
 func isStaleCodexPostToolUse(command string) bool {
 	status, _, ok := hookCmdParts(command)
 	return ok && status == string(state.StatusIdle)
-}
-
-// checkLegacyClaudeHooks emits an info line when a stale UserPromptSubmit hook
-// (left over from doctor versions before PreToolUse was canonical) is detected.
-func checkLegacyClaudeHooks() []checkResult {
-	path, err := claudeSettingsPath()
-	if err != nil {
-		return nil
-	}
-	raw, err := readRawSettings(path)
-	if err != nil {
-		return nil
-	}
-	hooks := getHooksMap(raw)
-	if !hookEventPresent(hooks, "UserPromptSubmit") {
-		return nil
-	}
-	for _, c := range extractHookCommands(hooks, "UserPromptSubmit") {
-		if strings.Contains(c, legacyStateDir) || strings.Contains(c, state.DefaultStateDir) {
-			return []checkResult{{
-				label: "UserPromptSubmit (legacy)", sev: sevInfo,
-				detail: "previously installed by doctor; superseded by PreToolUse — safe to remove",
-			}}
-		}
-	}
-	return nil
 }
 
 // ── diagnosis: tmux.conf ──────────────────────────────────────────────────────
@@ -1034,10 +1040,6 @@ func Run(autoApply bool) error {
 		title := target.titlePrefix
 		if p, err := target.pathFn(); err == nil {
 			title = target.titlePrefix + " (" + p + ")"
-		}
-		// Claude-only legacy event detection (UserPromptSubmit cleanup).
-		if target.kind == "claude" {
-			results = append(results, checkLegacyClaudeHooks()...)
 		}
 		sections = append(sections, checkSection{title: title, results: results})
 		if len(fixes) > 0 {

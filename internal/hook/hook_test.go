@@ -114,6 +114,56 @@ func TestWriteRunningPreservesStartedAcrossIdle(t *testing.T) {
 	}
 }
 
+// The UserPromptSubmit hook passes `running --reset` to re-anchor a new turn:
+// an existing started timestamp (e.g. left over from a previous turn that ended
+// without a Stop hook — Esc interrupt / crash) must be overwritten with "now",
+// not preserved. Otherwise elapsed accumulates across the idle gap (issues/0018).
+func TestWriteRunningResetReanchorsStarted(t *testing.T) {
+	dir := t.TempDir()
+	startedPath := filepath.Join(dir, "pane_8_started")
+	if err := os.WriteFile(filepath.Join(dir, "pane_8"), []byte("running\nclaude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Stale anchor from a previous, abnormally-ended turn.
+	if err := os.WriteFile(startedPath, []byte("100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Unix(9000, 0)
+	if err := Write(Options{
+		Status:       "running",
+		PaneID:       "%8",
+		StateDir:     dir,
+		ResetElapsed: true,
+		Now:          func() time.Time { return now },
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if got := readFile(t, startedPath); got != "9000\n" {
+		t.Errorf("pane_8_started = %q, want re-anchored 9000", got)
+	}
+}
+
+// `running --reset` with no existing anchor simply creates a fresh one (same as
+// plain running for the first turn of a session).
+func TestWriteRunningResetCreatesWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Unix(4242, 0)
+	if err := Write(Options{
+		Status:       "running",
+		PaneID:       "%11",
+		StateDir:     dir,
+		ResetElapsed: true,
+		Now:          func() time.Time { return now },
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if got := readFile(t, filepath.Join(dir, "pane_11_started")); got != "4242\n" {
+		t.Errorf("pane_11_started = %q, want 4242", got)
+	}
+}
+
 // The Stop hook passes ResetElapsed so the next running episode starts fresh.
 func TestWriteResetClearsStarted(t *testing.T) {
 	dir := t.TempDir()

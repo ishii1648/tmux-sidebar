@@ -1,6 +1,7 @@
 # state ファイル堆積で reload が重くなり kill 反応がラグる
 
 Created: 2026-06-09
+Completed: 2026-06-09
 Model: Opus 4.7
 
 ## 概要
@@ -88,4 +89,24 @@ GC で「1 回あたりの Read コスト」を下げる一方、fsnotify 起源
 
 ## 解決方法
 
-(close 時に追記)
+案 C を採用。sidebar の reload 経路（loadData）に live pane set ベースの stale GC を相乗りさせた。tmux hook や agent hook を新設せず、sidebar が動いている限り必ず収束する構造にした。
+
+- `internal/state/state.go`:
+  - `Reader` interface に `ReadAndGC(live map[int]struct{})` を追加。
+  - 内部実装を `read(live)` に集約し、`Read()` は `read(nil)` を、`ReadAndGC` は live set を渡す薄いラッパに。`ReadAndGC(nil)` は誤用安全のため Read と同等動作にフォールバック（nil map で全削除を防ぐ）。
+  - スキャン中に live にない `pane_N` 系ファイルのパスを `stalePaths` に積み、ループ末尾で best-effort `os.Remove`。stale なファイルは `os.ReadFile` をスキップするので「巨大化した dir で stale を読みつつ消す」往復コストを払わない。
+  - ファイル名から pane 番号を取り出すロジックを `parsePaneNumber` に集約。GC 判定と per-suffix パーサで命名ルールがズレないようにした。
+- `internal/ui/model.go`: `loadData()` で `tmux.ListAll()` の結果から `live` を組み、`m.stateReader.ReadAndGC(live)` を呼ぶ。`loadStateOnly()` は GC せず `Read()` のまま（fsnotify debounce 後の頻度低下に任せる）。
+- `main.go`: fsnotify ループに 80ms の `time.Timer` ベース debounce を追加。1 ターン中に hook が連続で書く burst（status + started + path + ...）を 1 回の `StateChangedMsg` にまとめる。
+- `internal/ui/model_test.go`: `fakeStateReader` に `ReadAndGC` を実装。
+- `internal/state/state_test.go`: GC 回帰テストを 4 本追加（stale 全 suffix の削除 / live 全 suffix の保持 / `live==nil` で GC 無効 / `pane_` 以外のファイルは GC 対象外）。
+- `docs/design.md`: 「状態ファイル」節に live set ベース GC と fsnotify debounce の動機・適用範囲を追記。
+
+検証:
+
+- `go test ./...` 全 package OK
+- `go build ./...` / `go vet ./...` 警告なし
+- `make install` で新バイナリを `~/.local/bin/tmux-sidebar` に配置
+- `/open-sidebar` で新規 sidebar pane を起動。レイアウト（pane_left=0、width=40、@pane_role=sidebar）と表示内容（ヘッダー / セッション一覧 / カーソル / agent バッジ / running バッジ）が期待どおりであることを `tmux capture-pane` で確認
+- 実環境 GC テスト: stale ファイル（`pane_77771`, `pane_77772_started`, `pane_77773_path`）を `touch` で seed し、sidebar process に `SIGUSR1` 送信 → `TmuxChangedMsg → loadData → ReadAndGC` 経路で全件削除されることを確認。
+- live pane（`%4`, `%325`, `%397`, `%402`, `%406`, `%412`）の state ファイルは残存することも同時に確認。

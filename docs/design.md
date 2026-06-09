@@ -267,6 +267,12 @@ Claude の hook → status 対応は「ターン開始/ターン中 = running、
 
 `/tmp` 配下は world-writable なので、reader は regular file 以外を無視する。
 
+state ファイルは agent hook が書き出すのみで、対象 pane の死亡時に自前で消す手段がない（hook は死にゆく pane の中で動くため）。そのまま放置すると `Read()` の `os.ReadDir` + per-file `os.ReadFile` のコストが「過去に存在したことのある pane 総数」に線形でスケールし、reload 経路（特に fsnotify 起源の `StateChangedMsg`）が次第に重くなる。
+
+これを抑えるため、`Reader` は `ReadAndGC(live map[int]struct{})` も提供する。`loadData()` は `tmux list-panes -a` の結果から生 pane 番号集合を作り、こちらを呼ぶ。reader は live に含まれない `pane_N*` を best-effort で `os.Remove` する（sticky-bit によって他ユーザのファイルは EACCES で no-op となるので安全）。`loadStateOnly()` 経路は live set を持たないので `Read()` のまま（GC は loadData 経路 = kill / SIGUSR1 / 10秒tick / 起動時 に発火する）。
+
+fsnotify 起源の `StateChangedMsg` は `main.go` 側で 80 ms の debounce を入れて連発を畳む。1 ターン中に hook が数本連続で書く burst を 1 回の reload にまとめ、`loadStateOnly()` の発火頻度を下げる。
+
 ---
 
 ## sidebar pane の生成と識別

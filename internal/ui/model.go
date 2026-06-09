@@ -311,7 +311,15 @@ func (m *Model) loadData() tea.Cmd {
 		if err != nil {
 			return dataMsg{cfg: cfg, err: err}
 		}
-		stateMap, err := m.stateReader.Read()
+		// Build the live-pane set and pass it to ReadAndGC so the state
+		// directory gets cleaned of files whose owning pane has died. Without
+		// this, /tmp/agent-pane-state accumulates one file per past pane and
+		// every reload pays O(total) ReadFile syscalls (issue 0019).
+		live := make(map[int]struct{}, len(allPanes))
+		for _, p := range allPanes {
+			live[p.PaneNumber] = struct{}{}
+		}
+		stateMap, err := m.stateReader.ReadAndGC(live)
 		if err != nil {
 			// Non-fatal: show empty state
 			stateMap = map[int]state.PaneState{}

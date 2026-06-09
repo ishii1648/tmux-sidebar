@@ -50,6 +50,10 @@ type Reader interface {
 	// Read returns a map of pane numbers to PaneState.
 	// Panes without a state file are not included in the map.
 	Read() (map[int]PaneState, error)
+	// ReadAndGC behaves like Read but additionally removes state files whose
+	// pane number is not in live. The unlink is best-effort: failures are
+	// ignored so a partially writable directory never breaks the read path.
+	ReadAndGC(live map[int]struct{}) (map[int]PaneState, error)
 }
 
 // FSReader reads pane state from the filesystem.
@@ -68,6 +72,30 @@ func NewFSReader(dir string) *FSReader {
 
 // Read scans the state directory and returns a map of pane number → PaneState.
 func (r *FSReader) Read() (map[int]PaneState, error) {
+	return r.read(nil)
+}
+
+// ReadAndGC behaves like Read but also unlinks state files whose pane number
+// is not present in live. The unlink is best-effort: any per-file error (EACCES
+// on /tmp because of sticky-bit ownership, ENOENT from a racing reader, etc.)
+// is ignored so the read path never fails because GC could not run cleanly.
+//
+// Passing live == nil disables GC and is equivalent to Read.
+func (r *FSReader) ReadAndGC(live map[int]struct{}) (map[int]PaneState, error) {
+	if live == nil {
+		// A nil map would treat every pane as stale and wipe the directory.
+		// Callers that want plain reads should use Read; map ReadAndGC(nil)
+		// to that to make accidental misuse harmless.
+		return r.read(nil)
+	}
+	return r.read(live)
+}
+
+// read is the shared scan implementation. When live != nil, files whose pane
+// number is not in live are unlinked best-effort; their content is also
+// skipped (no ReadFile) so a bloated directory doesn't pay for re-reading
+// stale data on the way to deleting it.
+func (r *FSReader) read(live map[int]struct{}) (map[int]PaneState, error) {
 	entries, err := os.ReadDir(r.dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -82,6 +110,7 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 	started := map[int]int64{}
 	workdirs := map[int]string{}
 	sessionIDs := map[int]string{}
+	var stalePaths []string
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -94,15 +123,19 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 		if !entry.Type().IsRegular() {
 			continue
 		}
+		num, ok := parsePaneNumber(name)
+		if !ok {
+			continue
+		}
+		if live != nil {
+			if _, alive := live[num]; !alive {
+				stalePaths = append(stalePaths, filepath.Join(r.dir, name))
+				continue
+			}
+		}
 		rest := name[len("pane_"):]
 
 		if strings.HasSuffix(rest, "_started") {
-			// pane_N_started
-			numStr := strings.TrimSuffix(rest, "_started")
-			num, err := strconv.Atoi(numStr)
-			if err != nil {
-				continue
-			}
 			data, err := os.ReadFile(filepath.Join(r.dir, name))
 			if err != nil {
 				continue
@@ -113,24 +146,12 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 			}
 			started[num] = epoch
 		} else if strings.HasSuffix(rest, "_session_id") {
-			// pane_N_session_id
-			numStr := strings.TrimSuffix(rest, "_session_id")
-			num, err := strconv.Atoi(numStr)
-			if err != nil {
-				continue
-			}
 			data, err := os.ReadFile(filepath.Join(r.dir, name))
 			if err != nil {
 				continue
 			}
 			sessionIDs[num] = strings.TrimSpace(string(data))
 		} else if strings.HasSuffix(rest, "_path") {
-			// pane_N_path
-			numStr := strings.TrimSuffix(rest, "_path")
-			num, err := strconv.Atoi(numStr)
-			if err != nil {
-				continue
-			}
 			data, err := os.ReadFile(filepath.Join(r.dir, name))
 			if err != nil {
 				continue
@@ -138,10 +159,6 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 			workdirs[num] = strings.TrimSpace(string(data))
 		} else {
 			// pane_N: line 1 is status, line 2 (optional) is agent kind.
-			num, err := strconv.Atoi(rest)
-			if err != nil {
-				continue
-			}
 			data, err := os.ReadFile(filepath.Join(r.dir, name))
 			if err != nil {
 				continue
@@ -170,6 +187,10 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 		}
 	}
 
+	for _, p := range stalePaths {
+		_ = os.Remove(p)
+	}
+
 	result := make(map[int]PaneState, len(statuses))
 	now := time.Now()
 	for num, status := range statuses {
@@ -193,4 +214,28 @@ func (r *FSReader) Read() (map[int]PaneState, error) {
 		result[num] = ps
 	}
 	return result, nil
+}
+
+// parsePaneNumber extracts N from any of the recognised state file names:
+//
+//	pane_N, pane_N_started, pane_N_path, pane_N_session_id
+//
+// Returns false when the name does not match. Centralised so GC stale-detection
+// and per-suffix parsing agree on what counts as a pane file.
+func parsePaneNumber(name string) (int, bool) {
+	if !strings.HasPrefix(name, "pane_") {
+		return 0, false
+	}
+	rest := name[len("pane_"):]
+	for _, suffix := range []string{"_started", "_session_id", "_path"} {
+		if strings.HasSuffix(rest, suffix) {
+			rest = strings.TrimSuffix(rest, suffix)
+			break
+		}
+	}
+	num, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0, false
+	}
+	return num, true
 }

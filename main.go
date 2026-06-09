@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fsnotify/fsnotify"
@@ -231,13 +232,26 @@ Subcommands:
 		if watchErr := watcher.Add(stateDir); watchErr == nil {
 			go func() {
 				defer watcher.Close()
+				// Coalesce bursts of state-file writes: agent hooks often emit
+				// several writes within a few ms (status + started + path + ...)
+				// and each one used to trigger a full ReadDir+ReadFile pass.
+				// 80ms is short enough to feel instant but long enough to fold
+				// a single hook's bundle of writes into one redraw (issue 0019).
+				const debounce = 80 * time.Millisecond
+				var timer *time.Timer
 				for {
 					select {
 					case _, ok := <-watcher.Events:
 						if !ok {
 							return
 						}
-						p.Send(ui.StateChangedMsg{})
+						if timer == nil {
+							timer = time.AfterFunc(debounce, func() {
+								p.Send(ui.StateChangedMsg{})
+							})
+						} else {
+							timer.Reset(debounce)
+						}
 					case _, ok := <-watcher.Errors:
 						if !ok {
 							return

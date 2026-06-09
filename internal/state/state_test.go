@@ -292,6 +292,123 @@ func TestFSReader_NonPaneFileIgnored(t *testing.T) {
 	}
 }
 
+// TestFSReader_ReadAndGC_RemovesStaleFiles: live set に含まれない pane の
+// 状態ファイルはすべて（_started / _path / _session_id 含む）削除される。
+func TestFSReader_ReadAndGC_RemovesStaleFiles(t *testing.T) {
+	dir := t.TempDir()
+	// pane_1 alive, pane_2 stale (all 4 suffixes), pane_3 stale (status only).
+	writeFile(t, dir, "pane_1", "running\nclaude\n")
+	writeFile(t, dir, "pane_1_started", fmt.Sprintf("%d", time.Now().Unix()))
+	writeFile(t, dir, "pane_2", "idle\ncodex\n")
+	writeFile(t, dir, "pane_2_started", "0")
+	writeFile(t, dir, "pane_2_path", "/some/dir")
+	writeFile(t, dir, "pane_2_session_id", "abc-123")
+	writeFile(t, dir, "pane_3", "idle\nclaude\n")
+
+	live := map[int]struct{}{1: {}}
+
+	r := NewFSReader(dir)
+	states, err := r.ReadAndGC(live)
+	if err != nil {
+		t.Fatalf("ReadAndGC: %v", err)
+	}
+	if _, ok := states[1]; !ok {
+		t.Error("pane 1 should be in result")
+	}
+	if _, ok := states[2]; ok {
+		t.Error("pane 2 should not be in result (stale)")
+	}
+	if _, ok := states[3]; ok {
+		t.Error("pane 3 should not be in result (stale)")
+	}
+
+	for _, name := range []string{
+		"pane_2", "pane_2_started", "pane_2_path", "pane_2_session_id", "pane_3",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s should have been removed, stat err=%v", name, err)
+		}
+	}
+	for _, name := range []string{"pane_1", "pane_1_started"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s should still exist: %v", name, err)
+		}
+	}
+}
+
+// TestFSReader_ReadAndGC_KeepsAllLiveFiles: live set に含まれる pane の
+// すべての suffix が保持され、Read 結果にもすべて反映される。
+func TestFSReader_ReadAndGC_KeepsAllLiveFiles(t *testing.T) {
+	dir := t.TempDir()
+	started := time.Now().Add(-2 * time.Minute).Unix()
+	writeFile(t, dir, "pane_5", "running\nclaude\n")
+	writeFile(t, dir, "pane_5_started", fmt.Sprintf("%d", started))
+	writeFile(t, dir, "pane_5_path", "/work/repo")
+	writeFile(t, dir, "pane_5_session_id", "uuid-555")
+
+	r := NewFSReader(dir)
+	states, err := r.ReadAndGC(map[int]struct{}{5: {}})
+	if err != nil {
+		t.Fatalf("ReadAndGC: %v", err)
+	}
+	ps, ok := states[5]
+	if !ok {
+		t.Fatal("pane 5 not in result")
+	}
+	if ps.WorkDir != "/work/repo" {
+		t.Errorf("WorkDir = %q, want /work/repo", ps.WorkDir)
+	}
+	if ps.SessionID != "uuid-555" {
+		t.Errorf("SessionID = %q, want uuid-555", ps.SessionID)
+	}
+	if ps.Elapsed < 2*time.Minute {
+		t.Errorf("Elapsed = %v, want >= 2m", ps.Elapsed)
+	}
+
+	for _, name := range []string{"pane_5", "pane_5_started", "pane_5_path", "pane_5_session_id"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s should still exist: %v", name, err)
+		}
+	}
+}
+
+// TestFSReader_ReadAndGC_NilDisablesGC: live==nil の呼び出しは Read と同じく
+// 削除を行わない。誤用に対する安全装置。
+func TestFSReader_ReadAndGC_NilDisablesGC(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "pane_7", "idle\nclaude\n")
+	writeFile(t, dir, "pane_7_path", "/x")
+
+	r := NewFSReader(dir)
+	if _, err := r.ReadAndGC(nil); err != nil {
+		t.Fatalf("ReadAndGC(nil): %v", err)
+	}
+	for _, name := range []string{"pane_7", "pane_7_path"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s should still exist when live==nil: %v", name, err)
+		}
+	}
+}
+
+// TestFSReader_ReadAndGC_IgnoresNonPaneFiles: pane_ prefix を持たないファイルは
+// GC 対象外（誤って共有ファイルを消さない）。
+func TestFSReader_ReadAndGC_IgnoresNonPaneFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "pane_1", "idle\nclaude\n")
+	writeFile(t, dir, "README", "hello")
+	writeFile(t, dir, "other.lock", "x")
+
+	r := NewFSReader(dir)
+	if _, err := r.ReadAndGC(map[int]struct{}{1: {}}); err != nil {
+		t.Fatalf("ReadAndGC: %v", err)
+	}
+	for _, name := range []string{"README", "other.lock"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s (non-pane) should be untouched: %v", name, err)
+		}
+	}
+}
+
 // TestFSReader_SymlinkIgnored: シムリンクは無視される（シムリンク攻撃DoS対策）
 func TestFSReader_SymlinkIgnored(t *testing.T) {
 	dir := t.TempDir()

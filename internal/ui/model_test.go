@@ -55,9 +55,19 @@ func (f *fakeTmuxClient) CapturePane(target string) (string, error) {
 	return f.captureContent, nil
 }
 
-type fakeStateReader struct{ states map[int]state.PaneState }
+type fakeStateReader struct {
+	states  map[int]state.PaneState
+	lastGC  map[int]struct{}
+	gcCalls int
+}
 
 func (f *fakeStateReader) Read() (map[int]state.PaneState, error) { return f.states, nil }
+
+func (f *fakeStateReader) ReadAndGC(live map[int]struct{}) (map[int]state.PaneState, error) {
+	f.lastGC = live
+	f.gcCalls++
+	return f.states, nil
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
